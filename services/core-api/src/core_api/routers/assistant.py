@@ -4,13 +4,17 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from telco_common.flags import flag_bool
 
-from ..agent.factory import build_agent
+from ..agent.embed import get_embedder
+from ..agent.factory import build_agent, build_llm
+from ..agent.loop import run_stream
+from ..agent.tools import ToolContext
 from ..db import agent_traces, get_engine
-from ..deps import RateLimiter, get_valkey
+from ..deps import RateLimiter, get_usage_state, get_valkey
 from ..security import Principal, current_principal
 from ..settings import get_settings
 
@@ -36,10 +40,48 @@ def run_agent(p: Principal, question: str, lang: str, cycle: str | None) -> dict
     return agent.ask(question, p.subscriber_id, lang, cycle).as_dict()
 
 
+def _guard(p: Principal) -> None:
+    if not flag_bool("ai-explanations", p.country, p.subscriber_id):
+        raise HTTPException(503, "the assistant is switched off")
+    s = get_settings()
+    if not RateLimiter(get_valkey()).allow(f"ask:{p.subscriber_id}", s.ai_daily_limit_per_subscriber * 10, 86400):
+        raise HTTPException(429, "daily assistant limit reached")
+
+
+def _events(p: Principal, question: str, lang: str):
+    try:
+        llm = build_llm(p.country, p.subscriber_id)
+    except RuntimeError as e:
+        raise HTTPException(503, str(e)) from e
+    ctx = ToolContext(p.subscriber_id, p.country, get_engine(), get_usage_state(), get_embedder(), llm)
+    return run_stream(question, ctx, llm, get_engine(), lang)
+
+
+@router.post("/stream")
+def ask_stream(body: AskIn, p: Principal = Depends(current_principal)) -> StreamingResponse:
+    """Multi-step tool-calling agent, streamed as Server-Sent Events (step, token, repairing, replace, done)."""
+    _guard(p)
+    events = _events(p, body.question, body.lang)
+
+    def sse():
+        for ev in events:
+            yield f"data: {json.dumps(ev, default=str)}\n\n"
+
+    return StreamingResponse(sse(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
 @router.post("/ask")
 def ask(body: AskIn, response: Response, p: Principal = Depends(current_principal)) -> dict:
+    """Same agent, non-streamed (returns the final 'done' event)."""
     response.headers["Cache-Control"] = "private, no-store"
-    return run_agent(p, body.question, body.lang, body.cycle)
+    _guard(p)
+    done = {}
+    for ev in _events(p, body.question, body.lang):
+        if ev["type"] == "done":
+            done = ev
+    return {"status": done.get("status"), "answer": done.get("answer"), "citations": done.get("citations", []),
+            "provider": "llm", "trace": done.get("trace", {})}
 
 
 @router.get("/traces")

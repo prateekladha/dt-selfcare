@@ -27,9 +27,11 @@ PRICES = {"deepseek": {"in_hit": 0.07, "in_miss": 0.27, "out": 1.10},
           "selfhosted": {"in_hit": 0.0, "in_miss": 0.0, "out": 0.0}}
 
 STAGES = {  # stage -> (max_tokens, daily cap USD, temperature)
-    "grade": (300, 0.50, 0.0),
+    "grade": (300, 0.50, 0.0),       # cheap stage: CRAG grader
     "generate": (450, 2.00, 0.2),
-    "repair": (450, 1.00, 0.0),
+    "explain": (900, 2.00, 0.2),     # structured bill explanation (single call)
+    "agent": (700, 3.00, 0.2),       # tool-calling turns of the assistant
+    "repair": (700, 1.00, 0.0),
 }
 
 
@@ -48,9 +50,11 @@ class LLMResult:
     cache_miss_tokens: int
     cost_usd: float
     seconds: float
+    tool_calls: list | None = None
 
     def as_trace(self) -> dict:
-        return {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.__dict__.items() if k != "text"}
+        return {k: (round(v, 6) if isinstance(v, float) else v) for k, v in self.__dict__.items()
+                if k not in ("text", "tool_calls")}
 
 
 class LLM:
@@ -71,19 +75,20 @@ class LLM:
     def spent_today(self, stage: str) -> float:
         return float(self.r.get(self._spend_key(stage)) or 0)
 
-    def chat(self, stage: str, messages: list[dict], json_mode: bool = False) -> LLMResult:
+    def _body(self, stage: str, messages: list[dict], json_mode: bool, tools: list | None, stream: bool) -> dict:
         max_tokens, cap, temp = STAGES[stage]
         if self.spent_today(stage) >= cap:
             raise BudgetExceeded(f"daily cap for stage {stage!r} reached (${cap})")
-        body = {"model": self.model, "messages": messages, "max_tokens": max_tokens, "temperature": temp, "stream": False}
+        body = {"model": self.model, "messages": messages, "max_tokens": max_tokens, "temperature": temp, "stream": stream}
         if json_mode:
             body["response_format"] = {"type": "json_object"}
-        t0 = time.monotonic()
-        r = self.http.post(self.url, json=body, headers={"Authorization": f"Bearer {self.key}"})
-        dt = time.monotonic() - t0
-        r.raise_for_status()
-        data = r.json()
-        u = data.get("usage", {})
+        if tools:
+            body["tools"] = tools
+        if stream:
+            body["stream_options"] = {"include_usage": True}
+        return body
+
+    def _account(self, stage: str, u: dict, dt: float, text: str, tool_calls: list | None) -> LLMResult:
         hit = int(u.get("prompt_cache_hit_tokens", 0))
         miss = int(u.get("prompt_cache_miss_tokens", u.get("prompt_tokens", 0) - hit))
         out = int(u.get("completion_tokens", 0))
@@ -96,5 +101,49 @@ class LLM:
         for kind, v in (("cache_hit", hit), ("cache_miss", miss), ("out", out)):
             LLM_TOKENS.labels(stage, kind).inc(v)
         LLM_SECONDS.labels(stage).observe(dt)
-        text = (data["choices"][0]["message"]["content"] or "").strip()
-        return LLMResult(text, stage, self.model, int(u.get("prompt_tokens", hit + miss)), out, hit, miss, cost, dt)
+        return LLMResult(text, stage, self.model, int(u.get("prompt_tokens", hit + miss)), out, hit, miss, cost, dt,
+                         tool_calls)
+
+    def stream(self, stage: str, messages: list[dict], tools: list | None = None):
+        """Yields ("token", str) as content arrives, then ("end", LLMResult) with merged tool calls."""
+        import json as _json
+
+        body = self._body(stage, messages, False, tools, True)
+        t0 = time.monotonic()
+        text, calls, usage = [], {}, {}
+        with self.http.stream("POST", self.url, json=body, headers={"Authorization": f"Bearer {self.key}"}) as r:
+            r.raise_for_status()
+            for line in r.iter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                chunk = _json.loads(data)
+                if chunk.get("usage"):
+                    usage = chunk["usage"]
+                for ch in chunk.get("choices", []):
+                    delta = ch.get("delta", {})
+                    if delta.get("content"):
+                        text.append(delta["content"])
+                        yield ("token", delta["content"])
+                    for tc in delta.get("tool_calls") or []:
+                        slot = calls.setdefault(tc.get("index", 0), {"id": "", "name": "", "arguments": ""})
+                        slot["id"] = tc.get("id") or slot["id"]
+                        fn = tc.get("function") or {}
+                        slot["name"] += fn.get("name") or ""
+                        slot["arguments"] += fn.get("arguments") or ""
+        merged = [calls[i] for i in sorted(calls)] or None
+        yield ("end", self._account(stage, usage, time.monotonic() - t0, "".join(text), merged))
+
+    def chat(self, stage: str, messages: list[dict], json_mode: bool = False, tools: list | None = None) -> LLMResult:
+        body = self._body(stage, messages, json_mode, tools, False)
+        t0 = time.monotonic()
+        r = self.http.post(self.url, json=body, headers={"Authorization": f"Bearer {self.key}"})
+        dt = time.monotonic() - t0
+        r.raise_for_status()
+        data = r.json()
+        msg = data["choices"][0]["message"]
+        calls = [{"id": c["id"], "name": c["function"]["name"], "arguments": c["function"]["arguments"]}
+                 for c in msg.get("tool_calls") or []] or None
+        return self._account(stage, data.get("usage", {}), dt, (msg.get("content") or "").strip(), calls)
