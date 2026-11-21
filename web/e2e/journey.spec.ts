@@ -58,9 +58,11 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   // Bills list -> detail -> PDF
   await page.goto("/bills");
   await expect(page.getByRole("heading", { name: "Bills" })).toBeVisible();
-  expect(await page.locator("tbody tr").count()).toBeGreaterThanOrEqual(11);
+  const mobile = test.info().project.name === "mobile";
+  const rows = mobile ? page.locator("ul li").filter({ has: page.locator('a[href^="/bills/20"]') }) : page.locator("tbody tr");
+  expect(await rows.count()).toBeGreaterThanOrEqual(11);
   await shot(page, "03-bills");
-  await page.locator("tbody tr").first().getByRole("link").first().click();
+  await rows.first().getByRole("link").first().click();
   await expect(page.getByText("Breakdown", { exact: true })).toBeVisible();
   await expect(page.getByText("Top usage drivers", { exact: true })).toBeVisible();
   const cycle = page.url().split("/bills/")[1].split("?")[0];
