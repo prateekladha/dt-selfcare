@@ -46,9 +46,11 @@ function breakerFor(base: string) {
   return b;
 }
 
-/** Services whose circuit is not CLOSED right now -> the UI degrades those features up front. */
+/** Services whose circuit is OPEN right now -> the UI degrades those features up front.
+ *  Half-open is NOT degraded: the feature is shown again and the customer's next action is the trial call
+ *  (otherwise a breaker on a service the page never calls by itself would never close). */
 export function degradedServices(): string[] {
-  return [...breakers].filter(([, b]) => !b.closed).map(([base]) => SERVICE_NAMES[base] ?? base);
+  return [...breakers].filter(([, b]) => b.opened).map(([base]) => SERVICE_NAMES[base] ?? base);
 }
 
 /** Read budget per call; the assistant stream and LLM explanation get more (they wait for a model). */

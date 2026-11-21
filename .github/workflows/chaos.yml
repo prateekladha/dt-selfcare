@@ -1,0 +1,73 @@
+# Manual chaos test on the live site: payments-service and core-api are taken down briefly and the
+# customer-facing fallbacks are checked in a real browser (web/e2e/outage.spec.ts). Restores everything
+# at the end, also when a check fails. Screenshots are uploaded as an artifact.
+name: chaos-outage-test
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod   # never overlaps a deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  OCI_REGION: ap-mumbai-1
+
+jobs:
+  outage:
+    runs-on: ubuntu-24.04
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+      - name: OCI credentials (CI user, deploy-only permissions)
+        env:
+          KEY: ${{ secrets.OCI_CI_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.oci && printf '%s\n' "$KEY" > ~/.oci/key.pem && chmod 600 ~/.oci/key.pem
+          cat > ~/.oci/config <<CFG
+          [DEFAULT]
+          user=${{ secrets.OCI_CI_USER_OCID }}
+          fingerprint=${{ secrets.OCI_CI_FINGERPRINT }}
+          tenancy=${{ secrets.OCI_TENANCY_OCID }}
+          region=${{ env.OCI_REGION }}
+          key_file=~/.oci/key.pem
+          CFG
+          chmod 600 ~/.oci/config
+          pipx install oci-cli
+      - name: kubeconfig
+        env: { SUPPRESS_LABEL_WARNING: "True" }
+        run: oci ce cluster create-kubeconfig --cluster-id "${{ vars.OCI_CLUSTER_ID }}" --file ~/.kube/config --token-version 2.0.0 --kube-endpoint PUBLIC_ENDPOINT
+      - uses: actions/setup-node@v5
+        with: { node-version: 24, cache: npm, cache-dependency-path: web/package-lock.json }
+      - name: install e2e deps
+        working-directory: web
+        run: npm ci && npx playwright install --with-deps chromium
+      - name: outage test (live)
+        working-directory: web
+        env: { SUPPRESS_LABEL_WARNING: "True", CHAOS: "1" }
+        run: |
+          VAULT=$(grep -E '^  vaultId:' ../deploy/helm/values-oci.yaml | awk '{print $2}')
+          DOMAIN=$(grep -E '^domain:' ../deploy/helm/values-oci.yaml | awk '{print $2}' | tr -d '"')
+          PW=$(oci secrets secret-bundle get-secret-bundle-by-name --secret-name dt-selfcare-demo-password --vault-id "$VAULT" \
+               --query 'data."secret-bundle-content".content' --raw-output | base64 -d)
+          echo "::add-mask::$PW"
+          E2E_PASSWORD="$PW" E2E_BASE_URL="https://$DOMAIN" npx playwright test e2e/outage.spec.ts --project desktop --retries 0
+      - name: restore (always)
+        if: always()
+        env: { SUPPRESS_LABEL_WARNING: "True" }
+        run: |
+          kubectl -n selfcare scale deploy/payments-service --replicas=2
+          kubectl -n selfcare scale deploy/core-api --replicas=2
+          kubectl -n selfcare rollout status deploy/payments-service --timeout=300s
+          kubectl -n selfcare rollout status deploy/core-api --timeout=300s
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: outage-screens
+          path: |
+            web/e2e-results/screens
+            web/e2e-results/**/test-failed-*.png
+          retention-days: 14
