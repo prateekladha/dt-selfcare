@@ -81,7 +81,10 @@ def read(order_id: str) -> dict:
         if legacy is None:
             raise HTTPException(404, "order not found")
         return {"id": order_id, "state": TMF_STATE.get(legacy, "pending")}
-    return {"id": order_id, "state": a.state(get_engine(), order_id)}
+    state = a.state(get_engine(), order_id)
+    if state is None:
+        raise HTTPException(404, "order not found")
+    return {"id": order_id, "state": state}
 
 
 async def legacy_emulator(stop: asyncio.Event) -> None:
