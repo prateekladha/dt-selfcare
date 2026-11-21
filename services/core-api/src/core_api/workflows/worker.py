@@ -1,51 +1,50 @@
-"""workflow-worker deployable: Temporal worker for order workflows + the simulated legacy BSS.
+"""workflow-worker deployable: Temporal worker for the order workflows + the `bss-events` consumer.
 
-The legacy BSS emulator stands in for a country's slow order system (like the network emulator stands in
-for mediation): it confirms SUBMITTED orders after 20-60 s, rejects ~10%, and calls back the workflow
-with a Temporal signal. Workflows also poll, so a lost callback never strands an order.
+Legacy results arrive as events on `bss-events` (published by the order-adapter); this process turns
+them into workflow signals. Workflows also poll the adapter, so a lost event never strands an order.
+The worker never talks to a legacy system.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import os
-import random
-from datetime import UTC, datetime, timedelta
+import threading
 
-from sqlalchemy import select, update
 from telco_common.logging import configure_logging
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from ..db import bss_orders, create_schema, get_engine
+from ..db import create_schema, get_engine
 from ..settings import get_settings
-from .addon import ACTIVITIES, TASK_QUEUE, AddonPurchaseWorkflow
+from .addon import ACTIVITIES, TASK_QUEUE, WORKFLOWS
 
 log = configure_logging("workflow-worker")
 
 
-async def legacy_bss(client: Client, stop: asyncio.Event) -> None:
-    engine = get_engine()
+def bss_events_consumer(client: Client, loop: asyncio.AbstractEventLoop, stop: threading.Event) -> None:
+    """`bss-events` (legacy results published by the order-adapter) -> signal the waiting workflow.
+    Runs in a thread (Kafka client is blocking); signals are scheduled on the worker's event loop."""
+    from confluent_kafka import Consumer
+    from telco_common.streaming import StreamSettings
+
+    c = Consumer(StreamSettings().client_config() | {"group.id": "order-workflows", "enable.auto.commit": False,
+                                                     "auto.offset.reset": "earliest"})
+    c.subscribe(["bss-events"])
     while not stop.is_set():
-        try:
-            with engine.connect() as cx:
-                due = cx.execute(select(bss_orders).where(bss_orders.c.status == "SUBMITTED")).all()
-            now = datetime.now(UTC)
-            for b in due:
-                created = b.created_at if b.created_at.tzinfo else b.created_at.replace(tzinfo=UTC)
-                if now - created < timedelta(seconds=random.randint(20, 60)):
-                    continue
-                result = "REJECTED" if random.random() < 0.1 else "CONFIRMED"
-                with engine.begin() as cx:
-                    cx.execute(update(bss_orders).where(bss_orders.c.id == b.id).values(
-                        status=result, processed_at=now, reason=None if result == "CONFIRMED" else "offer not eligible"))
-                try:
-                    await client.get_workflow_handle(b.order_id).signal(AddonPurchaseWorkflow.bss_callback, result)
-                except Exception as e:  # noqa: BLE001 - the workflow's polling picks it up anyway
-                    log.warning("bss_callback_failed", order=b.order_id[-6:], error=str(e)[:120])
-                log.info("bss_processed", order=b.order_id[-6:], result=result)
-        except Exception as e:  # noqa: BLE001
-            log.warning("bss_loop_error", error=str(e)[:200])
-        await asyncio.sleep(5)
+        for m in c.consume(num_messages=50, timeout=1.0):
+            if m.error():
+                continue
+            try:
+                ev = json.loads(m.value())
+                fut = asyncio.run_coroutine_threadsafe(
+                    client.get_workflow_handle(ev["order_id"]).signal("bss_callback", ev["result"]), loop)
+                fut.result(timeout=10)
+                log.info("bss_event_signalled", order=ev["order_id"][-6:], result=ev["result"])
+            except Exception as e:  # noqa: BLE001 - workflow finished/unknown: its polling covers anything missed
+                log.warning("bss_signal_failed", error=str(e)[:160])
+        c.commit(asynchronous=True)
+    c.close()
 
 
 async def amain() -> None:
@@ -60,16 +59,20 @@ async def amain() -> None:
             await asyncio.sleep(min(2 + attempt, 10))
     else:
         raise SystemExit("temporal unreachable")
-    stop = asyncio.Event()
+    stop = threading.Event()
     # Legacy BSS can take only a few hundred calls/s: Temporal enforces a task-queue-wide activity rate
     # (across ALL worker pods) and a per-pod concurrency cap. Excess work waits durably in the queue
     # instead of hammering the legacy system; a bill-day spike becomes a backlog, not an outage.
     s = get_settings()
-    worker = Worker(client, task_queue=TASK_QUEUE, workflows=[AddonPurchaseWorkflow], activities=ACTIVITIES,
+    worker = Worker(client, task_queue=TASK_QUEUE, workflows=WORKFLOWS, activities=ACTIVITIES,
                     max_task_queue_activities_per_second=s.bss_max_rps,
                     max_concurrent_activities=s.bss_max_concurrency)
     log.info("workflow_worker_started", task_queue=TASK_QUEUE)
-    await asyncio.gather(worker.run(), legacy_bss(client, stop))
+    threading.Thread(target=bss_events_consumer, args=(client, asyncio.get_running_loop(), stop), daemon=True).start()
+    try:
+        await worker.run()
+    finally:
+        stop.set()
 
 
 def main() -> None:

@@ -14,6 +14,7 @@ API = os.environ.get("SMOKE_API", "http://core-api:8080")
 PAYMENTS = os.environ.get("SMOKE_PAYMENTS", "http://payments-service:8080")
 ASSISTANT = os.environ.get("SMOKE_ASSISTANT", "http://assistant-service:8080")
 WEB = os.environ.get("SMOKE_WEB", "http://web")
+ADAPTER = os.environ.get("SMOKE_ADAPTER", "http://order-adapter:8080")
 SUB = os.environ.get("SMOKE_SUBSCRIBER", "4915100000002")
 
 
@@ -49,6 +50,16 @@ def main() -> None:
     ask = httpx.post(f"{ASSISTANT}/v1/me/assistant/ask", headers=h, json={"question": "Have I paid my latest bill?"}, timeout=120)
     check("assistant (tools via broker)", ask.status_code == 200 and ask.json().get("status") in ("VERIFIED", "REPAIRED"),
           f"{ask.json().get('status')} · tools {ask.json().get('trace', {}).get('totals', {}).get('tool_calls')}")
+    plans = c.get("/v1/me/orders/plans/available", headers=h)
+    pj = plans.json() if plans.status_code == 200 else {}
+    target = next((x["code"] for x in pj.get("plans", []) if x["code"] != pj.get("current")), None)
+    prop = c.post("/v1/me/orders/plan", headers=h, json={"plan_code": target}) if target else None
+    ok = prop is not None and prop.status_code == 201
+    if ok:  # leave the customer's tariff untouched: decline the proposal
+        c.post(f"/v1/me/orders/{prop.json()['order_id']}/decline", headers=h)
+    check("tariff change proposal (order-events)", ok, f"{getattr(prop, 'status_code', '-')} -> {target}")
+    tmf = httpx.get(f"{ADAPTER}/tmf-api/productOrderingManagement/v4/productOrder/DEB-NOTEXIST", timeout=10)
+    check("order adapter (TMF622)", tmf.status_code == 404, str(tmf.status_code))
     sim = c.post("/v1/me/usage/simulate", data={"scenario": "us-trip-2-weeks"}, headers=h)
     check("select usage scenario", sim.status_code == 200 and sim.json()["bill"]["total"] > 0)
     up = c.post("/v1/me/usage/simulate", headers=h, files={"file": (

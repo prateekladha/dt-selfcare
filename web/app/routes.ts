@@ -9,6 +9,7 @@ export default [
     route("bills", "routes/bills.tsx"),
     route("bills/:cycle", "routes/bill.tsx"),
     route("insights", "routes/insights.tsx"),
+    route("plan", "routes/plan.tsx"),
     route("assistant", "routes/assistant.tsx"),
     route("system", "routes/system.tsx"),
   ]),

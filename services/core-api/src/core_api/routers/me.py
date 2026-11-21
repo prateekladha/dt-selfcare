@@ -35,31 +35,24 @@ def _subscriber(p: Principal):
 
 
 def _bill_summary(row) -> dict:
-    return {"id": row.id, "cycle": row.cycle, "total": row.total, "subtotal": row.subtotal, "vat": row.vat,
-            "currency": row.currency, "status": row.status, "amount_paid": row.amount_paid,
-            "outstanding": max(0, row.total - row.amount_paid), "issued_at": row.issued_at.isoformat(),
-            "due_date": row.due_date.isoformat()}
+    from ..services.bills import bill_summary
+
+    return bill_summary(row)
 
 
 @router.get("/home")
 def home(response: Response, p: Principal = Depends(current_principal)) -> dict:
     """One call builds the whole home screen (BFF-style aggregate). Profile, bills and notifications come
     from the event-invalidated cache (hit: zero DB queries); live usage/unbilled from the usage state."""
-    from ..services.home_cache import get_or_build
+    from ..services.home_cache import build_snapshot, get_or_build
 
     response.headers.update(NO_STORE)
 
     def build() -> dict:
-        sub = _subscriber(p)
-        history = list_bills(get_engine(), sub.id, 12)
-        with get_engine().connect() as cx:
-            notes = cx.execute(select(notifications).where(notifications.c.subscriber_id == sub.id)
-                               .order_by(notifications.c.created_at.desc()).limit(10)).all()
-        return {"sub": {"id": sub.id, "name": sub.name, "email": sub.email, "country": sub.country,
-                        "plan_code": sub.plan_code},
-                "bills": [_bill_summary(b) for b in history],
-                "notes": [{"id": n.id, "kind": n.kind, "title": n.title, "body": n.body,
-                           "created_at": n.created_at.isoformat(), "read": n.read_at is not None} for n in notes]}
+        try:
+            return build_snapshot(get_engine(), p.subscriber_id)
+        except LookupError as e:
+            raise HTTPException(404, "subscriber not found") from e
 
     snap, hit = get_or_build(get_valkey(), p.subscriber_id, build)
     response.headers["X-Home-Cache"] = "hit" if hit else "miss"

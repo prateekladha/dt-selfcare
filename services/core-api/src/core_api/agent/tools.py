@@ -190,6 +190,21 @@ def t_propose_addon(args: dict, ctx: ToolContext) -> dict:
             "status": "waiting for the customer's approval"}
 
 
+def t_propose_plan_change(args: dict, ctx: ToolContext) -> dict:
+    """WRITE (propose tier): prepares a tariff change for the customer to approve."""
+    from ..workflows.orders import OrderError, propose_plan_change
+
+    try:
+        o = propose_plan_change(ctx.engine, ctx.subscriber_id, args["plan_code"], source="assistant")
+    except OrderError as e:
+        return {"error": e.message}
+    pv = o["preview"]
+    return {"source": f"orders:{o['order_id']}", "proposal": True, "order_id": o["order_id"],
+            "new_tariff": pv["name"], "current_tariff": pv["from"],
+            "monthly_fee": f"{fmt_money(pv['old_monthly_fee'], pv['currency'])} -> {fmt_money(pv['monthly_fee'], pv['currency'])}",
+            "data": f"{pv['old_data']} -> {pv['data']}", "status": "waiting for the customer's approval"}
+
+
 CYCLE = {"type": "object", "properties": {"cycle": {"type": "string", "pattern": r"^\d{4}-\d{2}$",
                                                     "description": "billing month, YYYY-MM"}},
          "required": ["cycle"], "additionalProperties": False}
@@ -220,6 +235,11 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
          "Codes: DE-DATA-5GB, DE-DATA-20GB (Germany), PL-DATA-5GB (Poland).",
          {"type": "object", "properties": {"addon_code": {"type": "string", "enum": ["DE-DATA-5GB", "DE-DATA-20GB", "PL-DATA-5GB"]}},
           "required": ["addon_code"], "additionalProperties": False}, t_propose_addon, tier="propose"),
+    Tool("propose_plan_change", "Prepare a tariff change for the customer to approve (nothing changes until they approve). "
+         "Germany: DE-S (Mobile S, 10 GB), DE-M (Mobile M, 30 GB), DE-FLEX (Mobile Flex, 3 GB, pay per use); "
+         "Poland: PL-S (Mobile S, 15 GB), PL-FLEX (Mobile Flex, 5 GB). Only tariffs of the customer's market.",
+         {"type": "object", "properties": {"plan_code": {"type": "string", "enum": ["DE-S", "DE-M", "DE-FLEX", "PL-S", "PL-FLEX"]}},
+          "required": ["plan_code"], "additionalProperties": False}, t_propose_plan_change, tier="propose"),
 ]}
 
 

@@ -93,13 +93,12 @@ def outbox_loop(stop: threading.Event) -> None:
     stream = StreamSettings()
     engine = get_engine()
     p = Producer(stream.client_config() | {"acks": "all"})
-    topic = "payment-events"
     while not stop.is_set():
         with engine.connect() as cx:
             rows = cx.execute(select(outbox).where(outbox.c.published_at.is_(None))
                               .order_by(outbox.c.id).limit(100)).all()
         for row in rows:
-            p.produce(topic, key=row.event_key, value=row.payload.encode())
+            p.produce(row.topic, key=row.event_key, value=row.payload.encode())  # payment-events, order-events
         if rows and p.flush(10) == 0:
             with engine.begin() as cx:
                 cx.execute(update(outbox).where(outbox.c.id.in_([x.id for x in rows])).values(published_at=utcnow()))
@@ -130,6 +129,55 @@ def billing_loop(stop: threading.Event) -> None:
 
 
 SPINE_DIRTY: set[str] = set()
+
+ORDER_TEXT = {
+    ("ADDON", "COMPLETED"): "Your data add-on is active", ("ADDON", "FAILED"): "Your add-on order couldn't be completed",
+    ("PLAN", "COMPLETED"): "Your new tariff is active", ("PLAN", "FAILED"): "Your tariff change couldn't be completed",
+}
+
+
+def project_order_event(engine, r, ev: dict) -> bool:
+    """order-events projection: home-cache invalidation, assistant context, and (terminal states) a
+    notification + live push. Idempotent: notification alert_id = order:<id>:<status>."""
+    from .db import notifications
+    from .services.home_cache import bump
+
+    sub = ev["subscriber_id"]
+    bump(r, sub)
+    SPINE_DIRTY.add(sub)
+    title = ORDER_TEXT.get((ev.get("kind"), ev.get("status")))
+    if title is None:
+        return False
+    try:
+        with engine.begin() as cx:
+            cx.execute(insert(notifications).values(subscriber_id=sub, alert_id=f"order:{ev['order_id']}:{ev['status']}",
+                                                    kind=f"ORDER_{ev['status']}", title=title, body=ev.get("detail") or ""))
+    except IntegrityError:
+        return False  # redelivery
+    bump(r, sub)
+    r.publish(f"notif:{sub}", json.dumps({"kind": f"ORDER_{ev['status']}", "title": title, "body": ev.get("detail") or ""}))
+    return True
+
+
+def orders_loop(stop: threading.Event) -> None:
+    """Consumer of `order-events` (group order-projections)."""
+    stream = StreamSettings()
+    engine, r = get_engine(), get_valkey()
+    c = Consumer(stream.client_config() | {"group.id": "order-projections", "enable.auto.commit": False,
+                                           "auto.offset.reset": "earliest"})
+    c.subscribe(["order-events"])
+    while not stop.is_set():
+        for m in c.consume(num_messages=100, timeout=1.0):
+            if m.error():
+                continue
+            try:
+                ev = json.loads(m.value())
+                if project_order_event(engine, r, ev):
+                    log.info("order_notified", order=ev["order_id"][-6:], status=ev["status"])
+            except Exception as e:  # noqa: BLE001
+                log.warning("order_projection_failed", error=str(e)[:200])
+        c.commit(asynchronous=True)
+    c.close()
 
 
 def reconcile_loop(stop: threading.Event) -> None:
@@ -196,7 +244,7 @@ def main() -> None:
     import signal
 
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
-    threads = [threading.Thread(target=f, args=(stop,), daemon=True) for f in (alerts_loop, outbox_loop, spine_loop, billing_loop)]
+    threads = [threading.Thread(target=f, args=(stop,), daemon=True) for f in (alerts_loop, outbox_loop, spine_loop, billing_loop, orders_loop)]
     for t in threads:
         t.start()
     log.info("notifier_started")

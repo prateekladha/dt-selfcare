@@ -50,3 +50,27 @@ def get_or_build(r, sub: str, build: Callable[[], dict]) -> tuple[dict, bool]:
     except Exception:  # noqa: BLE001, S110
         pass
     return snap, False
+
+
+def build_snapshot(engine, sub_id: str) -> dict:
+    """The cached part of the home screen: profile, last 12 bills, last 10 notifications."""
+    from sqlalchemy import select
+
+    from ..db import notifications, subscribers
+    from .bills import bill_summary, list_bills
+
+    with engine.connect() as cx:
+        sub = cx.execute(select(subscribers).where(subscribers.c.id == sub_id)).first()
+        if sub is None:
+            raise LookupError(sub_id)
+        notes = cx.execute(select(notifications).where(notifications.c.subscriber_id == sub_id)
+                           .order_by(notifications.c.created_at.desc()).limit(10)).all()
+    return {"sub": {"id": sub.id, "name": sub.name, "email": sub.email, "country": sub.country, "plan_code": sub.plan_code},
+            "bills": [bill_summary(b) for b in list_bills(engine, sub_id, 12)],
+            "notes": [{"id": n.id, "kind": n.kind, "title": n.title, "body": n.body,
+                       "created_at": n.created_at.isoformat(), "read": n.read_at is not None} for n in notes]}
+
+
+def warm(r, engine, sub_id: str) -> None:
+    """Bill run: pre-build the snapshot so bill-day traffic hits the cache, not the database."""
+    get_or_build(r, sub_id, lambda: build_snapshot(engine, sub_id))
