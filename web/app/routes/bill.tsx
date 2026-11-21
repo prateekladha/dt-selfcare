@@ -6,7 +6,7 @@ import { Link } from "react-router";
 import { DeltaPill, ExplanationSection } from "~/components/Explain";
 import { PayButton } from "~/components/PayButton";
 import { Card, CardHeader, LinkButton, Pill } from "~/components/ui";
-import { api, PRIVATE } from "~/lib/api.server";
+import { api, streamed, PRIVATE } from "~/lib/api.server";
 import { cycleLabel, dateLabel, money } from "~/lib/format";
 import type { ExplanationResponse, Line } from "~/lib/types";
 import { useSnapshot } from "./_app";
@@ -27,8 +27,8 @@ export async function loader({ request, params }: Route.LoaderArgs) {
     api<ExplanationResponse>(request, `/v1/me/bills/${cycle}/explanation?ai=false`),
     cycle === "current" ? Promise.resolve(null) : api<BillDetail>(request, `/v1/me/bills/${cycle}`),
   ]);
-  const narrative = api<ExplanationResponse>(request, `/v1/me/bills/${cycle}/explanation?lang=${lang}`);  // LLM, streamed
-  const daily = api<DailyUsage>(request, `/v1/me/usage/daily${cycle === "current" ? "" : `?cycle=${cycle}`}`);  // streamed
+  const narrative = streamed(api<ExplanationResponse>(request, `/v1/me/bills/${cycle}/explanation?lang=${lang}`));  // LLM, streamed
+  const daily = streamed(api<DailyUsage>(request, `/v1/me/usage/daily${cycle === "current" ? "" : `?cycle=${cycle}`}`));  // streamed
   return { facts, narrative, daily, bill, lang, cycle };
 }
 
