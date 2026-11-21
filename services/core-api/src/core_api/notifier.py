@@ -107,6 +107,31 @@ def outbox_loop(stop: threading.Event) -> None:
 SPINE_DIRTY: set[str] = set()
 
 
+def reconcile_loop(stop: threading.Event) -> None:
+    """Payment reconciler: every non-final payment is re-checked against the gateway's status API on a
+    backoff schedule. Runs on startup too, so anything missed while the system was down is caught up."""
+    from datetime import UTC, datetime
+
+    from .services.gateway import Razorpay
+    from .services.payments import due_for_check, reconcile_order
+    from .settings import get_settings
+
+    s = get_settings()
+    if not s.razorpay_key_id:
+        log.info("reconciler_disabled_no_gateway_keys")
+        return
+    gw = Razorpay(s.razorpay_key_id, s.razorpay_key_secret, s.razorpay_webhook_secret)
+    engine = get_engine()
+    while not stop.is_set():
+        try:
+            for order_id in due_for_check(engine, datetime.now(UTC)):
+                res = reconcile_order(engine, gw, order_id, trigger="reconciler")
+                log.info("payment_reconciled", order=order_id[-6:], result=res["result"])
+        except Exception as e:  # noqa: BLE001 - keep reconciling; next tick retries
+            log.warning("reconcile_failed", error=str(e)[:200])
+        stop.wait(15)
+
+
 def spine_loop(stop: threading.Event) -> None:
     """Layer 1 builder. Event-driven (alert -> refresh that subscriber immediately) plus a sweep every
     60 s that picks up new CDR totals, issued bills and payments. Content-hash upserts make an unchanged
@@ -146,7 +171,7 @@ def main() -> None:
     import signal
 
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
-    threads = [threading.Thread(target=f, args=(stop,), daemon=True) for f in (alerts_loop, outbox_loop, spine_loop)]
+    threads = [threading.Thread(target=f, args=(stop,), daemon=True) for f in (alerts_loop, outbox_loop, spine_loop, reconcile_loop)]
     for t in threads:
         t.start()
     log.info("notifier_started")

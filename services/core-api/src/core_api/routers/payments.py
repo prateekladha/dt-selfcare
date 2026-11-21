@@ -12,7 +12,7 @@ from ..deps import get_usage_state
 from ..security import Principal, current_principal
 from ..services.bills import unbilled
 from ..services.gateway import PaymentGateway, Razorpay
-from ..services.payments import PaymentError, create_payment, get_payment, mark_paid
+from ..services.payments import PaymentError, create_payment, get_payment, reconcile_order
 from ..services.resilience import CircuitOpen
 from ..settings import get_settings
 
@@ -76,29 +76,39 @@ def create(body: CreatePaymentIn, p: Principal = Depends(current_principal),
 
 @router.post("/v1/me/payments/{payment_id}/confirm")
 def confirm(payment_id: str, body: ConfirmIn, p: Principal = Depends(current_principal)) -> dict:
+    """Browser callback after checkout. Its signature is verified, but it is only a TRIGGER: the
+    status is taken from the gateway's status API (reconcile_order)."""
     row = get_payment(get_engine(), p.subscriber_id, payment_id)
     if row is None:
         raise HTTPException(404, "payment not found")
     gw = gateway_for(p.country, p.subscriber_id)
     if not gw.verify_client_signature(row.gateway_order_id, body.gateway_payment_id, body.signature):
         raise HTTPException(400, "invalid payment signature")
-    paid, gw_payment_id = gw.is_order_paid(row.gateway_order_id)  # confirm with the gateway, server-side
-    if not paid:
-        return {"payment_id": row.id, "status": "PENDING"}
-    _, payment = mark_paid(get_engine(), row.gateway_order_id, gw_payment_id or body.gateway_payment_id)
-    return payment or {}
+    res = reconcile_order(get_engine(), gw, row.gateway_order_id, trigger="browser")
+    return res.get("payment") or {"payment_id": row.id, "status": row.status}
 
 
 @router.get("/v1/me/payments/{payment_id}")
-def status(payment_id: str, p: Principal = Depends(current_principal)) -> dict:
+def status(payment_id: str, refresh: bool = False, p: Principal = Depends(current_principal)) -> dict:
     row = get_payment(get_engine(), p.subscriber_id, payment_id)
     if row is None:
         raise HTTPException(404, "payment not found")
-    return {"payment_id": row.id, "status": row.status, "amount": row.amount, "currency": row.currency}
+    if refresh and row.status != "PAID":
+        res = reconcile_order(get_engine(), gateway_for(p.country, p.subscriber_id), row.gateway_order_id, trigger="poll")
+        return res.get("payment") or {}
+    return {"payment_id": row.id, "status": row.status, "amount": row.amount, "currency": row.currency,
+            "gateway_status": row.gateway_status, "check_attempts": row.check_attempts,
+            "next_check_at": row.next_check_at.isoformat() if row.next_check_at else None}
+
+
+WEBHOOK_EVENTS = {"payment.authorized", "payment.captured", "payment.failed", "order.paid"}
 
 
 @router.post("/v1/webhooks/razorpay", include_in_schema=False)
 async def razorpay_webhook(request: Request, x_razorpay_signature: str = Header(default="")) -> dict:
+    """Webhook = trigger only. After verifying the signature we take just the order id and re-read the
+    real status from Razorpay's status API, so duplicated, delayed or out-of-order events (e.g. a
+    'payment.failed' for a dropped attempt arriving after 'payment.captured') cannot corrupt state."""
     body = await request.body()
     s = get_settings()
     try:
@@ -108,8 +118,13 @@ async def razorpay_webhook(request: Request, x_razorpay_signature: str = Header(
     if not gw.verify_webhook(body, x_razorpay_signature):
         raise HTTPException(401, "bad signature")
     event = await request.json()
-    if event.get("event") in ("payment.captured", "order.paid"):
-        entity = event["payload"]["payment"]["entity"]
-        settled, _ = mark_paid(get_engine(), entity["order_id"], entity["id"])
-        return {"ok": True, "settled": settled}
-    return {"ok": True, "ignored": event.get("event")}
+    name = event.get("event")
+    if name not in WEBHOOK_EVENTS:
+        return {"ok": True, "ignored": name}
+    payload = event.get("payload", {})
+    order_id = (payload.get("payment", {}).get("entity", {}).get("order_id")
+                or payload.get("order", {}).get("entity", {}).get("id"))
+    if not order_id:
+        return {"ok": True, "ignored": "no order id"}
+    res = reconcile_order(get_engine(), gw, order_id, trigger="webhook")
+    return {"ok": True, "event": name, "result": res["result"], "settled": res["result"] == "paid"}
