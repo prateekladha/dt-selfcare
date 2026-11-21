@@ -11,10 +11,11 @@ Events (SSE): step · step_done · token · reset · repairing · replace · don
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 import structlog
@@ -61,22 +62,41 @@ def _label(tool: str, args: dict) -> str:
     return tpl.replace(" {cycle}", "")
 
 
-def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: str = "en") -> Iterator[dict]:
+SESSION_TURNS, SESSION_TTL_S = 6, 24 * 3600
+
+
+def load_history(r, sub: str, sid: str) -> list[dict]:
+    return [json.loads(x) for x in r.lrange(f"chat:{sub}:{sid}", 0, SESSION_TURNS - 1)][::-1]
+
+
+def save_turn(r, sub: str, sid: str, q: str, a: str) -> None:
+    key = f"chat:{sub}:{sid}"
+    pipe = r.pipeline()
+    pipe.lpush(key, json.dumps({"q": q[:400], "a": _CITE.sub("", a)[:1200]}))
+    pipe.ltrim(key, 0, SESSION_TURNS - 1)
+    pipe.expire(key, SESSION_TTL_S)
+    pipe.execute()
+
+
+async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: str = "en",
+                     history: list[dict] | None = None) -> AsyncIterator[dict]:
     t0 = time.monotonic()
     trace = ctx.trace
     trace.update({"prompt_version": PROMPT_VERSION, "stages": [], "tool_calls": [], "attempts": []})
     broker = Broker(list(TOOLS))
     tools = declarations(list(TOOLS))
     today = datetime.now(UTC).strftime("%d %B %Y")
-    messages: list[dict] = [{"role": "system", "content": SYSTEM},  # stable prefix (+ tool decls) -> prefix cache
-                            {"role": "user", "content": f"Today is {today}. Reply in {'German' if lang == 'de' else 'Polish' if lang == 'pl' else 'English'}.\n\n{question}"}]
+    messages: list[dict] = [{"role": "system", "content": SYSTEM}]  # stable prefix (+ tool decls) -> prefix cache
+    for h in history or []:  # conversation memory: earlier questions and final answers (no tool payloads)
+        messages += [{"role": "user", "content": h["q"]}, {"role": "assistant", "content": h["a"]}]
+    messages.append({"role": "user", "content": f"Today is {today}. Reply in {'German' if lang == 'de' else 'Polish' if lang == 'pl' else 'English'}.\n\n{question}"})
     answer, status, calls = "", "UNVERIFIED", 0
     try:
         for turn in range(MAX_TURNS):
             allow_tools = turn < MAX_TURNS - 1 and calls < MAX_TOOL_CALLS
             streamed = False
             res = None
-            for kind, val in llm.stream("agent", messages, tools if allow_tools else None):
+            async for kind, val in llm.astream("agent", messages, tools if allow_tools else None):
                 if kind == "token":
                     streamed = True
                     yield {"type": "token", "text": val}
@@ -96,7 +116,7 @@ def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: str = "e
                     except json.JSONDecodeError:
                         args = {}
                     yield {"type": "step", "tool": c["name"], "label": _label(c["name"], args)}
-                    out = broker.request(c["name"], c["arguments"] or "{}", ctx)
+                    out = await asyncio.to_thread(broker.request, c["name"], c["arguments"] or "{}", ctx)
                     yield {"type": "step_done", "tool": c["name"], "ok": out.decision == "EXECUTE" and "error" not in out.result}
                     messages.append({"role": "tool", "tool_call_id": c["id"], "content": json.dumps(out.result, default=str)[:3800]})
                 continue
@@ -116,7 +136,7 @@ def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: str = "e
             messages += [{"role": "assistant", "content": answer},
                          {"role": "user", "content": "Problems: " + "; ".join(problems[:6]) +
                           ". Rewrite the answer so every number appears in the tool results you cite, with [S#] citations."}]
-            rep = llm.chat("repair", messages)
+            rep = await llm.achat("repair", messages)
             trace["stages"].append(rep.as_trace())
             answer = rep.text
         if trace["attempts"] and len(trace["attempts"]) > 1:
@@ -143,11 +163,13 @@ def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: str = "e
     trace["totals"]["cache_hit_ratio"] = round(trace["totals"]["cache_hit_tokens"] / pt, 3) if pt else None
     trace["latency_ms"] = int((time.monotonic() - t0) * 1000)
     citations = [broker.source_meta[lab] for lab in cited]
-    try:
+    def persist() -> None:
         with engine.begin() as cx:
             cx.execute(insert(agent_traces).values(id=str(uuid.uuid4()), subscriber_id=ctx.subscriber_id, question=question[:500],
                                                    status=status, answer=answer, trace=json.dumps(trace, default=str),
                                                    cost_usd=str(trace["totals"]["cost_usd"])))
+    try:
+        await asyncio.to_thread(persist)
     except Exception as e:  # noqa: BLE001
         log.warning("trace_persist_failed", error=str(e)[:200])
     yield {"type": "done", "status": status, "answer": answer, "citations": citations, "trace": trace}

@@ -1,4 +1,5 @@
 """Assistant: multi-step tool calling through the broker, streamed; structured single-call explanation."""
+import asyncio
 import json
 from datetime import UTC, datetime
 
@@ -67,7 +68,14 @@ def scripted_llm(r, turns):
         content = json.dumps(val) if kind == "json" else val
         return httpx.Response(200, json={"choices": [{"message": {"content": content}}], **USAGE})
     s = Settings(deepseek_api_key="k", database_url="sqlite://")
-    return LLM(s, r, "deepseek", http=httpx.Client(transport=httpx.MockTransport(handler)))
+    t = httpx.MockTransport(handler)
+    return LLM(s, r, "deepseek", http=httpx.Client(transport=t), ahttp=httpx.AsyncClient(transport=t))
+
+
+def collect(gen):
+    async def go():
+        return [e async for e in gen]
+    return asyncio.run(go())
 
 
 def test_multi_step_tool_calling_streams_steps_tokens_and_verifies(world):
@@ -78,7 +86,7 @@ def test_multi_step_tool_calling_streams_steps_tokens_and_verifies(world):
         ("text", "Your October bill went up because of roaming in zone Z2: 372 MB [S2][S3]."),
     ])
     ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
-    events = list(run_stream("Why did my October bill go up?", ctx, llm, engine))
+    events = collect(run_stream("Why did my October bill go up?", ctx, llm, engine))
     kinds = [e["type"] for e in events]
     assert kinds.count("step") == 3 and "token" in kinds and kinds[-1] == "done"
     done = events[-1]
@@ -103,7 +111,7 @@ def test_unsupported_number_in_answer_is_repaired(world):
                            ("text", "It rose by 999 EUR [S1]."),
                            ("text", "Roaming in zone Z2 added 372 MB [S1].")])
     ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
-    events = list(run_stream("Why is it higher?", ctx, llm, engine))
+    events = collect(run_stream("Why is it higher?", ctx, llm, engine))
     assert "repairing" in [e["type"] for e in events] and events[-1]["status"] == "REPAIRED"
 
 
@@ -126,7 +134,27 @@ def test_greeting_is_a_single_conversational_answer_without_repairs(world):
     engine, r, state = world
     llm = scripted_llm(r, [("text", "Hi! I can help with your bills, usage, plan and payments. What would you like to know?")])
     ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
-    events = list(run_stream("Hello", ctx, llm, engine))
+    events = collect(run_stream("Hello", ctx, llm, engine))
     kinds = [e["type"] for e in events]
     assert "repairing" not in kinds and "replace" not in kinds and kinds.count("done") == 1
     assert events[-1]["status"] == "CONVERSATIONAL" and events[-1]["answer"].startswith("Hi!")
+
+
+def test_session_memory_feeds_previous_turns_into_the_next_question(world):
+    from core_api.agent.loop import load_history, save_turn
+    engine, r, state = world
+    save_turn(r, SUB, "sess-0001", "Why did my October bill go up?", "Roaming in zone Z2 [S1].")
+    history = load_history(r, SUB, "sess-0001")
+    assert history == [{"q": "Why did my October bill go up?", "a": "Roaming in zone Z2 ."}]
+    seen = []
+
+    def handler(req):
+        seen.append(json.loads(req.content))
+        return sse([{"choices": [{"delta": {"content": "It was roaming in zone Z2."}}]}, USAGE])
+    t = httpx.MockTransport(handler)
+    llm = LLM(Settings(deepseek_api_key="k", database_url="sqlite://"), r, "deepseek",
+              http=httpx.Client(transport=t), ahttp=httpx.AsyncClient(transport=t))
+    collect(run_stream("And what was it before?", ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm), llm, engine,
+                       history=history))
+    roles = [m["role"] for m in seen[0]["messages"]]
+    assert roles == ["system", "user", "assistant", "user"] and "October" in seen[0]["messages"][1]["content"]

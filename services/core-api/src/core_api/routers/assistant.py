@@ -11,7 +11,7 @@ from telco_common.flags import flag_bool
 
 from ..agent.embed import get_embedder
 from ..agent.factory import build_agent, build_llm
-from ..agent.loop import run_stream
+from ..agent.loop import load_history, run_stream, save_turn
 from ..agent.tools import ToolContext
 from ..db import agent_traces, get_engine
 from ..deps import RateLimiter, get_usage_state, get_valkey
@@ -22,7 +22,8 @@ router = APIRouter(prefix="/v1/me/assistant", tags=["assistant"])
 
 
 class AskIn(BaseModel):
-    question: str = Field(min_length=3, max_length=400)
+    question: str = Field(min_length=2, max_length=400)
+    session_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9-]{8,40}$")
     lang: str = Field(default="en", pattern="^(en|de|pl)$")
     cycle: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
 
@@ -48,23 +49,33 @@ def _guard(p: Principal) -> None:
         raise HTTPException(429, "daily assistant limit reached")
 
 
-def _events(p: Principal, question: str, lang: str):
+async def _events(p: Principal, body: AskIn):
+    """Async event stream; conversation memory per session (last 6 turns, 24 h) in Valkey."""
+    import uuid
+
     try:
         llm = build_llm(p.country, p.subscriber_id)
     except RuntimeError as e:
         raise HTTPException(503, str(e)) from e
+    sid = body.session_id or uuid.uuid4().hex[:16]
+    r = get_valkey()
+    history = load_history(r, p.subscriber_id, sid)
     ctx = ToolContext(p.subscriber_id, p.country, get_engine(), get_usage_state(), get_embedder(), llm)
-    return run_stream(question, ctx, llm, get_engine(), lang)
+    yield {"type": "session", "session_id": sid, "turns": len(history)}
+    async for ev in run_stream(body.question, ctx, llm, get_engine(), body.lang, history):
+        if ev["type"] == "done" and ev.get("answer"):
+            save_turn(r, p.subscriber_id, sid, body.question, ev["answer"])
+            ev["session_id"] = sid
+        yield ev
 
 
 @router.post("/stream")
-def ask_stream(body: AskIn, p: Principal = Depends(current_principal)) -> StreamingResponse:
-    """Multi-step tool-calling agent, streamed as Server-Sent Events (step, token, repairing, replace, done)."""
+async def ask_stream(body: AskIn, p: Principal = Depends(current_principal)) -> StreamingResponse:
+    """Multi-step tool-calling agent, streamed as Server-Sent Events (session, step, token, repairing, replace, done)."""
     _guard(p)
-    events = _events(p, body.question, body.lang)
 
-    def sse():
-        for ev in events:
+    async def sse():
+        async for ev in _events(p, body):
             yield f"data: {json.dumps(ev, default=str)}\n\n"
 
     return StreamingResponse(sse(), media_type="text/event-stream",
@@ -72,16 +83,16 @@ def ask_stream(body: AskIn, p: Principal = Depends(current_principal)) -> Stream
 
 
 @router.post("/ask")
-def ask(body: AskIn, response: Response, p: Principal = Depends(current_principal)) -> dict:
+async def ask(body: AskIn, response: Response, p: Principal = Depends(current_principal)) -> dict:
     """Same agent, non-streamed (returns the final 'done' event)."""
     response.headers["Cache-Control"] = "private, no-store"
     _guard(p)
-    done = {}
-    for ev in _events(p, body.question, body.lang):
+    done: dict = {}
+    async for ev in _events(p, body):
         if ev["type"] == "done":
             done = ev
     return {"status": done.get("status"), "answer": done.get("answer"), "citations": done.get("citations", []),
-            "provider": "llm", "trace": done.get("trace", {})}
+            "session_id": done.get("session_id"), "trace": done.get("trace", {})}
 
 
 @router.get("/traces")

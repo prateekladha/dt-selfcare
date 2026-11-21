@@ -32,7 +32,13 @@ class Settings(BaseSettings):
     selfhosted_llm_url: str = ""  # vLLM in-region (OpenAI-compatible)
     selfhosted_llm_key: str = ""
     selfhosted_llm_model: str = "deepseek-ai/DeepSeek-V3"
-    llm_timeout_s: float = 12.0
+    llm_timeout_s: float = 30.0
+    # LLM gateway (LiteLLM): provider keys, routing, fallback and rate limits live in the gateway;
+    # services only know the gateway URL, a gateway key and a model alias.
+    llm_gateway_url: str = ""
+    llm_gateway_key: str = ""
+    llm_model_alias: str = "billing-llm"
+    llm_max_concurrency: int = 32  # per pod
     ai_daily_limit_per_subscriber: int = 20
 
     bill_due_days: int = 14

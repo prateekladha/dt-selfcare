@@ -105,16 +105,17 @@ export default function Assistant() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);  // follow-up questions keep context
   const endRef = useRef<HTMLDivElement>(null);
   const patch = (fn: (t: Turn) => Turn) => setTurns((ts) => ts.map((t, i) => (i === ts.length - 1 ? fn(t) : t)));
 
   async function ask(question: string) {
-    if (question.trim().length < 3 || busy) return;
+    if (question.trim().length < 2 || busy) return;
     setBusy(true); setQ("");
     setTurns((ts) => [...ts, { q: question, text: "", steps: [], citations: [] }]);
     setTimeout(() => endRef.current?.scrollIntoView({ behavior: "smooth" }), 30);
     try {
-      const res = await fetch("/api/ask/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question, lang: "en" }) });
+      const res = await fetch("/api/ask/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question, lang: "en", session_id: sessionId ?? undefined }) });
       if (!res.ok || !res.body) { const j = await res.json().catch(() => ({})); patch((t) => ({ ...t, error: j.detail ?? "The assistant is unavailable right now." })); return; }
       const reader = res.body.getReader();
       const dec = new TextDecoder();
@@ -129,7 +130,8 @@ export default function Assistant() {
           buf = buf.slice(idx + 2);
           if (!line.startsWith("data:")) continue;
           const ev = JSON.parse(line.slice(5));
-          if (ev.type === "token") patch((t) => ({ ...t, text: t.text + ev.text }));
+          if (ev.type === "session") setSessionId(ev.session_id);
+          else if (ev.type === "token") patch((t) => ({ ...t, text: t.text + ev.text }));
           else if (ev.type === "reset") patch((t) => ({ ...t, text: "" }));
           else if (ev.type === "step") patch((t) => ({ ...t, steps: [...t.steps, { label: ev.label, done: false }] }));
           else if (ev.type === "step_done") patch((t) => ({ ...t, steps: t.steps.map((s, i) => (i === t.steps.length - 1 ? { ...s, done: true, ok: ev.ok } : s)) }));
@@ -147,9 +149,15 @@ export default function Assistant() {
 
   return (
     <div className="mx-auto max-w-[820px] space-y-6 pb-28">
-      <div>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
         <h1 className="display text-[34px] font-extrabold leading-tight">Ask about your bill</h1>
         <p className="mt-2 text-[15px] leading-relaxed text-[var(--ink-3)]">Answers come from your own bills, usage records, payments and the tariff rules. Each one shows its sources.</p>
+        </div>
+        {turns.length > 0 && (
+          <button type="button" onClick={() => { setTurns([]); setSessionId(null); }} disabled={busy}
+                  className="h-9 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3.5 text-sm font-semibold hover:bg-[var(--chip)] disabled:opacity-50">New chat</button>
+        )}
       </div>
 
       {turns.length === 0 && (
@@ -176,7 +184,7 @@ export default function Assistant() {
             className="sticky bottom-20 flex items-center gap-2 rounded-[var(--radius)] border border-[var(--line-strong)] bg-[var(--surface)] p-2 shadow-[var(--shadow-lg)] md:bottom-6">
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ask about your bills, usage or plan" aria-label="Your question"
                className="h-11 min-w-0 flex-1 bg-transparent px-3 text-[15px] outline-none" maxLength={400} />
-        <button disabled={busy || q.trim().length < 3} aria-label="Ask" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)] text-white disabled:opacity-40">
+        <button disabled={busy || q.trim().length < 2} aria-label="Ask" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)] text-white disabled:opacity-40">
           {busy ? <Loader2 size={18} className="animate-spin" /> : <ArrowUp size={18} />}
         </button>
       </form>

@@ -5,11 +5,11 @@ import type { Route } from "./+types/api.ask-stream";
 // Streams the agent's Server-Sent Events from core-api to the browser (token never leaves the server).
 export async function action({ request }: Route.ActionArgs) {
   const { token } = await freshToken(request);
-  const { question, lang } = await request.json();
+  const { question, lang, session_id } = await request.json();
   const upstream = await rawCore("/v1/me/assistant/stream", {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ question, lang }),
+    body: JSON.stringify({ question, lang, session_id }),
     signal: AbortSignal.timeout(120_000),
   });
   if (!upstream.ok || !upstream.body) {

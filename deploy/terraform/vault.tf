@@ -33,6 +33,11 @@ resource "random_password" "source_token" {
   special = false
 }
 
+resource "random_password" "llm_gateway_key" {
+  length  = 40
+  special = false
+}
+
 resource "random_password" "admin_token_secret" {
   length  = 40
   special = false
@@ -50,6 +55,7 @@ locals {
     "demo-password"           = random_password.demo.result
     "collector-source-tokens" = jsonencode({ "emu-mediation-01" = random_password.source_token.result, "emu-loadgen-01" = random_password.source_token.result })
     "source-token"            = random_password.source_token.result
+    "llm-gateway-key"         = "sk-${random_password.llm_gateway_key.result}"
   }
 }
 
