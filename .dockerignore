@@ -6,3 +6,4 @@ web/node_modules
 web/build
 deploy
 docs
+!deploy/docker/
