@@ -4,6 +4,7 @@ import { useRevalidator } from "react-router";
 import { CheckCircle2, CreditCard, Loader2 } from "lucide-react";
 import { toast } from "./Toast";
 import { Button } from "./ui";
+import { money } from "~/lib/format";
 
 declare global {
   interface Window { Razorpay?: any }
@@ -28,6 +29,14 @@ function declineText(desc?: string): string {
   return desc ? `Payment failed: ${desc}` : "Payment failed. Nothing was charged; please try again.";
 }
 
+/** What the checkout header says. When the gateway charges another currency than the bill's (demo:
+ *  INR), the customer sees both amounts and the rate, so the ₹ figure in the checkout isn't a surprise. */
+function describe(purpose: "BILL" | "ADVANCE", p: { amount: number; currency: string; charged_amount: number; charged_currency: string; fx_rate?: string | null }) {
+  const what = purpose === "BILL" ? "Bill payment" : "Pay unbilled usage";
+  if (!p.charged_currency || p.charged_currency === p.currency) return what;
+  return `${what}: ${money(p.amount, p.currency)} charged as ${money(p.charged_amount, p.charged_currency)} (1 ${p.currency} = ${p.fx_rate} ${p.charged_currency})`;
+}
+
 /** Tap to pay. One idempotency key per button instance: double taps and retries reuse the same gateway
  *  order, so the customer can never be charged twice for one intent. The button keeps its size in every
  *  state (progress is shown inside it) and messages go to the global toast, so nothing around it moves. */
@@ -49,7 +58,7 @@ export function PayButton({ purpose, billId, label, name, contact, email, varian
       await loadCheckout();
       const rzp = new window.Razorpay!({
         key: p.checkout.key_id, order_id: p.order_id, amount: p.charged_amount, currency: p.charged_currency,
-        name: "Self-care", description: purpose === "BILL" ? "Bill payment" : "Pay unbilled usage",
+        name: "Self-care", description: describe(purpose, p),
         prefill: { name, ...(contact ? { contact } : {}), ...(email ? { email } : {}) },  // skips the gateway's contact prompt
         theme: { color: "#E20074" },
         handler: async (r: any) => {
