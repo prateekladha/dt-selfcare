@@ -11,7 +11,7 @@ export const headers = () => PRIVATE;
 
 type Plan = { code: string; name: string; monthly_fee: number; data_mb: number; voice_min: number | null; sms: number | null; overage_policy: string };
 type Available = { current: string; currency: string; plans: Plan[] };
-type Proposal = { order_id: string; preview: { name: string; from: string; monthly_fee: number; old_data: string; data: string; currency: string } };
+type Proposal = { order_id: string; preview: { name: string; from: string; monthly_fee: number; old_data: string; data: string; currency: string; this_month_fee: number; days_old: number; days_new: number } };
 
 export async function loader({ request }: Route.LoaderArgs) {
   return api<Available>(request, "/v1/me/orders/plans/available");
@@ -37,13 +37,13 @@ export default function ChangePlan({ loaderData }: Route.ComponentProps) {
     <div className="space-y-6">
       <div>
         <h1 className="display text-[34px] font-extrabold">Change tariff</h1>
-        <p className="mt-1 text-[15px] text-[var(--ink-3)]">Pick a tariff. Nothing changes until you approve; the switch is then confirmed by the network.</p>
+        <p className="mt-1 text-[15px] text-[var(--ink-3)]">Pick a tariff. Nothing changes until you approve; the switch is then confirmed by the network. The month you switch is pro-rated by day.</p>
       </div>
 
       {proposal && (
         <OrderCard kind="PLAN" orderId={proposal.order_id} title={`${proposal.preview.from} → ${proposal.preview.name}`}
                    extra={`Data ${proposal.preview.old_data} → ${proposal.preview.data}`}
-                   price={`${money(proposal.preview.monthly_fee, proposal.preview.currency)} / month + VAT`} />
+                   price={`${money(proposal.preview.monthly_fee, proposal.preview.currency)} / month + VAT (this month ${money(proposal.preview.this_month_fee, proposal.preview.currency)}: ${proposal.preview.days_old} days old tariff, ${proposal.preview.days_new} days new)`} />
       )}
       {err && <p className="text-sm font-medium text-[var(--bad)]">{err}</p>}
 

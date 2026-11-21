@@ -57,6 +57,11 @@ flowchart LR
 
 ## 3. Containers (C4 level 2)
 
+> The service split, LLM gateway, Temporal workflows, order/bss event streams, circuit breakers and
+> bill-day preparation are described in **[PLATFORM.md](PLATFORM.md)**, which supersedes the
+> "core-api (modular monolith)" box below. Payments, the assistant and the order adapter now run as
+> separate services.
+
 ```mermaid
 flowchart TB
   subgraph Edge
@@ -309,7 +314,11 @@ Measured: **14,721 records/s sustained on one 1-OCPU node**, 0 retries or duplic
 | Valkey unavailable | Usage/unbilled stale; home may fail | Aggregator blocks with backoff (never skips); AOF every second; rebuild from stream or raw archive |
 | OCI Streaming unavailable | Alerts delayed | Collector answers 503 + Retry-After; sources retry |
 | Poison message | Nothing | Pushed to `dlq:{p}` list, partition continues |
-| LLM down / slow / hallucinates | Template explanation | Breaker per provider, 12 s timeout, grounding check |
+| LLM provider down / slow | Answer from the fallback provider (Mistral EU) | Gateway retries, cooldown, fallback; per-pod concurrency limit |
+| All LLM providers down / answer fails verification | "The explanation isn't available right now"; bill breakdown unaffected | No templates by design; numbers verified against sources or not shown |
+| core-api down | Last good account view with "as of HH:MM" banner; auto-refresh | opossum breaker in the BFF; stale snapshot (≤ 1 h) or styled outage page |
+| payments / assistant service down | Pay button / assistant replaced by a clear notice | Breaker per service; the rest of the app works |
+| Legacy order system slow or at capacity (bill day) | "In line for the network system…", notification when done | Per-country Temporal task queue rate-limited to legacy capacity; durable |
 | Razorpay down | "Try again shortly" | Breaker; idempotent retry, no double charge |
 | Browser closes after paying | Bill marked paid anyway | Webhook path settles; conditional update makes it idempotent |
 | flagd down | Safe defaults (AI off, payments on, thresholds 50/80/100) | Provider fallback values |

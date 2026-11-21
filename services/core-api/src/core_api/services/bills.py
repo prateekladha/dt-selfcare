@@ -19,6 +19,7 @@ from telco_common.models import cycle_of
 from telco_common.usage_state import UsageState
 
 from ..db import bills, payments, subscribers
+from .plan_history import segments
 
 
 def cycle_bounds(cycle: str) -> tuple[datetime, datetime]:
@@ -65,7 +66,9 @@ def close_cycle(engine: Engine, state: UsageState, cycle: str, settle_before: st
                 billed = {k: int(v) for k, v in json.loads(prev_row.rated_counters).items()}
                 now_prev = state.counters(sub_id, prev)
                 if now_prev != billed:
-                    delta = rate(sub_id, prev, plan, now_prev).subtotal - rate(sub_id, prev, plan, billed).subtotal
+                    pseg = segments(engine, sub_id, prev, plan_code)
+                    delta = (rate(sub_id, prev, plan, now_prev, segments=pseg).subtotal
+                             - rate(sub_id, prev, plan, billed, segments=pseg).subtotal)
                     if delta:
                         y, m = map(int, prev.split("-"))
                         adjustments.append(BillLine(
@@ -73,7 +76,7 @@ def close_cycle(engine: Engine, state: UsageState, cycle: str, settle_before: st
                             label=f"Late usage from {datetime(y, m, 1).strftime('%B %Y')} (CDRs received after that bill)",
                             amount=delta))
                     late_counters = now_prev
-            bill = rate(sub_id, cycle, plan, counters, adjustments)
+            bill = rate(sub_id, cycle, plan, counters, adjustments, segments=segments(engine, sub_id, cycle, plan_code))
             advance = cx.execute(select(func.coalesce(func.sum(payments.c.amount), 0)).where(
                 payments.c.subscriber_id == sub_id, payments.c.purpose == "ADVANCE", payments.c.status == "PAID",
                 payments.c.created_at >= start, payments.c.created_at < end)).scalar_one()
@@ -118,9 +121,19 @@ def get_bill_row(engine: Engine, subscriber_id: str, cycle: str):
                                               bills.c.cycle == cycle)).first()
 
 
-def unbilled(state: UsageState, subscriber_id: str, plan_code: str, now: datetime | None = None) -> Bill:
+_LOOKUP = object()
+
+
+def unbilled(state: UsageState, subscriber_id: str, plan_code: str, now: datetime | None = None,
+             engine: Engine | None = None, seg=_LOOKUP) -> Bill:
+    """Current cycle so far, pro-rated if the tariff changed this cycle. `seg` lets the home screen pass
+    the segments from its event-invalidated cache instead of querying the tariff history."""
+    from ..db import get_engine
+
     cycle = cycle_of(now or datetime.now(UTC))
-    return rate(subscriber_id, cycle, get_plan(plan_code), state.counters(subscriber_id, cycle))
+    if seg is _LOOKUP:
+        seg = segments(engine or get_engine(), subscriber_id, cycle, plan_code)
+    return rate(subscriber_id, cycle, get_plan(plan_code), state.counters(subscriber_id, cycle), segments=seg)
 
 
 def cli() -> None:
