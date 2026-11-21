@@ -138,6 +138,15 @@ message) before the up-front degradation kicks in.
 - **Rolling deploys:** a tab never reloads towards a version it has already loaded, so it can't bounce between old and new pods during the rollout.
 - **Test:** `e2e/journey.spec.ts` ("new deployment") runs on every deploy.
 
+## Rolling deploys on a small node
+
+- **The demo runs on one 2-vCPU node.** CPU *requests* sit near 85% while actual use is about 10%, so a rolling update has no room for a surge pod on top of every workload.
+- **In-place updates:** workloads with at least 2 pods (web, core-api, payments, aggregator, llm-gateway) and background consumers (alert-relay, notifier, raw-archiver, workflow-worker) replace one pod at a time (`maxSurge 0, maxUnavailable 1`).
+  - The PDB (`minAvailable 1`) keeps one pod serving.
+  - Consumers resume from their committed offset, and Temporal tasks wait in their queue.
+- **Surge-first:** single pods that serve requests (assistant, collector, order-adapter, flagd) start their replacement first, so there is no gap.
+- **Production:** a node pool with headroom (or the cluster autoscaler) restores surge-first everywhere.
+
 ## Bill day
 - The `bill-run` CronJob issues the bills (init container), then **`explain-batch`** runs: it warms every
   customer's home-screen cache and pre-generates the AI explanation at a fixed rate (`billDay.explainRps`).
