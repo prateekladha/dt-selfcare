@@ -53,7 +53,9 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
 
       {explanation && (
         <Suspense fallback={null}>
-          <Await resolve={explanation} errorElement={null}>
+          {/* errorElement must be a real element: React Router treats null/undefined as "none" and rethrows
+              the rejection to the route's error boundary, which would replace the whole page. */}
+          <Await resolve={explanation} errorElement={<></>}>
             {(r) => r.llm?.summary ? (
               <Link to={`/bills/${last}`} className="group flex items-center gap-4 rounded-[var(--radius)] border border-[var(--brand)]/25 bg-[var(--brand-bg)] px-5 py-4 transition-colors hover:border-[var(--brand)]">
                 <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--brand)] text-white"><Sparkles size={18} /></span>
