@@ -69,6 +69,17 @@ resource "oci_containerengine_node_pool" "a1" {
     }
   }
 
+  # OKE bootstrap + grow the root filesystem to the full boot volume (OKE does not do it by default)
+  node_metadata = {
+    user_data = base64encode(<<-EOT
+      #!/bin/bash
+      curl --fail -H "Authorization: Bearer Oracle" -L0 http://169.254.169.254/opc/v2/instance/metadata/oke_init_script | base64 --decode >/var/run/oke-init.sh
+      bash /var/run/oke-init.sh
+      /usr/libexec/oci-growfs -y
+    EOT
+    )
+  }
+
   initial_node_labels {
     key   = "pool"
     value = "a1"
