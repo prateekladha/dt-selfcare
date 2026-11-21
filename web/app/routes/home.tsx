@@ -19,15 +19,14 @@ export const headers = () => PRIVATE;
 // The deterministic explanation is part of the server render; only the AI narrative streams in later.
 export async function loader({ request }: Route.LoaderArgs) {
   const lang = new URL(request.url).searchParams.get("lang") ?? "en";
-  const bills = await api<{ cycle: string }[]>(request, "/v1/me/bills?months=1");
-  const last = bills.at(-1)?.cycle ?? null;
-  // the LLM explanation streams in after the page renders (cached when the bill hasn't changed)
-  const explanation = last ? api<ExplanationResponse>(request, `/v1/me/bills/${last}/explanation?lang=${lang}`) : null;
-  return { explanation, last, lang };
+  // one call, not list-then-fetch; the LLM explanation streams in after the page renders (cached per bill)
+  const explanation = api<ExplanationResponse>(request, `/v1/me/bills/latest/explanation?lang=${lang}`);
+  return { explanation, lang };
 }
 
 export default function Overview({ loaderData }: Route.ComponentProps) {
-  const { explanation, last, lang } = loaderData;
+  const { explanation, lang } = loaderData;
+  const last = useSnapshot().home.last_bill?.cycle ?? null;
   const { home, d } = useSnapshot();
   const loc = home.subscriber.locale;
   const u = home.usage;

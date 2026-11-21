@@ -143,3 +143,7 @@ flags:
     state: ENABLED
     variants: { "on": true, "off": false }
     defaultVariant: "on"
+
+# API gateway (Traefik) edge protection
+edge:
+  rateLimit: { average: 40, burst: 120 }   # requests/s per client IP (a page = ~3-6 requests)

@@ -90,6 +90,9 @@ def close_cycle(engine: Engine, state: UsageState, cycle: str, settle_before: st
                 if late_counters is not None:  # the adjustment now accounts for those late CDRs
                     cx.execute(update(bills).where(bills.c.id == prev_row.id).values(rated_counters=json.dumps(late_counters)))
                 created += 1
+                from .home_cache import bump_default
+
+                bump_default(sub_id)
             except IntegrityError:
                 skipped += 1
     return {"created": created, "skipped_existing": skipped}

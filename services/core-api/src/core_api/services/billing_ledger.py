@@ -26,6 +26,9 @@ def apply_payment_event(engine: Engine, event: dict) -> bool:
             paid = bill.amount_paid + int(event["amount"])
             cx.execute(update(bills).where(bills.c.id == bill.id).values(
                 amount_paid=paid, status="PAID" if paid >= bill.total else "ISSUED"))
+        from .home_cache import bump_default
+
+        bump_default(bill.subscriber_id)
         return True
     except IntegrityError:
         return False  # already applied

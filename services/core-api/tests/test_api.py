@@ -375,3 +375,22 @@ def test_refresh_token_rotates_survives_parallel_use_and_revokes(env):
     assert client.get("/v1/me/home", headers={"Authorization": f"Bearer {new['access_token']}"}).status_code == 200
     client.post("/v1/auth/logout", json={"refresh_token": new["refresh_token"]})
     assert client.post("/v1/auth/refresh", json={"refresh_token": new["refresh_token"]}).status_code == 401
+
+
+def test_home_read_model_cached_and_invalidated_by_events(env):
+    """Home = one aggregate call; 2nd read is served from cache; a payment event invalidates it."""
+    client, engine, state, gw = env
+    issue(engine, state, "2026-10")
+    h = login(client)
+    first = client.get("/v1/me/home", headers=h)
+    second = client.get("/v1/me/home", headers=h)
+    assert first.headers["x-home-cache"] == "miss" and second.headers["x-home-cache"] == "hit"
+    assert second.json()["outstanding"]["bill_id"] == f"{SUB}:2026-10"
+    p = _pay(client, h, "cache-0000001")
+    gw.captured.add(p["order_id"])
+    from core_api.services.payments import reconcile_order
+    reconcile_order(engine, gw, p["order_id"], "webhook")
+    drain_outbox_into_billing(engine)  # billing applies PAYMENT_SUCCEEDED -> bumps the home version
+    after = client.get("/v1/me/home", headers=h)
+    assert after.headers["x-home-cache"] == "miss" and after.json()["outstanding"]["bill_id"] is None
+    assert client.get("/v1/me/bills/latest/explanation?ai=false", headers=h).json()["bill_id"] == f"{SUB}:2026-10"

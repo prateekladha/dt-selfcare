@@ -30,6 +30,7 @@ helm upgrade --install traefik traefik/traefik -n traefik --create-namespace --w
   --set-string 'service.annotations.service\.beta\.kubernetes\.io/oci-load-balancer-shape-flex-max=10' \
   --set 'ports.web.http.redirections.entryPoint.to=websecure' --set 'ports.web.http.redirections.entryPoint.scheme=https' \
   --set 'ports.web.allowACMEByPass=true' \
+  --set service.spec.externalTrafficPolicy=Local \
   --set resources.requests.cpu=50m --set resources.requests.memory=64Mi
 
 kubectl create namespace selfcare --dry-run=client -o yaml | kubectl apply -f -

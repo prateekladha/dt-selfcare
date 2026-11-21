@@ -101,6 +101,9 @@ async def finish_order(order_id: str, status: str, detail: str) -> None:
         if not exists:
             cx.execute(insert(notifications).values(subscriber_id=row.subscriber_id, alert_id=f"order:{order_id}",
                                                     kind=f"ORDER_{status}", title=title, body=detail))
+    from ..services.home_cache import bump
+
+    bump(get_valkey(), row.subscriber_id)
     get_valkey().publish(f"notif:{row.subscriber_id}", json.dumps({"kind": f"ORDER_{status}", "title": title, "body": detail}))
 
 
