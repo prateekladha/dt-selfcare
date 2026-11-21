@@ -34,7 +34,7 @@ function detailOf(body: string) {
 }
 
 function Answer({ t }: { t: Turn }) {
-  const cites = new CiteMap();
+  const cites = new CiteMap().scan(t.text);
   const [open, setOpen] = useState(false);
   const [hl, setHl] = useState<number | null>(null);
   const onCite = (n: number) => { setOpen(true); setHl(n); setTimeout(() => document.getElementById(`cite-${n}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 60); };
@@ -146,7 +146,7 @@ export default function Assistant() {
   }
 
   return (
-    <div className="mx-auto max-w-[820px] space-y-6">
+    <div className="mx-auto max-w-[820px] space-y-6 pb-28">
       <div>
         <h1 className="display text-[34px] font-extrabold leading-tight">Ask about your bill</h1>
         <p className="mt-2 text-[15px] leading-relaxed text-[var(--ink-3)]">Answers come from your own bills, usage records, payments and the tariff rules. Each one shows its sources.</p>

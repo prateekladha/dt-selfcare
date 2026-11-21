@@ -9,6 +9,12 @@ export class CiteMap {
     return i + 1;
   }
   get labels() { return [...this.order]; }
+  /** Assign numbers for every marker in reading order BEFORE rendering (children render later). */
+  scan(text: string | null | undefined, extra: string[] = []) {
+    for (const m of (text ?? "").matchAll(/\[([DGS]\d{1,2})\]/g)) this.num(m[1]);
+    for (const l of extra) this.num(l);
+    return this;
+  }
 }
 
 export function CiteMark({ n, onClick }: { n: number; onClick?: () => void }) {
