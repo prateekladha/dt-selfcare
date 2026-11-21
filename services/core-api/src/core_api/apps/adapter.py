@@ -44,12 +44,15 @@ class ProductOrderIn(BaseModel):
     model_config = {"extra": "allow"}
 
 
+_clock = time.time   # the rate-limit window's clock (tests pin it)
+
+
 def _admit(country: str) -> bool:
     """Per-country legacy capacity, shared by every pod (fixed 1-second window in Valkey)."""
     from ..deps import get_valkey
 
     r = get_valkey()
-    key = f"bss:rl:{country}:{int(time.time())}"
+    key = f"bss:rl:{country}:{int(_clock())}"
     n = r.incr(key)
     if n == 1:
         r.expire(key, 2)
