@@ -27,7 +27,22 @@ class FakeGateway:
     name, key_id, secret = "razorpay", "rzp_test_x", "s3cret"
 
     def __init__(self):
-        self.orders, self.captured = 0, set()
+        self.orders, self.captured, self.failed, self.authorized, self.status_calls = 0, set(), set(), set(), 0
+
+    def order_status(self, order_id):
+        from core_api.services.gateway import GatewayStatus
+        self.status_calls += 1
+        if order_id in self.captured:
+            return GatewayStatus("CAPTURED", f"pay_{order_id}", "paid", [{"status": "captured"}])
+        if order_id in self.authorized:
+            return GatewayStatus("AUTHORIZED", f"pay_{order_id}", "attempted", [{"status": "authorized"}])
+        if order_id in self.failed:
+            return GatewayStatus("FAILED", f"pay_{order_id}", "attempted", [{"status": "failed"}])
+        return GatewayStatus("NO_ATTEMPT", None, "created", [])
+
+    def capture(self, payment_id, amount, currency):
+        self.captured.add(payment_id.removeprefix("pay_"))
+        return True
 
     def create_order(self, amount, currency, receipt, notes):
         self.orders += 1
@@ -154,14 +169,14 @@ def test_payment_is_idempotent_and_settles_once_from_both_paths(env):
     sig = hmac.new(b"s3cret", f"{order}|pay_x".encode(), hashlib.sha256).hexdigest()
     pending = client.post(f"/v1/me/payments/{pid}/confirm", json={"gateway_payment_id": "pay_x", "signature": sig},
                           headers=h)
-    assert pending.json()["status"] == "PENDING"  # gateway has not captured it yet
+    assert pending.json()["status"] != "PAID"  # gateway has not captured it yet: the browser alone can't settle
 
     gw.captured.add(order)
     ok = client.post(f"/v1/me/payments/{pid}/confirm", json={"gateway_payment_id": "pay_x", "signature": sig}, headers=h)
     assert ok.json()["status"] == "PAID"
     hook = {"event": "payment.captured", "payload": {"payment": {"entity": {"id": "pay_x", "order_id": order}}}}
     wh = client.post("/v1/webhooks/razorpay", content=json.dumps(hook), headers={"X-Razorpay-Signature": "good"})
-    assert wh.json() == {"ok": True, "settled": False}  # already settled by the browser path
+    assert wh.json()["settled"] is False and wh.json()["result"] == "already_paid"  # settled by the browser path
 
     bill = client.get("/v1/me/bills/2026-10", headers=h).json()
     assert bill["status"] == "PAID" and bill["outstanding"] == 0
@@ -276,3 +291,63 @@ def test_late_cdrs_after_bill_issue_become_an_adjustment_on_the_next_bill(env):
     oct_lines = {x.code: x for x in row_to_bill(get_bill_row(engine, SUB, "2026-10")).lines}
     assert oct_lines["ADJ:2026-09"].amount == 199  # 100 MB * 1.99 cents, net
     add_usage(state, SUB, datetime(2026, 11, 1, tzinfo=UTC), [(UsageType.DATA, None, 1)])
+
+
+
+def _pay(client, h, key):
+    return client.post("/v1/me/payments", json={"purpose": "BILL", "bill_id": f"{SUB}:2026-10"},
+                       headers=h | {"Idempotency-Key": key}).json()
+
+
+def test_out_of_order_failed_webhook_after_capture_cannot_undo_paid(env):
+    client, engine, state, gw = env
+    issue(engine, state, "2026-10")
+    h = login(client)
+    p = _pay(client, h, "ooo-00000001")
+    gw.captured.add(p["order_id"])
+    ok = {"event": "payment.captured", "payload": {"payment": {"entity": {"id": "pay_1", "order_id": p["order_id"],
+                                                                          "status": "captured"}}}}
+    assert client.post("/v1/webhooks/razorpay", content=json.dumps(ok), headers={"X-Razorpay-Signature": "good"}).json()["settled"]
+    # a 'payment.failed' for a dropped attempt arrives LATER; its payload is not trusted
+    late = {"event": "payment.failed", "payload": {"payment": {"entity": {"id": "pay_0", "order_id": p["order_id"],
+                                                                         "status": "failed"}}}}
+    r = client.post("/v1/webhooks/razorpay", content=json.dumps(late), headers={"X-Razorpay-Signature": "good"}).json()
+    assert r["result"] == "already_paid"
+    assert client.get("/v1/me/bills/2026-10", headers=h).json()["status"] == "PAID"
+
+
+def test_failed_attempt_then_successful_retry_on_same_order_ends_paid(env):
+    client, engine, state, gw = env
+    issue(engine, state, "2026-10")
+    h = login(client)
+    p = _pay(client, h, "retry-0000001")
+    from core_api.services.payments import reconcile_order
+    gw.failed.add(p["order_id"])
+    assert reconcile_order(engine, gw, p["order_id"], "webhook")["result"] == "failed"
+    gw.failed.discard(p["order_id"])
+    gw.authorized.add(p["order_id"])  # customer retried; authorised but not yet captured -> we capture
+    assert reconcile_order(engine, gw, p["order_id"], "reconciler")["result"] == "paid"
+
+
+def test_reconciler_catches_up_after_downtime_and_expires_abandoned_orders(env):
+    from datetime import timedelta
+
+    from core_api.services.payments import due_for_check, next_delay_s, reconcile_order
+    client, engine, state, gw = env
+    issue(engine, state, "2026-10")
+    h = login(client)
+    paid_later = _pay(client, h, "down-0000001")
+    abandoned = client.post("/v1/me/payments", json={"purpose": "ADVANCE"}, headers=h | {"Idempotency-Key": "down-0000002"}).json()
+    gw.captured.add(paid_later["order_id"])  # captured while our system was down (no webhook received)
+    now = datetime.now(UTC) + timedelta(hours=2)
+    due = due_for_check(engine, now)
+    assert paid_later["order_id"] in due and abandoned["order_id"] in due
+    for oid in due:
+        reconcile_order(engine, gw, oid, "reconciler", now=now)
+    assert client.get("/v1/me/bills/2026-10", headers=h).json()["status"] == "PAID"
+    later = datetime.now(UTC) + timedelta(hours=30)
+    assert reconcile_order(engine, gw, abandoned["order_id"], "reconciler", now=later)["result"] == "expired"
+    assert abandoned["order_id"] not in due_for_check(engine, later + timedelta(days=1))
+    assert [next_delay_s(n) for n in range(4)] == [30, 60, 120, 240]
+    assert [next_delay_s(n, "polynomial") for n in range(4)] == [30, 60, 130, 240]
+    assert next_delay_s(20) == 3600  # capped

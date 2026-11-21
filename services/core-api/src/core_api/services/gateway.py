@@ -16,6 +16,15 @@ from .resilience import CircuitBreaker
 
 
 @dataclass(frozen=True)
+class GatewayStatus:
+    """What the gateway's status API says about an order (the ONLY input to payment status)."""
+    state: str               # CAPTURED | AUTHORIZED | FAILED | ATTEMPTED | NO_ATTEMPT
+    payment_id: str | None
+    order_status: str        # created | attempted | paid (Razorpay)
+    attempts: list[dict]
+
+
+@dataclass(frozen=True)
 class GatewayOrder:
     order_id: str
     amount: int
@@ -30,6 +39,7 @@ class PaymentGateway(Protocol):
     def verify_client_signature(self, order_id: str, payment_id: str, signature: str) -> bool: ...
     def verify_webhook(self, body: bytes, signature: str) -> bool: ...
     def is_order_paid(self, order_id: str) -> tuple[bool, str | None]: ...
+    def order_status(self, order_id: str) -> GatewayStatus: ...
 
 
 class Razorpay:
@@ -73,6 +83,25 @@ class Razorpay:
             return False
         expected = hmac.new(self._wh.encode(), body, hashlib.sha256).hexdigest()
         return hmac.compare_digest(expected, signature)
+
+    def order_status(self, order_id: str) -> GatewayStatus:
+        order = self._call("GET", f"/orders/{order_id}")
+        items = self._call("GET", f"/orders/{order_id}/payments").get("items", [])
+        attempts = [{"id": p["id"], "status": p.get("status"), "method": p.get("method"),
+                     "error": (p.get("error_description") or None)} for p in items]
+        for p in items:
+            if p.get("status") == "captured":
+                return GatewayStatus("CAPTURED", p["id"], order.get("status", ""), attempts)
+        for p in items:
+            if p.get("status") == "authorized":
+                return GatewayStatus("AUTHORIZED", p["id"], order.get("status", ""), attempts)
+        if items and all(p.get("status") == "failed" for p in items):
+            return GatewayStatus("FAILED", items[0]["id"], order.get("status", ""), attempts)
+        return GatewayStatus("ATTEMPTED" if items else "NO_ATTEMPT", None, order.get("status", ""), attempts)
+
+    def capture(self, payment_id: str, amount: int, currency: str) -> bool:
+        cap = self._call("POST", f"/payments/{payment_id}/capture", json={"amount": amount, "currency": currency})
+        return cap.get("status") == "captured"
 
     def is_order_paid(self, order_id: str) -> tuple[bool, str | None]:
         """Server-side confirmation: never trust the browser's 'success' alone."""

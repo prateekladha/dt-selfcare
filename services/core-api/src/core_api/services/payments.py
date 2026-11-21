@@ -78,9 +78,10 @@ def mark_paid(engine: Engine, order_id: str, gateway_payment_id: str) -> tuple[b
         row = cx.execute(select(payments).where(payments.c.gateway_order_id == order_id)).first()
         if row is None:
             return False, None
-        res = cx.execute(update(payments)
-                         .where(payments.c.id == row.id, payments.c.status == "CREATED")
-                         .values(status="PAID", gateway_payment_id=gateway_payment_id, updated_at=utcnow()))
+        res = cx.execute(update(payments)  # PAID is terminal: only a non-PAID row can transition (exactly once)
+                         .where(payments.c.id == row.id, payments.c.status != "PAID")
+                         .values(status="PAID", gateway_payment_id=gateway_payment_id, gateway_status="captured",
+                                 next_check_at=None, updated_at=utcnow()))
         if res.rowcount == 0:
             return False, _public(row)  # already settled by the other path
         if row.bill_id:
@@ -100,3 +101,84 @@ def get_payment(engine: Engine, subscriber_id: str, payment_id: str):
     with engine.connect() as cx:
         return cx.execute(select(payments).where(payments.c.id == payment_id,
                                                  payments.c.subscriber_id == subscriber_id)).first()
+
+
+# ---------------- reconciliation: the gateway status API is the only source of truth ----------------
+FINAL = {"PAID", "EXPIRED"}
+
+
+def next_delay_s(attempt: int, strategy: str = "exponential", base: float = 30, factor: float = 2.0,
+                 cap: float = 3600, poly: tuple[float, float, float] = (20.0, 10.0, 30.0)) -> float:
+    """Backoff between status checks of a non-final payment.
+
+    exponential: base * factor^n      (30 s, 60 s, 2 m, 4 m, 8 m ... capped at 1 h)
+    polynomial:  a*n^2 + b*n + c       (30 s, 60 s, 130 s, 240 s ... capped) - gentler early growth
+    """
+    if strategy == "polynomial":
+        a, b, c = poly
+        d = a * attempt * attempt + b * attempt + c
+    else:
+        d = base * (factor ** attempt)
+    return min(cap, d)
+
+
+def reconcile_order(engine: Engine, gw, order_id: str, trigger: str, now=None, expire_after_s: int = 24 * 3600,
+                    strategy: str = "exponential") -> dict:
+    """Ask the gateway for the order's real status and apply it with guardrails.
+
+    Called by every path - browser callback, webhook, reconciler - but none of their payloads are trusted;
+    only GET /orders/{id} + /orders/{id}/payments decide. Event order therefore doesn't matter:
+      - a late 'payment.failed' / 'user dropped' after a capture cannot undo PAID (terminal state)
+      - a failed attempt followed by a successful retry on the same order still ends PAID
+      - an authorised-but-not-captured payment is captured by us, then PAID
+    """
+    from datetime import UTC, datetime, timedelta
+
+    now = now or datetime.now(UTC)
+    with engine.connect() as cx:
+        row = cx.execute(select(payments).where(payments.c.gateway_order_id == order_id)).first()
+    if row is None:
+        return {"result": "unknown_order"}
+    if row.status == "PAID":
+        return {"result": "already_paid", "payment": _public(row)}
+
+    st = gw.order_status(order_id)
+    if st.state == "AUTHORIZED" and gw.capture(st.payment_id, row.charged_amount or row.amount,
+                                                row.charged_currency or row.currency):
+        st = type(st)("CAPTURED", st.payment_id, st.order_status, st.attempts)
+    if st.state == "CAPTURED":
+        newly, pay = mark_paid(engine, order_id, st.payment_id)
+        with engine.begin() as cx:
+            cx.execute(update(payments).where(payments.c.id == row.id, payments.c.settled_by.is_(None))
+                       .values(settled_by=trigger))
+        return {"result": "paid" if newly else "already_paid", "payment": pay, "gateway": st.attempts}
+
+    created = row.created_at if row.created_at.tzinfo else row.created_at.replace(tzinfo=UTC)
+    age = (now - created).total_seconds()
+    attempt = (row.check_attempts or 0) + 1
+    if age >= expire_after_s:
+        new_status = "EXPIRED" if st.state in ("NO_ATTEMPT", "ATTEMPTED") else "FAILED"
+        next_at = None if new_status == "EXPIRED" else now + timedelta(seconds=next_delay_s(attempt, strategy, cap=6 * 3600))
+    else:
+        new_status = "FAILED" if st.state == "FAILED" else ("PENDING" if st.state == "ATTEMPTED" else row.status)
+        next_at = now + timedelta(seconds=next_delay_s(attempt, strategy))
+    with engine.begin() as cx:
+        cx.execute(update(payments).where(payments.c.id == row.id, payments.c.status != "PAID").values(
+            status=new_status, gateway_status=st.order_status or st.state.lower(), check_attempts=attempt,
+            last_checked_at=now, next_check_at=next_at, updated_at=utcnow()))
+        fresh = cx.execute(select(payments).where(payments.c.id == row.id)).one()
+    return {"result": new_status.lower(), "payment": _public(fresh), "gateway": st.attempts,
+            "next_check_at": next_at.isoformat() if next_at else None}
+
+
+def due_for_check(engine: Engine, now, limit: int = 50) -> list[str]:
+    """Non-final payments whose next check is due (or never scheduled). After an outage everything
+    overdue is due at once, so statuses catch up as soon as the system is back."""
+    from sqlalchemy import or_
+
+    with engine.connect() as cx:
+        rows = cx.execute(select(payments.c.gateway_order_id).where(
+            payments.c.status.not_in(list(FINAL)), payments.c.gateway_order_id.is_not(None),
+            or_(payments.c.next_check_at.is_(None), payments.c.next_check_at <= now))
+            .order_by(payments.c.created_at).limit(limit)).all()
+    return [r[0] for r in rows]

@@ -78,8 +78,14 @@ payments = Table(
     Column("gateway", String(16), nullable=False),
     Column("gateway_order_id", String(64), unique=True),
     Column("gateway_payment_id", String(64)),
-    Column("status", String(16), nullable=False),  # CREATED | PAID | FAILED
+    Column("status", String(16), nullable=False),  # CREATED | PENDING | PAID | FAILED | EXPIRED
     Column("idempotency_key", String(64), nullable=False),
+    # reconciliation (status always taken from the gateway's status API, never from webhook payloads)
+    Column("gateway_status", String(24)),
+    Column("check_attempts", Integer, nullable=False, default=0),
+    Column("next_check_at", DateTime(timezone=True)),
+    Column("last_checked_at", DateTime(timezone=True)),
+    Column("settled_by", String(16)),
     Column("created_at", DateTime(timezone=True), default=utcnow, nullable=False),
     Column("updated_at", DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False),
     UniqueConstraint("subscriber_id", "idempotency_key", name="uq_payment_idem"),
@@ -199,6 +205,9 @@ MIGRATIONS: list[tuple[str, list]] = [
     # Oracle 23ai AI Vector Search: native vector column for semantic retrieval (L2)
     ("0004_context_docs_vector", ["ALTER TABLE context_docs ADD (embedding VECTOR(384, FLOAT32))"]),
     ("0005_bills_rated_counters", ["ALTER TABLE bills ADD (rated_counters CLOB)"]),
+    ("0006_payment_reconciliation", [
+        ("ALTER TABLE payments ADD (gateway_status VARCHAR2(24 CHAR), check_attempts NUMBER(10) DEFAULT 0 NOT NULL, "
+        "next_check_at TIMESTAMP WITH TIME ZONE, last_checked_at TIMESTAMP WITH TIME ZONE, settled_by VARCHAR2(16 CHAR))")]),
 ]
 
 
