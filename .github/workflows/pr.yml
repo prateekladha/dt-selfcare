@@ -1,0 +1,90 @@
+# Pull-request validation. Every change to main goes through a PR; these jobs are REQUIRED status checks
+# (branch protection), so nothing merges unless all of them pass. Nothing is deployed from a PR and no
+# secrets are used here.
+name: pr-validation
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: python (lint + tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with: { version: "0.13.9" }
+      - run: uv sync --frozen
+      - run: uv run ruff check libs services deploy/docker
+      - run: uv run pytest -q
+
+  web:
+    name: web (typecheck + build)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 24, cache: npm, cache-dependency-path: web/package-lock.json }
+      - run: npm ci && npm run typecheck && npm run build
+        working-directory: web
+
+  deploy-config:
+    name: deploy config (helm + terraform)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+      - name: helm lint + render
+        run: |
+          helm lint deploy/helm/selfcare -f deploy/helm/values-oci.yaml
+          helm template selfcare deploy/helm/selfcare -f deploy/helm/values-oci.yaml --set image.tag=pr > /tmp/rendered.yaml
+      - name: kubernetes schema validation (kubeconform)
+        run: |
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          ./kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version 1.31.0 /tmp/rendered.yaml
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.9.8" }
+      - name: terraform fmt + validate (no backend, no credentials)
+        working-directory: deploy/terraform
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
+
+  images:
+    name: image build (${{ matrix.image }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [core-api, usage-collector, usage-aggregator, network-emulator, web, llm-gateway]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image == 'web' && 'web' || '.' }}
+          file: ${{ matrix.image == 'llm-gateway' && 'deploy/docker/gateway.Dockerfile' || (matrix.image == 'web' && 'web/Dockerfile' || 'Dockerfile') }}
+          build-args: ${{ (matrix.image != 'web' && matrix.image != 'llm-gateway') && format('SERVICE={0}', matrix.image) || '' }}
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=${{ matrix.image }}
+
+  secrets-scan:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - name: gitleaks on the PR's commits
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.18.4 detect --source /repo \
+            --log-opts="origin/${{ github.base_ref }}..HEAD" --redact --verbose

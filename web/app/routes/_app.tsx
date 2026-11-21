@@ -1,9 +1,10 @@
-import { useState } from "react";
-import { data, Form, NavLink, Outlet, useNavigation, useRouteLoaderData } from "react-router";
+import { useEffect, useState } from "react";
+import { data, Form, NavLink, Outlet, useNavigation, useRevalidator, useRouteLoaderData } from "react-router";
 import { Bell, FlaskConical, Home as HomeIcon, LogOut, MessageSquareText, Receipt, Server } from "lucide-react";
 import { LiveNotifications } from "~/components/LiveNotifications";
 import { Avatar, Logo } from "~/components/ui";
-import { api, PRIVATE } from "~/lib/api.server";
+import { api, ApiError, degradedServices, PRIVATE } from "~/lib/api.server";
+import { recall, remember, subscriberOf } from "~/lib/stale.server";
 import { freshToken } from "~/lib/session.server";
 import { dateLabel, FLAGS, phoneLabel } from "~/lib/format";
 import { derive } from "~/lib/snapshot.server";
@@ -19,14 +20,31 @@ export const headers = ({ loaderHeaders }: Route.HeadersArgs) => {
 
 // One snapshot per navigation for the whole screen (header, page, badges): a single "as of" moment.
 // Also keeps the session fresh: the rotated refresh cookie is sent back on every navigation.
+// If core-api is unavailable, the last good snapshot is served, marked stale; with none, the styled
+// "temporarily unavailable" boundary below. `degraded` lets pages switch features off up front.
 export async function loader({ request }: Route.LoaderArgs) {
-  const { setCookie } = await freshToken(request);
-  const home = await api<Home>(request, "/v1/me/home");
-  return data({ home, d: derive(home) }, setCookie ? { headers: { "Set-Cookie": setCookie } } : undefined);
+  const { token, setCookie } = await freshToken(request);
+  const sub = subscriberOf(token);
+  const init = setCookie ? { headers: { "Set-Cookie": setCookie } } : undefined;
+  try {
+    const home = await api<Home>(request, "/v1/me/home");
+    remember(sub, home);
+    return data({ home, d: derive(home), stale: false, degraded: degradedServices() }, init);
+  } catch (e) {
+    const last = e instanceof ApiError && e.status >= 500 ? recall<Home>(sub) : null;
+    if (!last) throw e;
+    return data({ home: last, d: derive(last), stale: true, degraded: [...new Set([...degradedServices(), "core"])] }, init);
+  }
 }
 
 export function useSnapshot() {
   return useRouteLoaderData<typeof loader>("routes/_app")!;
+}
+
+/** true while a backing service's circuit is open (or core-api is serving a stale snapshot). */
+export function useDegraded(service: "core" | "payments" | "assistant") {
+  const s = useRouteLoaderData<typeof loader>("routes/_app");
+  return !!s?.degraded?.includes(service);
 }
 
 const NAV = [
@@ -41,6 +59,12 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
   const nav = useNavigation();
   const [menu, setMenu] = useState<"none" | "bell" | "account">("none");
   const toggle = (m: "bell" | "account") => setMenu((cur) => (cur === m ? "none" : m));
+  const revalidator = useRevalidator();
+  useEffect(() => {  // stale snapshot: re-check every 20 s and swap in live data as soon as core-api is back
+    if (!loaderData.stale) return;
+    const t = setInterval(() => revalidator.state === "idle" && revalidator.revalidate(), 20_000);
+    return () => clearInterval(t);
+  }, [loaderData.stale]);
 
   return (
     <div className="min-h-screen pb-20 md:pb-0">
@@ -106,7 +130,15 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-[1200px] px-5 py-8" onClick={() => menu !== "none" && setMenu("none")}><Outlet /></main>
+      <main className="mx-auto max-w-[1200px] px-5 py-8" onClick={() => menu !== "none" && setMenu("none")}>
+        {loaderData.stale && (
+          <div role="status" className="mb-5 rounded-[var(--radius)] border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-4 py-3 text-[14px]">
+            <strong>Showing your account as of {new Date(loaderData.home.as_of).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}.</strong>{" "}
+            Live updates are delayed right now; your usage and bills are safe and this page refreshes automatically when we're back.
+          </div>
+        )}
+        <Outlet />
+      </main>
       <nav className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 border-t border-[var(--line)] bg-[var(--surface)] md:hidden" aria-label="Main">
         {NAV.map(({ to, label, icon: Icon, end }) => (
           <NavLink key={to} to={to} end={end} className={({ isActive }) => `flex flex-col items-center gap-1 py-2.5 text-[11px] font-semibold ${isActive ? "text-[var(--brand)]" : "text-[var(--ink-3)]"}`}>
@@ -116,5 +148,18 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
       </nav>
       <LiveNotifications />
     </div>
+  );
+}
+
+
+/** core-api unavailable and no recent snapshot: a clear, styled message instead of a raw error. */
+export function ErrorBoundary() {
+  return (
+    <main className="mx-auto flex min-h-[70vh] max-w-md flex-col items-center justify-center px-5 text-center">
+      <Logo />
+      <h1 className="mt-8 text-2xl font-extrabold">We'll be right back</h1>
+      <p className="mt-2 text-[15px] text-[var(--ink-3)]">Your account details are temporarily unavailable. Nothing is lost: your usage and bills are safe. Please try again in a minute.</p>
+      <a href="" className="mt-6 inline-flex h-11 items-center rounded-lg bg-[var(--brand)] px-5 text-sm font-semibold text-white">Try again</a>
+    </main>
   );
 }

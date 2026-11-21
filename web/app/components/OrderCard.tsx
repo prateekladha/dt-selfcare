@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeftRight, CheckCircle2, Loader2, PackagePlus, XCircle } from "lucide-react";
+import { ArrowLeftRight, CheckCircle2, Clock, Loader2, PackagePlus, XCircle } from "lucide-react";
 import { useRevalidator } from "react-router";
 import { Button } from "./ui";
 
@@ -50,7 +50,10 @@ export function OrderCard({ orderId, title, extra, price, kind = "ADDON" }:
             <Button size="sm" variant="secondary" onClick={() => act("decline")} disabled={busy}>Not now</Button>
           </div>
         )}
-        {active && (
+        {active && order.detail?.startsWith("Queued") && (
+          <p className="flex items-start gap-2 text-[13.5px] text-[var(--ink-2)]"><Clock size={15} className="mt-0.5 shrink-0 text-[var(--warn)]" />{order.detail}</p>
+        )}
+        {active && !order.detail?.startsWith("Queued") && (
           <p className="flex items-center gap-2 text-[13.5px] text-[var(--ink-2)]"><Loader2 size={15} className="animate-spin" />
             {order.workflow?.stage ? `${order.workflow.stage[0].toUpperCase()}${order.workflow.stage.slice(1)}…` : "Processing…"}</p>
         )}

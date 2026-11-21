@@ -29,6 +29,13 @@ with workflow.unsafe.imports_passed_through():
     from sqlalchemy import select, update
 
 TASK_QUEUE = "orders"
+
+
+def legacy_queue(country: str) -> str:
+    """One task queue per country's legacy order system. Its workers are rate-limited by the Temporal
+    server to that system's capacity (across all worker pods), so on a spike the calls WAIT in this
+    queue and are dispatched at the capacity rate - no 429 churn, no growing backoff."""
+    return f"legacy-bss-{country}"
 RETRY = RetryPolicy(initial_interval=timedelta(seconds=2), backoff_coefficient=2.0,
                     maximum_interval=timedelta(minutes=1), maximum_attempts=8)
 # submitting to a legacy system that may be at capacity on bill day: keep backing off for hours
@@ -36,6 +43,8 @@ SUBMIT_RETRY = RetryPolicy(initial_interval=timedelta(seconds=2), backoff_coeffi
                            maximum_interval=timedelta(minutes=5), non_retryable_error_types=["UnsupportedMarket"])
 
 _adapter = None
+QUEUED_TEXT = ("Queued: the network system is busy right now. We'll complete this automatically and notify you. "
+               "You can leave this page.")
 
 
 def adapter_client():
@@ -58,7 +67,11 @@ async def validate_order(order_id: str) -> dict:
         row = cx.execute(select(orders).where(orders.c.id == order_id)).one()
     if row.status not in ("APPROVED", "SUBMITTED"):
         raise ValueError(f"order {order_id} is {row.status}, not approved")
-    return {"subscriber_id": row.subscriber_id, "addon_code": row.addon_code, "kind": row.kind}
+    from ..db import subscribers
+
+    with get_engine().connect() as cx:
+        country = cx.execute(select(subscribers.c.country).where(subscribers.c.id == row.subscriber_id)).scalar_one()
+    return {"subscriber_id": row.subscriber_id, "addon_code": row.addon_code, "kind": row.kind, "country": country}
 
 
 @activity.defn
@@ -77,6 +90,8 @@ async def submit_to_bss(order_id: str) -> str:
     body = product_order(order_id, o.subscriber_id, o.addon_code, country, "add" if o.kind == "ADDON" else "modify")
     r = await adapter_client().request("POST", BASE, json=body)
     if r.status_code == 429:  # legacy at capacity: Temporal backs off and retries
+        if activity.info().attempt == 1:  # tell the customer once (their card shows it; emits an order event)
+            set_status(engine, order_id, "APPROVED", QUEUED_TEXT)
         raise ApplicationError("legacy order system at capacity", type="AtCapacity",
                                next_retry_delay=timedelta(seconds=int(r.headers.get("Retry-After", "1")) + 1))
     if r.status_code == 422:
@@ -139,7 +154,8 @@ async def finish_order(order_id: str, status: str, detail: str) -> None:
     set_status(get_engine(), order_id, status, detail)
 
 
-ACTIVITIES = [validate_order, submit_to_bss, bss_status, apply_addon, apply_plan, finish_order]
+ACTIVITIES = [validate_order, apply_addon, apply_plan, finish_order]      # task queue "orders"
+LEGACY_ACTIVITIES = [submit_to_bss, bss_status]                            # task queues "legacy-bss-<country>"
 TMF_TO_RESULT = {"completed": "CONFIRMED", "failed": "REJECTED"}
 
 
@@ -155,8 +171,10 @@ class _LegacyOrder:
         opts = {"start_to_close_timeout": timedelta(seconds=30), "retry_policy": RETRY}
         self.stage = "validating"
         info = await workflow.execute_activity(validate_order, order_id, **opts)
-        self.stage = "submitting to network system"
-        bss_id = await workflow.execute_activity(submit_to_bss, order_id, start_to_close_timeout=timedelta(seconds=30),
+        legacy = legacy_queue(info.get("country", "DE"))
+        self.stage = "in line for the network system"   # waits in the country's rate-limited task queue
+        bss_id = await workflow.execute_activity(submit_to_bss, order_id, task_queue=legacy,
+                                                 start_to_close_timeout=timedelta(seconds=30),
                                                  schedule_to_close_timeout=timedelta(hours=12), retry_policy=SUBMIT_RETRY)
         self.stage = "waiting for network system"
         deadline = workflow.now() + timedelta(minutes=30)
@@ -164,7 +182,7 @@ class _LegacyOrder:
             try:  # durable wait for the bss-events signal; a worker restart resumes this timer from history
                 await workflow.wait_condition(lambda: self.bss_result is not None, timeout=timedelta(seconds=45))
             except TimeoutError:
-                state = await workflow.execute_activity(bss_status, bss_id, **opts)  # event lost? ask the adapter
+                state = await workflow.execute_activity(bss_status, bss_id, task_queue=legacy, **opts)  # event lost? ask
                 if state in TMF_TO_RESULT:
                     self.bss_result = TMF_TO_RESULT[state]
         return info, self.bss_result
