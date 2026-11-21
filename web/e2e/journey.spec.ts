@@ -3,7 +3,13 @@ import { expect, test, type Page } from "@playwright/test";
 const PASSWORD = process.env.E2E_PASSWORD ?? "";
 const SHOTS = "e2e-results/screens";
 
+async function noHorizontalScroll(page: Page) {
+  const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+  expect(sw, `page is ${sw - cw}px wider than the viewport`).toBeLessThanOrEqual(cw + 1);
+}
+
 async function shot(page: Page, name: string) {
+  await noHorizontalScroll(page);
   await page.screenshot({ path: `${SHOTS}/${test.info().project.name}-${name}.png`, fullPage: true });
 }
 

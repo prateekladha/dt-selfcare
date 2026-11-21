@@ -54,7 +54,7 @@ export default function Login({ actionData, loaderData }: Route.ComponentProps) 
   const pw = useRef<HTMLInputElement>(null);
 
   return (
-    <main className="grid min-h-screen lg:grid-cols-[1.05fr_1fr]">
+    <main className="grid min-h-screen overflow-x-hidden lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)]">
       <aside className="relative hidden overflow-hidden bg-[var(--brand)] p-12 text-white lg:flex lg:flex-col">
         <Logo inverted />
         <div className="my-auto max-w-[480px]">
@@ -75,8 +75,8 @@ export default function Login({ actionData, loaderData }: Route.ComponentProps) 
         <p className="text-xs text-white/70">Case-study build · demo data only</p>
       </aside>
 
-      <section className="flex items-center justify-center bg-[var(--surface)] px-5 py-12">
-        <div className="w-full max-w-[420px]">
+      <section className="flex min-w-0 items-center justify-center bg-[var(--surface)] px-5 py-12">
+        <div className="w-full min-w-0 max-w-[420px]">
           <div className="mb-10 lg:hidden"><Logo /></div>
           <h2 className="display text-[32px] font-extrabold">Sign in</h2>
           <p className="mt-1.5 text-[15px] text-[var(--ink-3)]">Use your mobile number and password.</p>
@@ -112,14 +112,14 @@ export default function Login({ actionData, loaderData }: Route.ComponentProps) 
 
           {DEMO.length > 0 && <div className="mt-10">
             <div className="flex items-center gap-3"><span className="h-px flex-1 bg-[var(--line)]" /><span className="text-xs font-semibold uppercase tracking-wider text-[var(--ink-3)]">Demo accounts</span><span className="h-px flex-1 bg-[var(--line)]" /></div>
-            <ul className="mt-4 grid gap-2">
+            <ul className="mt-4 grid grid-cols-1 gap-2">
               {DEMO.map((d) => (
-                <li key={d.subscriber_id}>
+                <li key={d.subscriber_id} className="min-w-0">
                   <button type="button" onClick={() => { setNumber(phoneLabel(d.subscriber_id)); pw.current?.focus(); }}
                           className={`flex w-full items-center gap-3 rounded-lg border px-3.5 py-2.5 text-left transition-colors ${number.replace(/\D/g, "") === d.subscriber_id ? "border-[var(--ink)] bg-[var(--surface-2)]" : "border-[var(--line)] hover:border-[var(--line-strong)] hover:bg-[var(--surface-2)]"}`}>
                     <span className="text-lg" aria-hidden="true">{FLAGS[d.country]}</span>
                     <span className="min-w-0 flex-1"><span className="block text-sm font-semibold">{d.name} <span className="font-normal text-[var(--ink-3)]">· {d.plan}</span></span>
-                      <span className="block truncate text-[13px] text-[var(--ink-3)]">{d.headline} · data {d.data_pct_this_cycle}% this month</span></span>
+                      <span className="mt-0.5 block text-[13px] leading-snug text-[var(--ink-3)]">{d.headline}<br />Data {d.data_pct_this_cycle}% used this month</span></span>
                     <ArrowRight size={16} className="shrink-0 text-[var(--ink-3)]" />
                   </button>
                 </li>
