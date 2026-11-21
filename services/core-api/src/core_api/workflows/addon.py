@@ -17,7 +17,6 @@ from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
     import json
-    import uuid
     from datetime import UTC, datetime
 
     import httpx
@@ -42,27 +41,35 @@ async def validate_order(order_id: str) -> dict:
 
 @activity.defn
 async def submit_to_bss(order_id: str) -> str:
-    """Hand the order to the legacy BSS (idempotent: one BSS order per order)."""
-    from ..db import bss_orders, get_engine
+    """Hand the order to the country's legacy order system through its adapter (TMF622 in, legacy out).
+    Idempotent: one legacy order per order."""
+    from ..adapters.bss import for_country, product_order
+    from ..db import get_engine, orders, subscribers
     from .orders import set_status
 
     engine = get_engine()
-    with engine.begin() as cx:
-        existing = cx.execute(select(bss_orders.c.id).where(bss_orders.c.order_id == order_id)).scalar()
-        if existing:
-            return existing
-        bid = f"BSS-{uuid.uuid4().hex[:10].upper()}"
-        cx.execute(insert(bss_orders).values(id=bid, order_id=order_id, status="SUBMITTED"))
+    with engine.connect() as cx:
+        o = cx.execute(select(orders).where(orders.c.id == order_id)).one()
+        country = cx.execute(select(subscribers.c.country).where(subscribers.c.id == o.subscriber_id)).scalar_one()
+    bid = for_country(country).submit(engine, product_order(order_id, o.subscriber_id, o.addon_code, country))
     set_status(engine, order_id, "SUBMITTED", "Waiting for the network system to confirm", bss_order_id=bid)
     return bid
 
 
 @activity.defn
 async def bss_status(bss_order_id: str) -> str:
-    from ..db import bss_orders, get_engine
+    """Legacy state mapped back to the TMF622 state by the adapter that owns the order."""
+    from ..adapters.bss import ADAPTERS, TMF_STATE
+    from ..db import get_engine
 
-    with get_engine().connect() as cx:
-        return cx.execute(select(bss_orders.c.status).where(bss_orders.c.id == bss_order_id)).scalar() or "UNKNOWN"
+    adapter = next((a for a in ADAPTERS.values() if bss_order_id.startswith(a.prefix + "-")), None)
+    if adapter is None:  # orders created before the adapter layer
+        from ..db import bss_orders
+
+        with get_engine().connect() as cx:
+            legacy = cx.execute(select(bss_orders.c.status).where(bss_orders.c.id == bss_order_id)).scalar()
+        return TMF_STATE.get(legacy or "UNKNOWN", "pending")
+    return adapter.state(get_engine(), bss_order_id)
 
 
 @activity.defn
@@ -139,9 +146,9 @@ class AddonPurchaseWorkflow:
             try:  # durable wait: a worker restart resumes this timer from history
                 await workflow.wait_condition(lambda: self.bss_result is not None, timeout=timedelta(seconds=45))
             except TimeoutError:
-                status = await workflow.execute_activity(bss_status, bss_id, **opts)  # callback lost? poll
-                if status in ("CONFIRMED", "REJECTED"):
-                    self.bss_result = status
+                state = await workflow.execute_activity(bss_status, bss_id, **opts)  # callback lost? poll (TMF622 state)
+                if state in ("completed", "failed"):
+                    self.bss_result = "CONFIRMED" if state == "completed" else "REJECTED"
 
         if self.bss_result == "CONFIRMED":
             self.stage = "applying"

@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 
-TTL_S = 6 * 3600
+TTL_S = 24 * 3600  # correctness comes from event invalidation; TTL only bounds memory
 
 
 def _ver_key(sub: str) -> str:
