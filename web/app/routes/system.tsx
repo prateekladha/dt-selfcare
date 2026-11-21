@@ -34,16 +34,27 @@ function Node({ icon: Icon, title, sub, stat, tone = "neutral" }: { icon: typeof
   const ring = tone === "brand" ? "border-[var(--brand)]" : tone === "store" ? "border-[var(--ink)]" : "border-[var(--line-strong)]";
   return (
     <div className={`min-w-0 flex-1 rounded-lg border bg-[var(--surface)] px-3.5 py-3 ${ring}`}>
-      <div className="flex items-center gap-2"><Icon size={16} className={tone === "brand" ? "text-[var(--brand)]" : "text-[var(--ink-2)]"} /><p className="truncate text-sm font-bold">{title}</p></div>
-      <p className="mt-0.5 truncate text-xs text-[var(--ink-3)]">{sub}</p>
-      {stat && <p className="tabular mt-1.5 truncate text-xs font-semibold text-[var(--ink)]">{stat}</p>}
+      <div className="flex items-start gap-2"><Icon size={15} className={`mt-0.5 shrink-0 ${tone === "brand" ? "text-[var(--brand)]" : "text-[var(--ink-2)]"}`} /><p className="text-[13px] font-bold leading-tight">{title}</p></div>
+      <p className="mt-1 text-xs leading-snug text-[var(--ink-3)]">{sub}</p>
+      {stat && <p className="tabular mt-1.5 text-xs font-semibold leading-snug text-[var(--ink)]">{stat}</p>}
     </div>
   );
 }
 const Arrow = () => (<><ArrowRight size={16} className="hidden shrink-0 self-center text-[var(--ink-3)] lg:block" /><ArrowDown size={16} className="shrink-0 self-center text-[var(--ink-3)] lg:hidden" /></>);
 
 function KV({ rows }: { rows: [string, React.ReactNode][] }) {
-  return <dl className="divide-y divide-[var(--line)] text-sm">{rows.map(([k, v]) => <div key={k} className="flex justify-between gap-4 py-2"><dt className="text-[var(--ink-3)]">{k}</dt><dd className="tabular text-right font-semibold">{v}</dd></div>)}</dl>;
+  return <dl className="divide-y divide-[var(--line)] text-sm">{rows.map(([k, v]) => <div key={k} className="flex justify-between gap-4 py-2"><dt className="shrink-0 text-[var(--ink-3)]">{k}</dt><dd className="tabular min-w-0 break-words text-right font-semibold">{v}</dd></div>)}</dl>;
+}
+
+function flagValue(v: unknown): string {
+  if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    if (Array.isArray(o.levels)) return `${(o.levels as number[]).join(" / ")} %`;
+    if (o.currency === "native") return "bill currency";
+    if (o.currency && o.fx) return `${o.currency} · ${Object.entries(o.fx as Record<string, number>).map(([k, r]) => `1 ${k} = ${r}`).join(", ")}`;
+    return JSON.stringify(v);
+  }
+  return String(v);
 }
 
 export default function System({ loaderData }: Route.ComponentProps) {
@@ -125,7 +136,7 @@ export default function System({ loaderData }: Route.ComponentProps) {
         </Card>
         <Card>
           <CardHeader icon={<Flag size={18} />} title="Feature flags" subtitle="flagd · evaluated for you (country + subscriber)" />
-          <div className="px-6 pb-5 pt-2"><KV rows={Object.entries(o.flags).map(([k, v]) => [k, typeof v === "object" ? <code className="text-xs">{JSON.stringify(v)}</code> : String(v)])} /></div>
+          <div className="px-6 pb-5 pt-2"><KV rows={Object.entries(o.flags).map(([k, v]) => [k, flagValue(v)])} /></div>
         </Card>
         <Card>
           <CardHeader icon={<ShieldCheck size={18} />} title="Resilience & integrations" />

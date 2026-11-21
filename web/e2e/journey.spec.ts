@@ -107,3 +107,36 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/login/);
 });
+
+
+// Real payment through Razorpay test mode (UPI success@razorpay). Uses "Pay in advance" on a
+// separate demo line (Paul, desktop only) so demo bills stay unpaid for walkthroughs.
+test("payment: pay in advance with UPI in Razorpay test mode, settled exactly once", async ({ page }) => {
+  test.skip(test.info().project.name !== "desktop", "one real payment per run");
+  await signIn(page, "Paul Becker");
+  await page.getByRole("button", { name: /Pay in advance/ }).first().click();
+  const rzp = page.frameLocator("iframe.razorpay-checkout-frame");
+  await expect(rzp.locator("body")).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(1500);
+  await shot(page, "08-pay-1-checkout");
+
+  const contact = rzp.locator('input[name="contact"], input[type="tel"]').first();
+  if (await contact.isVisible().catch(() => false)) {
+    await contact.fill("9999999999");
+    const email = rzp.locator('input[name="email"], input[type="email"]').first();
+    if (await email.isVisible().catch(() => false)) await email.fill("reviewer@example.com");
+    await rzp.getByRole("button", { name: /continue|proceed/i }).first().click();
+  }
+  await rzp.getByText(/^UPI/).first().click({ timeout: 20_000 });
+  await page.waitForTimeout(800);
+  const vpa = rzp.locator('input[name="vpa"], input[placeholder*="@"], input[placeholder*="UPI" i]').first();
+  await vpa.fill("success@razorpay", { timeout: 20_000 });
+  await shot(page, "08-pay-2-upi");
+  await rzp.getByRole("button", { name: /verify|pay/i }).last().click();
+
+  // Our app confirms server-side (signature + capture check) and shows the result.
+  await expect(page.getByText(/Payment received|being confirmed/)).toBeVisible({ timeout: 90_000 });
+  await shot(page, "08-pay-3-done");
+  const sys = await (await page.request.get("/system.data")).text();
+  expect(sys).toContain("PAID");
+});
