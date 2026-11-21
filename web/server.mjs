@@ -31,6 +31,11 @@ app.use(express.static("build/client", { maxAge: "1h", index: false }));
 app.use(morgan(":method :url :status :response-time ms", { skip: (req) => req.url === "/healthz" || req.url === "/version" }));
 app.all("/{*splat}", createRequestHandler({ build }));
 
+// Safety net: a stray rejected promise must never take down a pod that serves everyone. Log it
+// (it is a bug to fix) and keep serving. Streamed loader promises are marked handled at the source
+// (streamed() in app/lib/api.server.ts).
+process.on("unhandledRejection", (e) => console.error(JSON.stringify({ event: "unhandled_rejection", error: String(e) })));
+
 const port = Number(process.env.PORT ?? 3000);
 const server = app.listen(port, () => console.log(`web listening on :${port}`));
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
