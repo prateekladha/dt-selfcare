@@ -75,7 +75,17 @@ def propose_plan_change(engine: Engine, subscriber_id: str, plan_code: str, sour
                                          detail=f"Switch from {cur_plan.name} to {new.name}"))
         row = cx.execute(select(orders).where(orders.c.id == oid)).one()
         _event(cx, row)
+    # this month's fee, pro-rated by day (change day billed on the new tariff)
+    from datetime import UTC, datetime
+
+    from ..services.bills import cycle_bounds
+
+    now = datetime.now(UTC)
+    start, end = cycle_bounds(f"{now:%Y-%m}")
+    total, used = (end.date() - start.date()).days, (now.date() - start.date()).days
+    this_month = round((cur_plan.monthly_fee * used + new.monthly_fee * (total - used)) / total)
     return public(row) | {"preview": {"name": new.name, "from": cur_plan.name, "monthly_fee": new.monthly_fee,
+                                      "this_month_fee": this_month, "days_old": used, "days_new": total - used,
                                       "old_monthly_fee": cur_plan.monthly_fee, "data": gb(new.data_mb),
                                       "old_data": gb(cur_plan.data_mb), "currency": cur, "plan": cur_plan.name}}
 

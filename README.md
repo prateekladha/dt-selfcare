@@ -28,6 +28,13 @@ a load generator.
 
 ## Architecture
 
+> **Current architecture: [docs/PLATFORM.md](docs/PLATFORM.md).** It covers the microservices
+> (core-api, payments-service, assistant-service, order-adapter), the LLM gateway (LiteLLM, DeepSeek → Mistral
+> fallback), Temporal order workflows with per-country legacy task queues, `order-events` / `bss-events`
+> on OCI Streaming, circuit breakers and what the customer sees when one opens, bill-day preparation,
+> tariff-change pro-rating, and Langfuse tracing/prompts/evals. The diagram below is the usage pipeline,
+> which is unchanged.
+
 ```
  Network (mediation)            OCI Streaming (Kafka API)                 Valkey (usage state)
  ┌───────────────────┐  HTTPS  ┌──────────────────┐   usage-events       ┌───────────────────────┐
@@ -99,7 +106,9 @@ cd deploy/terraform && terraform init -backend-config=backend.hcl && terraform a
 deploy/scripts/cluster-addons.sh       # External Secrets, cert-manager, Traefik, metrics-server, CI RBAC
 deploy/scripts/gh-secrets.sh           # CI credentials -> GitHub secrets
 deploy/scripts/put-secrets.sh          # Razorpay + Mistral keys -> OCI Vault (input hidden)
-git push                               # CI: test -> arm64 images -> helm upgrade -> smoke test
+# Delivery: main is protected. Open a PR -> pr-validation (lint, tests, web build, helm + kubeconform,
+# terraform validate, image builds, gitleaks) must pass -> merge -> deploy-prod (images -> helm upgrade
+# -> in-cluster smoke test -> Playwright e2e on the live site).
 ```
 
 Cost: OKE basic control plane, Autonomous DB, load balancer, Vault, Object Storage and the
