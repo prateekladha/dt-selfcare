@@ -1,9 +1,11 @@
 import { Suspense, useState } from "react";
-import { CitedText, SourcesPanel } from "./Sources";
 import { Await, Link } from "react-router";
-import { ShieldCheck, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
-import type { Explanation, ExplanationResponse } from "~/lib/types";
-import { cycleLabel, money } from "~/lib/format";
+import { BrainCircuit, ChevronDown, Lightbulb, ShieldCheck, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
+import type { Explanation, ExplanationResponse, LlmItem, SourceDoc } from "~/lib/types";
+import { money } from "~/lib/format";
+import { AgentTraceView } from "./AgentTrace";
+import { CiteMap, CiteMark, Inline, SourceList } from "./RichText";
+import { EvidencePanel } from "./Sources";
 import { Card, CardHeader, Pill, Skeleton } from "./ui";
 
 export function DeltaPill({ ex, locale }: { ex: Explanation; locale: string }) {
@@ -16,115 +18,154 @@ export function DeltaPill({ ex, locale }: { ex: Explanation; locale: string }) {
   );
 }
 
-export function WhatChanged({ ex, locale, title }: { ex: Explanation; locale: string; title?: string }) {
-  const max = Math.max(1, ...ex.drivers.map((d) => Math.abs(d.delta)));
-  return (
-    <Card>
-      <CardHeader title={title ?? "What changed"}
-        subtitle={ex.previous_cycle ? `${cycleLabel(ex.cycle, locale)} vs ${cycleLabel(ex.previous_cycle, locale)}, before VAT` : "Your first bill"}
-        action={<DeltaPill ex={ex} locale={locale} />} />
-      <div className="px-6 pb-6 pt-4">
-        {ex.drivers.length === 0 ? (
-          <p className="text-sm text-[var(--ink-3)]">{ex.previous_cycle ? "Same charges as the previous cycle." : ex.facts[0]}</p>
-        ) : (
-          <ul className="space-y-4">
-            {ex.drivers.slice(0, 5).map((d) => (
-              <li key={d.code}>
-                <div className="flex items-baseline justify-between gap-4">
-                  <span className="text-[15px] font-semibold">{d.label}</span>
-                  <span className={`tabular text-[15px] font-bold ${d.delta > 0 ? "text-[var(--bad)]" : "text-[var(--good)]"}`}>
-                    {d.delta > 0 ? "+" : "−"}{money(Math.abs(d.delta), ex.currency, locale)}
-                  </span>
-                </div>
-                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--chip)]">
-                  <div className="h-full rounded-full" style={{ width: `${(Math.abs(d.delta) / max) * 100}%`, background: d.delta > 0 ? "var(--bad)" : "var(--good)" }} />
-                </div>
-                <p className="mt-1.5 text-[13px] text-[var(--ink-3)]">{d.detail.replace(/^[^:]+:\s*/, "").replace(/\s*\([^)]*before VAT\)/, "")}</p>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </Card>
-  );
-}
-
-export function TopDrivers({ ex, locale }: { ex: Explanation; locale: string }) {
-  return (
-    <Card>
-      <CardHeader title="Top usage drivers" subtitle="Charges beyond your monthly plan fee" />
-      <div className="px-6 pb-6 pt-4">
-        {ex.top_usage_drivers.length === 0 ? (
-          <div className="flex items-center gap-3 rounded-lg bg-[var(--good-bg)] p-4 text-sm font-medium text-[var(--good)]">
-            <ShieldCheck size={18} /> Everything was covered by your plan. No extra charges.
-          </div>
-        ) : (
-          <ul className="space-y-4">
-            {ex.top_usage_drivers.map((d) => (
-              <li key={d.code}>
-                <div className="flex items-baseline justify-between gap-4">
-                  <span className="text-[15px] font-semibold">{d.label}</span>
-                  <span className="tabular text-[15px]"><b>{money(d.amount, ex.currency, locale)}</b> <span className="text-[var(--ink-3)]">· {d.share_pct.toFixed(0)}%</span></span>
-                </div>
-                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--brand-bg)]"><div className="h-full rounded-full bg-[var(--brand)]" style={{ width: `${d.share_pct}%` }} /></div>
-                <p className="mt-1.5 text-[13px] text-[var(--ink-3)]">{d.detail.split(": ")[1]?.split(" = ")[0]}</p>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </Card>
-  );
-}
-
 const LANGS = [["en", "English"], ["de", "Deutsch"], ["pl", "Polski"]] as const;
 
-export function Narrative({ narrative, lang, basePath, title = "In plain words", languages = true, cycle }:
-  { narrative: Promise<ExplanationResponse> | ExplanationResponse; lang: string; basePath: string; title?: string; languages?: boolean; cycle?: string }) {
-  const [open, setOpen] = useState(false);
-  const [hl, setHl] = useState<string | null>(null);
-  const cite = (label: string) => {
-    setOpen(true); setHl(label);
-    setTimeout(() => document.getElementById(`src-${label}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
-  };
+function sourceTitle(s: SourceDoc): { title: string; detail: string } {
+  const body = s.body;
+  const cut = body.indexOf(": ");
+  if (s.label.startsWith("G")) {
+    const dot = body.indexOf(". ");
+    return { title: dot > 0 ? body.slice(0, dot) : "Tariff rules", detail: dot > 0 ? body.slice(dot + 2) : body };
+  }
+  return cut > 0 && cut < 60 ? { title: body.slice(0, cut), detail: body.slice(cut + 2) } : { title: "Your records", detail: body };
+}
+
+function ItemCites({ item, cites, onCite }: { item: { sources?: string[] }; cites: CiteMap; onCite: (n: number) => void }) {
+  return <>{(item.sources ?? []).map((l) => { const n = cites.num(l); return <CiteMark key={l} n={n} onClick={() => onCite(n)} />; })}</>;
+}
+
+function ItemRow({ item, value, tone, cites, onCite }: { item: LlmItem; value?: string; tone: "up" | "down" | "neutral"; cites: CiteMap; onCite: (n: number) => void }) {
+  const color = tone === "up" ? "text-[var(--bad)]" : tone === "down" ? "text-[var(--good)]" : "text-[var(--ink)]";
   return (
-    <Card className="overflow-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] bg-[var(--surface-2)] px-6 py-3.5">
-        <span className="inline-flex items-center gap-2 text-[15px] font-semibold"><Sparkles size={17} className="text-[var(--brand)]" /> {title}</span>
-        {languages && <div className="flex rounded-lg bg-[var(--chip)] p-0.5" role="tablist" aria-label="Language">
-          {LANGS.map(([k, l]) => (
-            <Link key={k} to={`${basePath}?lang=${k}`} preventScrollReset replace role="tab" aria-selected={lang === k}
-                  className={`rounded-md px-2.5 py-1 text-xs font-semibold ${lang === k ? "bg-[var(--surface)] text-[var(--ink)] shadow-sm" : "text-[var(--ink-3)] hover:text-[var(--ink)]"}`}>{l}</Link>
-          ))}
-        </div>}
+    <li className="py-3.5 first:pt-0 last:pb-0">
+      <div className="flex items-baseline justify-between gap-4">
+        <p className="text-[15px] font-semibold text-[var(--ink)]">{item.title}</p>
+        {value && <p className={`tabular shrink-0 text-[15px] font-bold ${color}`}>{value}</p>}
       </div>
-      <div className="px-6 py-5">
-        <Suspense key={lang} fallback={<div className="space-y-2.5" aria-busy="true"><Skeleton className="h-4 w-full" /><Skeleton className="h-4 w-11/12" /><Skeleton className="h-4 w-4/5" /><Skeleton className="h-4 w-2/3" /></div>}>
-          <Await resolve={narrative} errorElement={<p className="text-sm text-[var(--ink-3)]">The written explanation is unavailable right now. The breakdown is complete.</p>}>
-            {(r) => r.narrative ? (
-              <div className="fade-up">
-                <CitedText text={r.narrative} onCite={cite} />
-                <p className="mt-4 flex flex-wrap items-center gap-1.5 text-xs text-[var(--ink-3)]">
-                  <ShieldCheck size={13} />
-                  {r.status === "VERIFIED" && <span className="font-semibold text-[var(--good)]">Verified</span>}
-                  {r.status === "REPAIRED" && <span className="font-semibold text-[var(--good)]">Verified after self-correction</span>}
-                  {r.status === "UNVERIFIED" && <span className="font-semibold text-[var(--warn)]">Not verified</span>}
-                  <span>· Answered by the billing agent ({r.provider.split(":")[1] ?? r.provider}) from documents built from your records. Every number is checked against the cited documents.</span>
-                </p>
-              </div>
-            ) : (
-              <p className="text-sm text-[var(--ink-3)]">The AI explanation is unavailable right now{r.trace?.degraded?.length ? ` (${r.trace.degraded[0]})` : ""}. The breakdown below is exact and computed from your CDRs.</p>
-            )}
-          </Await>
-        </Suspense>
+      <p className="mt-1 text-[14px] leading-relaxed text-[var(--ink-2)]">
+        <Inline text={item.why} cites={cites} /><ItemCites item={item} cites={cites} onCite={onCite} />
+      </p>
+    </li>
+  );
+}
+
+function Loading() {
+  return (
+    <div className="grid gap-6 lg:grid-cols-5" aria-busy="true">
+      <Card className="p-6 lg:col-span-3"><div className="space-y-3"><Skeleton className="h-5 w-1/3" /><Skeleton className="h-4 w-full" /><Skeleton className="h-4 w-11/12" /><Skeleton className="h-4 w-4/5" /></div></Card>
+      <Card className="p-6 lg:col-span-2"><div className="space-y-3"><Skeleton className="h-5 w-1/2" /><Skeleton className="h-4 w-full" /><Skeleton className="h-4 w-2/3" /></div></Card>
+    </div>
+  );
+}
+
+/** "Why your bill changed": summary, drivers, top usage and tip, all written by the LLM from computed
+ * facts, each item citing numbered sources; plus evidence and the trace of how it was produced. */
+export function ExplanationSection({ data, lang, basePath, cycle, heading, showLanguages = true }:
+  { data: Promise<ExplanationResponse> | ExplanationResponse; lang: string; basePath: string; cycle?: string; heading: string; showLanguages?: boolean }) {
+  return (
+    <section className="space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <h2 className="display text-[24px] font-extrabold leading-tight">{heading}</h2>
+        {showLanguages && (
+          <div className="flex rounded-lg bg-[var(--chip)] p-0.5" role="tablist" aria-label="Language">
+            {LANGS.map(([k, l]) => (
+              <Link key={k} to={`${basePath}?lang=${k}`} preventScrollReset replace role="tab" aria-selected={lang === k}
+                    className={`rounded-md px-3 py-1.5 text-xs font-semibold ${lang === k ? "bg-[var(--surface)] text-[var(--ink)] shadow-sm" : "text-[var(--ink-3)] hover:text-[var(--ink)]"}`}>{l}</Link>
+            ))}
+          </div>
+        )}
       </div>
-      {cycle && (
-        <Suspense fallback={null}>
-          <Await resolve={narrative} errorElement={null}>
-            {(r) => <SourcesPanel citations={r.citations ?? []} trace={r.trace} cycle={cycle} open={open} setOpen={setOpen} highlight={hl} />}
-          </Await>
-        </Suspense>
-      )}
+      <Suspense key={lang} fallback={<Loading />}>
+        <Await resolve={data} errorElement={<Unavailable />}>
+          {(r) => (r.llm ? <Body r={r} cycle={cycle} /> : <Unavailable />)}
+        </Await>
+      </Suspense>
+    </section>
+  );
+}
+
+function Unavailable() {
+  return (
+    <Card className="px-6 py-5">
+      <p className="text-[15px] text-[var(--ink-2)]">The explanation isn't available right now. Your bill breakdown above is complete and exact.</p>
     </Card>
+  );
+}
+
+function Body({ r, cycle }: { r: ExplanationResponse; cycle?: string }) {
+  const llm = r.llm!;
+  const cites = new CiteMap();
+  const [open, setOpen] = useState(false);
+  const [hl, setHl] = useState<number | null>(null);
+  const onCite = (n: number) => {
+    setOpen(true); setHl(n);
+    setTimeout(() => document.getElementById(`cite-${n}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 60);
+  };
+  const byLabel = Object.fromEntries((r.sources ?? []).map((s) => [s.label, s]));
+  const up = (v?: string) => (v ?? "").trim().startsWith("+");
+  const down = (v?: string) => /^[−-]/.test((v ?? "").trim());
+
+  // render once to assign citation numbers in reading order
+  const summary = <Inline text={llm.summary} cites={cites} />;
+  const drivers = llm.drivers.map((d, i) => <ItemRow key={i} item={d} value={d.impact} tone={up(d.impact) ? "up" : down(d.impact) ? "down" : "neutral"} cites={cites} onCite={onCite} />);
+  const usage = llm.top_usage.map((d, i) => <ItemRow key={i} item={d} value={d.amount} tone="neutral" cites={cites} onCite={onCite} />);
+  const tipCites = (llm.tip_sources ?? []).map((l) => { const n = cites.num(l); return <CiteMark key={l} n={n} onClick={() => onCite(n)} />; });
+  const sourceItems = cites.labels.filter((l) => byLabel[l]).map((l) => ({ n: cites.num(l), ...sourceTitle(byLabel[l]) }));
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <div className="px-6 pt-5">
+          <p className="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wide text-[var(--ink-3)]"><Sparkles size={15} className="text-[var(--brand)]" /> In short</p>
+          <p className="mt-2.5 text-[16px] leading-[1.7] text-[var(--ink)]">{summary}</p>
+          {llm.tip && (
+            <div className="mt-4 flex gap-3 rounded-lg bg-[var(--surface-2)] px-4 py-3 ring-1 ring-[var(--line)]">
+              <Lightbulb size={17} className="mt-0.5 shrink-0 text-[var(--warn)]" />
+              <p className="text-[14px] leading-relaxed text-[var(--ink-2)]"><Inline text={llm.tip} cites={cites} />{tipCites}</p>
+            </div>
+          )}
+          <p className="mt-4 flex items-center gap-1.5 pb-5 text-xs text-[var(--ink-3)]">
+            <ShieldCheck size={13} className="text-[var(--good)]" />
+            {r.status === "REPAIRED" ? "Checked against your records (corrected once)" : "Checked against your records"} · tap a number to see its source
+          </p>
+        </div>
+        <div className="border-t border-[var(--line)]">
+          <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
+                  className="flex w-full items-center justify-between px-6 py-3.5 text-left text-sm font-semibold text-[var(--ink-2)] hover:bg-[var(--surface-2)]">
+            <span>Sources ({sourceItems.length}) and evidence</span>
+            <ChevronDown size={16} className={`transition-transform ${open ? "rotate-180" : ""}`} />
+          </button>
+          {open && (
+            <div className="space-y-5 px-6 pb-6">
+              <SourceList items={sourceItems} highlight={hl} />
+              {cycle && <EvidencePanel cycle={cycle} />}
+              {r.trace && (
+                <details className="rounded-lg border border-[var(--line)] px-4 py-3">
+                  <summary className="flex cursor-pointer items-center gap-1.5 text-sm font-semibold"><BrainCircuit size={15} /> How this explanation was produced</summary>
+                  <div className="mt-3"><AgentTraceView trace={r.trace} /></div>
+                </details>
+              )}
+            </div>
+          )}
+        </div>
+      </Card>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader title="What changed" subtitle="Biggest changes first" />
+          <div className="px-6 pb-6 pt-4">
+            {drivers.length ? <ul className="divide-y divide-[var(--line)]">{drivers}</ul>
+              : <p className="text-[14px] text-[var(--ink-2)]">Nothing changed compared with the previous month.</p>}
+          </div>
+        </Card>
+        <Card>
+          <CardHeader title="Top usage drivers" subtitle="Charges beyond your monthly plan fee" />
+          <div className="px-6 pb-6 pt-4">
+            {usage.length ? <ul className="divide-y divide-[var(--line)]">{usage}</ul>
+              : <div className="flex items-center gap-3 rounded-lg bg-[var(--good-bg)] px-4 py-3 text-sm font-medium text-[var(--good)]"><ShieldCheck size={18} /> Everything was covered by your plan.</div>}
+          </div>
+        </Card>
+      </div>
+    </div>
   );
 }

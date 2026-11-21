@@ -8,12 +8,10 @@ from telco_common.explainer import explain
 from telco_common.models import cycle_of
 
 from ..db import bills, get_engine, subscribers
-from ..deps import RateLimiter, get_usage_state, get_valkey
+from ..deps import get_usage_state, get_valkey
 from ..security import Principal, current_principal
-from ..services.ai import Narrator
 from ..services.bills import row_to_bill
 from ..services.simulate import SCENARIOS, UsageFileError, parse_upload, scenario_counters
-from ..settings import get_settings
 
 router = APIRouter(prefix="/v1/me/usage", tags=["usage-insights"])
 
@@ -65,11 +63,16 @@ async def simulate(p: Principal = Depends(current_principal), scenario: str | No
     # priced as "this cycle" (YYYY-MM) so it fits every cycle-typed column and renders like a real bill
     simulated = rate(sub.id, cycle_of(datetime.now(UTC)), get_plan(sub.plan_code), counters)
     ex = explain(simulated, row_to_bill(last) if last else None)
-    s = get_settings()
-    budget = lambda: RateLimiter(get_valkey()).allow(f"ai:{p.subscriber_id}", s.ai_daily_limit_per_subscriber, 86400)
-    text, provider = Narrator(s, engine).narrate(ex, p.subscriber_id, p.country, lang, budget=budget)
-    if provider == "template":  # no canned prose: the deterministic breakdown is shown instead
-        text, provider = "", "none"
+    llm_out, status, sources = None, "UNAVAILABLE", []
+    try:
+        from ..agent.explain_llm import explain_bill
+        from ..agent.factory import build_llm
+
+        res = explain_bill(build_llm(p.country, p.subscriber_id), get_valkey(), simulated,
+                           row_to_bill(last) if last else None, lang)
+        llm_out, status, sources = res["explanation"], res["status"], res["sources"]
+    except Exception:  # noqa: BLE001, S110 - LLM unavailable: the priced breakdown is still shown
+        pass
     return {"source": source, "compared_to": last.cycle if last else None, "baseline": "your-last-cycle" if (personal and last) else None,
             "bill": simulated.model_dump(),
-            "explanation": ex.model_dump(), "narrative": text, "provider": provider}
+            "explanation": ex.model_dump(), "llm": llm_out, "status": status, "sources": sources}

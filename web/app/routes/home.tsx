@@ -1,11 +1,13 @@
 import { ArrowRight, CalendarClock, CheckCircle2, Download, Gauge, MessageSquare, Phone, Plane, Receipt, Sparkles, Wallet } from "lucide-react";
 import { Link } from "react-router";
-import { Narrative, TopDrivers, WhatChanged } from "~/components/Explain";
+import { ExplanationSection } from "~/components/Explain";
+import { Suspense } from "react";
+import { Await } from "react-router";
 import { PayButton } from "~/components/PayButton";
 import { TrendChart } from "~/components/TrendChart";
 import { Card, CardHeader, LinkButton, Pill } from "~/components/ui";
 import { api, PRIVATE } from "~/lib/api.server";
-import { cycleLabel, dateLabel, inSentence, mbToGb, money } from "~/lib/format";
+import { cycleLabel, dateLabel, mbToGb, money } from "~/lib/format";
 import type { ExplanationResponse } from "~/lib/types";
 import { useSnapshot } from "./_app";
 import type { Route } from "./+types/home";
@@ -17,20 +19,19 @@ export const headers = () => PRIVATE;
 export async function loader({ request }: Route.LoaderArgs) {
   const lang = new URL(request.url).searchParams.get("lang") ?? "en";
   const bills = await api<{ cycle: string }[]>(request, "/v1/me/bills?months=1");
-  const last = bills.at(-1)?.cycle;
-  if (!last) return { facts: null, narrative: null, lang };
-  const facts = await api<ExplanationResponse>(request, `/v1/me/bills/${last}/explanation?ai=false`);
-  const narrative = api<ExplanationResponse>(request, `/v1/me/bills/${last}/explanation?lang=${lang}`);
-  return { facts, narrative, lang };
+  const last = bills.at(-1)?.cycle ?? null;
+  // the LLM explanation streams in after the page renders (cached when the bill hasn't changed)
+  const explanation = last ? api<ExplanationResponse>(request, `/v1/me/bills/${last}/explanation?lang=${lang}`) : null;
+  return { explanation, last, lang };
 }
 
 export default function Overview({ loaderData }: Route.ComponentProps) {
-  const { facts, narrative, lang } = loaderData;
+  const { explanation, last, lang } = loaderData;
   const { home, d } = useSnapshot();
   const loc = home.subscriber.locale;
   const u = home.usage;
   const cur = home.unbilled.currency;
-  const ex = facts?.explanation;
+
   const pct = u.data_pct;
   const projPct = (d.projectedMb / Math.max(u.data_allowance_mb, 1)) * 100;
   const meterColor = pct >= 100 ? "var(--bad)" : pct >= 80 ? "var(--warn)" : "var(--brand)";
@@ -48,14 +49,18 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
         <p className="text-[13px] text-[var(--ink-3)]">{home.plan.name} · updated {d.asOfLabel}</p>
       </div>
 
-      {ex && ex.direction === "UP" && ex.drivers[0] && (
-        <Link to={`/bills/${ex.cycle}`} className="group flex items-center gap-4 rounded-[var(--radius)] border border-[var(--brand)]/25 bg-[var(--brand-bg)] px-5 py-4 transition-colors hover:border-[var(--brand)]">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--brand)] text-white"><Sparkles size={18} /></span>
-          <p className="text-[15px] leading-snug text-[var(--ink)]">
-            Your <b>{cycleLabel(ex.cycle, loc)}</b> bill was <b>{money(ex.delta_total ?? 0, ex.currency, loc)} higher</b> than {cycleLabel(ex.previous_cycle!, loc).split(" ")[0]}, mainly because of <b>{inSentence(ex.drivers[0].label)}</b>.
-          </p>
-          <span className="ml-auto hidden shrink-0 items-center gap-1 text-sm font-bold text-[var(--brand-ink)] sm:flex">See why <ArrowRight size={16} className="transition-transform group-hover:translate-x-0.5" /></span>
-        </Link>
+      {explanation && (
+        <Suspense fallback={null}>
+          <Await resolve={explanation} errorElement={null}>
+            {(r) => r.llm?.summary ? (
+              <Link to={`/bills/${last}`} className="group flex items-center gap-4 rounded-[var(--radius)] border border-[var(--brand)]/25 bg-[var(--brand-bg)] px-5 py-4 transition-colors hover:border-[var(--brand)]">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--brand)] text-white"><Sparkles size={18} /></span>
+                <p className="text-[15px] leading-snug text-[var(--ink)]">{r.llm.summary.replace(/\s*\[[DGS]\d{1,2}\]/g, "").split(/(?<=\.)\s/)[0]}</p>
+                <span className="ml-auto hidden shrink-0 items-center gap-1 text-sm font-bold text-[var(--brand-ink)] sm:flex">See why <ArrowRight size={16} className="transition-transform group-hover:translate-x-0.5" /></span>
+              </Link>
+            ) : null}
+          </Await>
+        </Suspense>
       )}
 
       <div className="grid gap-6 lg:grid-cols-3">
@@ -135,19 +140,9 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
         </div>
       </Card>
 
-      {ex && narrative && (
-        <section className="space-y-4">
-          <div className="flex items-baseline justify-between">
-            <h2 className="display text-[24px] font-extrabold">Why your {cycleLabel(ex.cycle, loc)} bill {ex.direction === "UP" ? "went up" : ex.direction === "DOWN" ? "went down" : "looks like this"}</h2>
-          </div>
-          <div className="grid gap-6 lg:grid-cols-5">
-            <div className="space-y-6 lg:col-span-3">
-              <Narrative narrative={narrative} lang={lang} basePath="/" cycle={ex.cycle} />
-              <WhatChanged ex={ex} locale={loc} />
-            </div>
-            <div className="lg:col-span-2"><TopDrivers ex={ex} locale={loc} /></div>
-          </div>
-        </section>
+      {explanation && last && (
+        <ExplanationSection data={explanation} lang={lang} basePath="/" cycle={last}
+                            heading={`Why your ${cycleLabel(last, loc)} bill looks like this`} />
       )}
     </div>
   );

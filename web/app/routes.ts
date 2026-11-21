@@ -19,4 +19,5 @@ export default [
   route("api/sample.csv", "routes/api.sample.ts"),
   route("api/evidence/:cycle", "routes/api.evidence.ts"),
   route("api/ask", "routes/api.ask.ts"),
+  route("api/ask/stream", "routes/api.ask-stream.ts"),
 ] satisfies RouteConfig;

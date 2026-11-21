@@ -1,18 +1,18 @@
 import { useRef, useState } from "react";
 import { Form, useNavigation } from "react-router";
 import { FileUp, Globe, Loader2, Phone, Plane, Sun, Tv, Upload } from "lucide-react";
-import { DeltaPill, Narrative, TopDrivers, WhatChanged } from "~/components/Explain";
+import { DeltaPill, ExplanationSection } from "~/components/Explain";
 import { Card, CardHeader } from "~/components/ui";
 import { api, ApiError, PRIVATE } from "~/lib/api.server";
 import { cycleLabel, money } from "~/lib/format";
-import type { Explanation, Line } from "~/lib/types";
+import type { Explanation, Line, LlmExplanation, SourceDoc } from "~/lib/types";
 import { useSnapshot } from "./_app";
 import type { Route } from "./+types/insights";
 
 export const headers = () => PRIVATE;
 export const meta = () => [{ title: "Try your usage · Self-care" }];
 
-type SimResult = { source: string; compared_to: string | null; baseline: string | null; narrative: string; provider: string;
+type SimResult = { source: string; compared_to: string | null; baseline: string | null; llm: LlmExplanation | null; status: string; sources: SourceDoc[];
   bill: { lines: Line[]; subtotal: number; vat: number; total: number; currency: string }; explanation: Explanation };
 
 const ICONS: Record<string, typeof Plane> = { "us-trip-2-weeks": Plane, "eu-summer-holiday": Sun, "heavy-streaming": Tv,
@@ -114,13 +114,8 @@ export default function Insights({ loaderData, actionData }: Route.ComponentProp
               <DeltaPill ex={r.explanation} locale={loc} />
             </div>
           </Card>
-          <div className="grid gap-6 lg:grid-cols-5">
-            <div className="space-y-6 lg:col-span-3">
-              <Narrative narrative={{ narrative: r.narrative, provider: r.provider, explanation: r.explanation, partial: false }} lang="en" basePath="/insights" title="What this would mean" languages={false} />
-              <WhatChanged ex={r.explanation} locale={loc} title="Compared with your last bill" />
-            </div>
-            <div className="lg:col-span-2"><TopDrivers ex={r.explanation} locale={loc} /></div>
-          </div>
+          <ExplanationSection data={{ explanation: r.explanation, partial: false, llm: r.llm, sources: r.sources, status: r.status }}
+                              lang="en" basePath="/insights" heading="What this would mean" showLanguages={false} />
         </section>
       )}
     </div>
