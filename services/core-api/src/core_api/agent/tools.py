@@ -202,7 +202,9 @@ def t_propose_plan_change(args: dict, ctx: ToolContext) -> dict:
     return {"source": f"orders:{o['order_id']}", "proposal": True, "order_id": o["order_id"],
             "new_tariff": pv["name"], "current_tariff": pv["from"],
             "monthly_fee": f"{fmt_money(pv['old_monthly_fee'], pv['currency'])} -> {fmt_money(pv['monthly_fee'], pv['currency'])}",
-            "data": f"{pv['old_data']} -> {pv['data']}", "status": "waiting for the customer's approval"}
+            "data": f"{pv['old_data']} -> {pv['data']}",
+            "this_month_fee_prorated": f"{fmt_money(pv['this_month_fee'], pv['currency'])} ({pv['days_old']} days old tariff, {pv['days_new']} days new)",
+            "status": "waiting for the customer's approval"}
 
 
 CYCLE = {"type": "object", "properties": {"cycle": {"type": "string", "pattern": r"^\d{4}-\d{2}$",

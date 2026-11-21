@@ -136,11 +136,20 @@ async def apply_addon(order_id: str, subscriber_id: str, addon_code: str) -> str
 
 @activity.defn
 async def apply_plan(order_id: str, subscriber_id: str, plan_code: str) -> str:
-    """Switch the tariff (customer domain). Idempotent: setting the same plan twice is a no-op."""
-    from ..db import get_engine, subscribers
+    """Switch the tariff and record it in the tariff history in ONE transaction (the history drives
+    pro-rating). Idempotent: the history row is keyed by order id, so a retried activity changes nothing."""
+    from sqlalchemy.exc import IntegrityError
 
-    with get_engine().begin() as cx:
-        cx.execute(update(subscribers).where(subscribers.c.id == subscriber_id).values(plan_code=plan_code))
+    from ..db import get_engine, plan_changes, subscribers
+
+    try:
+        with get_engine().begin() as cx:
+            old = cx.execute(select(subscribers.c.plan_code).where(subscribers.c.id == subscriber_id)).scalar_one()
+            cx.execute(plan_changes.insert().values(order_id=order_id, subscriber_id=subscriber_id, from_plan=old,
+                                                    to_plan=plan_code, effective_at=datetime.now(UTC)))
+            cx.execute(update(subscribers).where(subscribers.c.id == subscriber_id).values(plan_code=plan_code))
+    except IntegrityError:
+        pass  # already applied by an earlier attempt
     return plan_code
 
 
@@ -239,7 +248,7 @@ class PlanChangeWorkflow(_LegacyOrder):
             await workflow.execute_activity(apply_plan, args=[order_id, info["subscriber_id"], info["addon_code"]],
                                             start_to_close_timeout=timedelta(seconds=30), retry_policy=RETRY)
         return await self._finish(order_id, result == "CONFIRMED",
-                                  "Your new tariff is active from today; this month is billed on the new plan.")
+                                  "Your new tariff is active from today. This month is pro-rated by day: old tariff until yesterday, new from today.")
 
 
 WORKFLOWS = [AddonPurchaseWorkflow, PlanChangeWorkflow]

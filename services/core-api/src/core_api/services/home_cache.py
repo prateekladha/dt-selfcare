@@ -65,7 +65,15 @@ def build_snapshot(engine, sub_id: str) -> dict:
             raise LookupError(sub_id)
         notes = cx.execute(select(notifications).where(notifications.c.subscriber_id == sub_id)
                            .order_by(notifications.c.created_at.desc()).limit(10)).all()
+    from datetime import UTC, datetime
+
+    from telco_common.models import cycle_of
+
+    from .plan_history import segments
+
+    seg = segments(engine, sub_id, cycle_of(datetime.now(UTC)), sub.plan_code)
     return {"sub": {"id": sub.id, "name": sub.name, "email": sub.email, "country": sub.country, "plan_code": sub.plan_code},
+            "plan_segments": [[p.code, d] for p, d in seg] if seg else None,  # tariff changes this cycle
             "bills": [bill_summary(b) for b in list_bills(engine, sub_id, 12)],
             "notes": [{"id": n.id, "kind": n.kind, "title": n.title, "body": n.body,
                        "created_at": n.created_at.isoformat(), "read": n.read_at is not None} for n in notes]}
