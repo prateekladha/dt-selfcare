@@ -1,22 +1,49 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Inter Tight", "Inter", ui-sans-serif, system-ui, sans-serif;
 }
 
+/* Design tokens. Brand magenta is reserved for primary actions and the single data series;
+   everything else is a calm neutral scale so the numbers carry the page. */
 :root {
-  --bg: #f6f6f4; --card: #ffffff; --line: #e7e5e4; --chip: #f1f0ee; --grid: #eeeceb;
-  --ink: #1c1917; --ink-2: #44403c; --ink-3: #78716c;
-  --brand: #e20074; --brand-bg: #fde7f2; --brand-ink: #a3005a;
-  --good: #15803d; --good-bg: #e7f6ec; --warn: #b45309; --warn-bg: #fdf1e1; --bad: #c81e1e; --bad-bg: #fde8e8;
+  --bg: #f2f2f2;
+  --surface: #ffffff;
+  --surface-2: #f8f8f8;
+  --line: #e3e3e3;
+  --line-strong: #cfcfcf;
+  --chip: #f0f0f0;
+  --grid: #ebebeb;
+  --ink: #000000;
+  --ink-2: #383838;
+  --ink-3: #6e6e6e;
+  --brand: #e20074;
+  --brand-hover: #c80067;
+  --brand-bg: #fdeaf3;
+  --brand-ink: #a8005a;
+  --good: #137a3a;  --good-bg: #e6f5ec;
+  --warn: #a35a00;  --warn-bg: #fdf1df;
+  --bad: #c0262d;   --bad-bg: #fdeaea;
+  --shadow: none;
+  --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.14);
+  --radius: 12px;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #121211; --card: #1a1a19; --line: #2e2c2a; --chip: #262523; --grid: #2a2927;
-    --ink: #f5f5f4; --ink-2: #d6d3d1; --ink-3: #a8a29e;
-    --brand: #ec3e92; --brand-bg: #3a1528; --brand-ink: #ff8cc2;
-    --good: #4ade80; --good-bg: #12301d; --warn: #fbbf24; --warn-bg: #33270f; --bad: #f87171; --bad-bg: #3a1616;
+    --bg: #0c0c0f; --surface: #16161b; --surface-2: #1b1b21; --line: #2a2a32; --line-strong: #383842;
+    --chip: #22222a; --grid: #26262e;
+    --ink: #f4f4f6; --ink-2: #c9c9d1; --ink-3: #8e8e99;
+    --brand: #ec3e92; --brand-hover: #f2559f; --brand-bg: #3a1528; --brand-ink: #ff8cc2;
+    --good: #4ade80; --good-bg: #11301e; --warn: #fbbf24; --warn-bg: #33270f; --bad: #f87171; --bad-bg: #3a1616;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.4); --shadow-lg: 0 10px 40px rgb(0 0 0 / 0.5);
     color-scheme: dark;
   }
 }
-html, body { background: var(--bg); color: var(--ink); }
+html, body { background: var(--bg); color: var(--ink); -webkit-font-smoothing: antialiased; }
+.tabular { font-variant-numeric: tabular-nums; }
+.display { font-family: var(--font-display); letter-spacing: -0.02em; }
+:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 8px; }
+@keyframes progress { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
+@keyframes fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.fade-up { animation: fade-up 0.35s ease-out both; }

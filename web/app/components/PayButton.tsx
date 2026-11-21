@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { useRevalidator } from "react-router";
+import { CheckCircle2, CreditCard, Loader2 } from "lucide-react";
 import { Button } from "./ui";
 
 declare global {
@@ -19,7 +20,7 @@ function loadCheckout(): Promise<void> {
 
 /** Tap to pay. One idempotency key per button instance: double taps and retries reuse the
  * same gateway order, so the customer can never be charged twice for one intent. */
-export function PayButton({ purpose, billId, label, name }: { purpose: "BILL" | "ADVANCE"; billId?: string | null; label: string; name: string }) {
+export function PayButton({ purpose, billId, label, name, variant = "primary", full = false }: { purpose: "BILL" | "ADVANCE"; billId?: string | null; label: string; name: string; variant?: "primary" | "secondary"; full?: boolean }) {
   const idem = useRef<string | null>(null);
   const [state, setState] = useState<"idle" | "busy" | "done" | "error">("idle");
   const [msg, setMsg] = useState("");
@@ -41,7 +42,7 @@ export function PayButton({ purpose, billId, label, name }: { purpose: "BILL" | 
       await loadCheckout();
       const rzp = new window.Razorpay!({
         key: p.checkout.key_id, order_id: p.order_id, amount: p.charged_amount, currency: p.charged_currency,
-        name: "Mobile self-care", description: purpose === "BILL" ? "Bill payment" : "Pay unbilled usage",
+        name: "Self-care", description: purpose === "BILL" ? "Bill payment" : "Pay unbilled usage",
         prefill: { name }, theme: { color: "#E20074" },
         handler: async (r: any) => {
           const c = await fetch("/api/pay/confirm", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -62,9 +63,9 @@ export function PayButton({ purpose, billId, label, name }: { purpose: "BILL" | 
   }
 
   return (
-    <div className="flex flex-col items-start gap-1">
-      <Button onClick={pay} disabled={state === "busy" || state === "done"}>
-        {state === "busy" ? "Opening checkout…" : state === "done" ? "✓ Paid" : label}
+    <div className={`flex flex-col gap-1.5 ${full ? "items-stretch" : "items-start"}`}>
+      <Button onClick={pay} variant={variant} disabled={state === "busy" || state === "done"} className={full ? "w-full" : ""}>
+        {state === "busy" ? <><Loader2 size={16} className="animate-spin" /> Opening checkout…</> : state === "done" ? <><CheckCircle2 size={16} /> Paid</> : <><CreditCard size={16} /> {label}</>}
       </Button>
       {msg && <p className={`text-xs ${state === "error" ? "text-[var(--bad)]" : state === "done" ? "text-[var(--good)]" : "text-[var(--ink-3)]"}`}>{msg}</p>}
     </div>

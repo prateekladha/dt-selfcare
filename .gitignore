@@ -15,3 +15,7 @@ dist/
 !*.tfvars.example
 .DS_Store
 backend.hcl
+
+# playwright
+web/e2e-results
+web/e2e-report

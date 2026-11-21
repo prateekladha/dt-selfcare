@@ -1,90 +1,127 @@
+import { useRef, useState } from "react";
 import { Form, useNavigation } from "react-router";
-import { Narrative, TopDrivers, WhyChanged } from "~/components/Explain";
-import { Card } from "~/components/ui";
+import { FileUp, Globe, Loader2, Phone, Plane, Sun, Tv, Upload } from "lucide-react";
+import { DeltaPill, Narrative, TopDrivers, WhatChanged } from "~/components/Explain";
+import { Card, CardHeader } from "~/components/ui";
 import { api, ApiError, PRIVATE } from "~/lib/api.server";
-import { money } from "~/lib/format";
-import type { Explanation, Home, Line } from "~/lib/types";
+import { cycleLabel, money } from "~/lib/format";
+import type { Explanation, Line } from "~/lib/types";
+import { useSnapshot } from "./_app";
 import type { Route } from "./+types/insights";
 
 export const headers = () => PRIVATE;
-export const meta = () => [{ title: "Try your usage · Mobile self-care" }];
+export const meta = () => [{ title: "Try your usage · Self-care" }];
 
 type SimResult = { source: string; compared_to: string | null; narrative: string; provider: string;
   bill: { lines: Line[]; subtotal: number; vat: number; total: number; currency: string }; explanation: Explanation };
 
+const ICONS: Record<string, typeof Plane> = { "us-trip-2-weeks": Plane, "eu-summer-holiday": Sun, "heavy-streaming": Tv,
+  "calling-family-abroad": Phone, "light-month": Globe };
+const BLURB: Record<string, string> = { "us-trip-2-weeks": "1.5 GB data + 90 min calls in zone 2", "eu-summer-holiday": "6 GB in the EU, roam like at home",
+  "heavy-streaming": "45 GB of video at home", "calling-family-abroad": "400 min international calls", "light-month": "1 GB and an hour of calls" };
+
 export async function loader({ request }: Route.LoaderArgs) {
-  const [home, scenarios] = await Promise.all([
-    api<Home>(request, "/v1/me/home"),
-    api<{ key: string; title: string }[]>(request, "/v1/me/usage/scenarios"),
-  ]);
-  return { locale: home.subscriber.locale, plan: home.plan.name, scenarios };
+  return { scenarios: await api<{ key: string; title: string }[]>(request, "/v1/me/usage/scenarios") };
 }
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
-  const lang = String(form.get("lang") ?? "en");
   const body = new FormData();
   const file = form.get("file");
   if (file instanceof File && file.size > 0) body.set("file", file, file.name);
   else if (form.get("scenario")) body.set("scenario", String(form.get("scenario")));
   else return { error: "Choose a scenario or upload a file." };
   try {
-    return { result: await api<SimResult>(request, `/v1/me/usage/simulate?lang=${lang}`, { method: "POST", body }) };
+    return { result: await api<SimResult>(request, "/v1/me/usage/simulate", { method: "POST", body }), picked: String(form.get("scenario") ?? "") };
   } catch (e) {
-    if (e instanceof ApiError) return { error: e.message };
+    if (e instanceof ApiError) return { error: e.message.replace(/^invalid usage: /, "") };
     throw e;
   }
 }
 
 export default function Insights({ loaderData, actionData }: Route.ComponentProps) {
-  const { locale, plan, scenarios } = loaderData;
+  const { scenarios } = loaderData;
+  const { home } = useSnapshot();
+  const loc = home.subscriber.locale;
   const nav = useNavigation();
   const busy = nav.state === "submitting";
+  const pending = busy ? String(nav.formData?.get("scenario") ?? "file") : "";
   const r = actionData && "result" in actionData ? actionData.result : null;
+  const [fileName, setFileName] = useState("");
+  const [drag, setDrag] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Try your usage</h1>
-        <p className="text-sm text-[var(--ink-3)]">Upload a usage file or pick a scenario: we price it on your plan ({plan}) and explain it against your last bill. This never changes your real bill.</p>
+        <h1 className="display text-[34px] font-extrabold">Try your usage</h1>
+        <p className="mt-1 max-w-[720px] text-[15px] text-[var(--ink-3)]">See what a month would cost on your plan ({home.plan.name}) and how it compares to your last bill. Pick a scenario or upload your own usage. Your real bill is never affected.</p>
       </div>
-      <div className="grid gap-6 md:grid-cols-2">
-        <Card title="Pick a scenario">
-          <Form method="post" className="grid gap-2 sm:grid-cols-2">
-            {scenarios.map((s) => (
-              <button key={s.key} name="scenario" value={s.key} disabled={busy}
-                      className="rounded-xl border border-[var(--line)] px-3 py-3 text-left text-sm font-medium hover:border-[var(--brand)] hover:bg-[var(--brand-bg)] disabled:opacity-60">{s.title}</button>
-            ))}
+
+      <div className="grid gap-6 lg:grid-cols-5">
+        <Card className="lg:col-span-3">
+          <CardHeader title="Pick a scenario" />
+          <Form method="post" className="grid gap-3 p-6 pt-4 sm:grid-cols-2">
+            {scenarios.map((s) => {
+              const Icon = ICONS[s.key] ?? Globe;
+              const active = (actionData && "picked" in actionData && actionData.picked === s.key) || pending === s.key;
+              return (
+                <button key={s.key} name="scenario" value={s.key} disabled={busy}
+                        className={`group flex items-start gap-3 rounded-lg border p-4 text-left transition-colors disabled:opacity-70 ${active ? "border-[var(--brand)] bg-[var(--brand-bg)]" : "border-[var(--line)] hover:border-[var(--ink)]"}`}>
+                  <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${active ? "bg-[var(--brand)] text-white" : "bg-[var(--chip)] text-[var(--ink-2)]"}`}>
+                    {pending === s.key ? <Loader2 size={18} className="animate-spin" /> : <Icon size={18} />}
+                  </span>
+                  <span><span className="block font-semibold">{s.title}</span><span className="mt-0.5 block text-[13px] text-[var(--ink-3)]">{BLURB[s.key]}</span></span>
+                </button>
+              );
+            })}
           </Form>
         </Card>
-        <Card title="Upload usage (CSV or JSON)">
-          <Form method="post" encType="multipart/form-data" className="space-y-3">
-            <input type="file" name="file" accept=".csv,.json" required
-                   className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--brand-bg)] file:px-3 file:py-2 file:font-semibold file:text-[var(--brand-ink)]" />
-            <div className="flex items-center justify-between">
-              <a href="/api/sample.csv" className="text-xs font-semibold text-[var(--brand-ink)]" download="usage-sample.csv">Download a sample file</a>
-              <button disabled={busy} className="rounded-xl bg-[var(--brand)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{busy ? "Analysing…" : "Analyse"}</button>
+
+        <Card className="lg:col-span-2">
+          <CardHeader title="Upload your usage" subtitle="CSV or JSON, up to 1 MB" />
+          <Form method="post" encType="multipart/form-data" ref={formRef} className="p-6 pt-4">
+            <label onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
+                   onDrop={(e) => { e.preventDefault(); setDrag(false); if (e.dataTransfer.files[0] && fileRef.current) { fileRef.current.files = e.dataTransfer.files; setFileName(e.dataTransfer.files[0].name); } }}
+                   className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-8 text-center transition-colors ${drag ? "border-[var(--brand)] bg-[var(--brand-bg)]" : "border-[var(--line-strong)] hover:border-[var(--ink)]"}`}>
+              <FileUp size={26} className="text-[var(--ink-3)]" />
+              <span className="text-sm font-semibold">{fileName || "Drop a file here or click to choose"}</span>
+              <span className="text-xs text-[var(--ink-3)]">usage_type, quantity, unit, roaming_zone</span>
+              <input ref={fileRef} type="file" name="file" accept=".csv,.json" className="sr-only" onChange={(e) => setFileName(e.target.files?.[0]?.name ?? "")} />
+            </label>
+            <div className="mt-4 flex items-center justify-between gap-3">
+              <a href="/api/sample.csv" download="usage-sample.csv" className="text-sm font-semibold text-[var(--ink)] underline underline-offset-4">Download sample</a>
+              <button disabled={busy || !fileName} className="inline-flex h-11 items-center gap-2 rounded-lg bg-[var(--brand)] px-5 font-bold text-white hover:bg-[var(--brand-hover)] disabled:opacity-50">
+                {pending === "file" ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />} Analyse
+              </button>
             </div>
-            <p className="text-xs text-[var(--ink-3)]">Columns: usage_type (DATA, VOICE, SMS, ROAMING_DATA, ROAMING_VOICE, INTL_VOICE), quantity, unit (GB/MB, min, count), roaming_zone (EU, Z2, Z3).</p>
           </Form>
         </Card>
       </div>
-      {actionData && "error" in actionData && <p className="rounded-xl bg-[var(--bad-bg)] p-3 text-sm text-[var(--bad)]">{actionData.error}</p>}
+
+      {actionData && "error" in actionData && <div role="alert" className="rounded-lg bg-[var(--bad-bg)] px-4 py-3 text-sm font-medium text-[var(--bad)]">{actionData.error}</div>}
+
       {r && (
-        <div className="space-y-6">
-          <Card title={`Estimated bill · ${r.source.replace(/^(scenario|upload):/, "")}`}>
-            <p className="text-3xl font-bold">{money(r.bill.total, r.bill.currency, locale)}</p>
-            <ul className="mt-3 space-y-1 text-sm">{r.bill.lines.map((l) => (
-              <li key={l.code} className="flex justify-between"><span className="text-[var(--ink-2)]">{l.label} · {l.quantity.toLocaleString(locale)} {l.unit}</span><span className="tabular-nums">{money(l.amount, r.bill.currency, locale)}</span></li>))}
-            </ul>
-          </Card>
-          <div className="grid gap-6 lg:grid-cols-2">
-            <WhyChanged ex={r.explanation} locale={locale} title={r.compared_to ? "Compared with your last bill" : "Your estimate"} />
-            <div className="space-y-6">
-              <Narrative narrative={{ narrative: r.narrative, provider: r.provider, explanation: r.explanation, partial: false }} lang="en" basePath="/insights" />
-              <TopDrivers ex={r.explanation} locale={locale} />
+        <section className="fade-up space-y-6" aria-live="polite">
+          <Card>
+            <div className="flex flex-wrap items-end justify-between gap-6 p-6">
+              <div>
+                <p className="text-sm font-semibold text-[var(--ink-3)]">Estimated bill · {r.source.replace(/^scenario:/, "").replace(/^upload:/, "file: ").replace(/-/g, " ")}</p>
+                <p className="display tabular mt-1 text-[44px] font-extrabold leading-none">{money(r.bill.total, r.bill.currency, loc)}</p>
+                <p className="mt-2 text-[13px] text-[var(--ink-3)]">incl. VAT{r.compared_to && <> · compared with your {cycleLabel(r.compared_to, loc)} bill</>}</p>
+              </div>
+              <DeltaPill ex={r.explanation} locale={loc} />
             </div>
+          </Card>
+          <div className="grid gap-6 lg:grid-cols-5">
+            <div className="space-y-6 lg:col-span-3">
+              <Narrative narrative={{ narrative: r.narrative, provider: r.provider, explanation: r.explanation, partial: false }} lang="en" basePath="/insights" title="What this would mean" languages={false} />
+              <WhatChanged ex={r.explanation} locale={loc} title="Compared with your last bill" />
+            </div>
+            <div className="lg:col-span-2"><TopDrivers ex={r.explanation} locale={loc} /></div>
           </div>
-        </div>
+        </section>
       )}
     </div>
   );
