@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import UTC, datetime
 
 from confluent_kafka import Consumer, Producer
 from prometheus_client import Counter, start_http_server
@@ -53,6 +54,8 @@ def alerts_loop(stop: threading.Event) -> None:
             if m.error():
                 continue
             alert = json.loads(m.value())
+            if alert["cycle"] < datetime.now(UTC).strftime("%Y-%m"):
+                continue  # replay/backfill of a closed cycle: history, not something to notify now
             with engine.connect() as cx:
                 plan_code = cx.execute(select(subscribers.c.plan_code)
                                        .where(subscribers.c.id == alert["subscriber_id"])).scalar()

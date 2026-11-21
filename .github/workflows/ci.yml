@@ -92,7 +92,9 @@ jobs:
           helm upgrade --install selfcare deploy/helm/selfcare -n selfcare \
             -f deploy/helm/values-oci.yaml --set image.tag=${{ github.sha }} \
             --wait --timeout 20m --history-max 5
-      - name: smoke test
+      - name: in-cluster smoke test (every case-study flow)
+        run: helm test selfcare -n selfcare --logs --timeout 5m
+      - name: public endpoint
         run: |
           DOMAIN=$(grep -E '^domain:' deploy/helm/values-oci.yaml | awk '{print $2}' | tr -d '"')
           for i in $(seq 1 30); do curl -fsS "https://$DOMAIN/healthz" && exit 0; sleep 10; done; exit 1

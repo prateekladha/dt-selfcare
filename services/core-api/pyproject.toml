@@ -27,6 +27,7 @@ core-api = "core_api.main:run"
 notifier = "core_api.notifier:main"
 bill-run = "core_api.services.bills:cli"
 db-init = "core_api.dbinit:main"
+smoke-test = "core_api.smoke:main"
 
 [build-system]
 requires = ["hatchling"]

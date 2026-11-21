@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: selfcare-smoke
+  annotations: { "helm.sh/hook": test, "helm.sh/hook-delete-policy": before-hook-creation }
+spec:
+  restartPolicy: Never
+  {{- include "selfcare.podSecurity" . | nindent 2 }}
+  containers:
+    - name: smoke
+      image: {{ include "selfcare.image" (dict "root" . "name" "core-api") }}
+      command: ["smoke-test"]
+      env:
+        - name: APP_DEMO_PASSWORD
+          valueFrom: { secretKeyRef: { name: selfcare-secrets, key: demo-password } }
+      resources: { requests: { cpu: 20m, memory: 64Mi }, limits: { memory: 256Mi } }
+      {{- include "selfcare.containerSecurity" . | nindent 6 }}
