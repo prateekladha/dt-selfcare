@@ -141,9 +141,11 @@ test("payment: pay in advance with UPI in Razorpay test mode, settled exactly on
   } else {
     // Card path with Razorpay's documented domestic test card; bank page in test mode offers Success/Failure.
     await rzp.getByText(/^Cards?$/i).first().click().catch(() => {});
-    await rzp.getByPlaceholder(/card number/i).fill("5267 3181 8797 5449");
-    await rzp.getByPlaceholder(/MM ?\/ ?YY/i).fill("12/30");
-    await rzp.getByPlaceholder(/CVV/i).fill("123");
+    const field = (name: string, label: RegExp) =>
+      rzp.locator(`input[name="${name}"]`).or(rzp.getByLabel(label)).or(rzp.getByPlaceholder(label)).first();
+    await field("card[number]", /card number/i).fill("5267 3181 8797 5449", { timeout: 15_000 });
+    await field("card[expiry]", /MM ?\/ ?YY|expiry/i).fill("12/30", { timeout: 15_000 });
+    await field("card[cvv]", /CVV/i).fill("123", { timeout: 15_000 });
     await shot(page, "08-pay-3-card");
     const popup = page.waitForEvent("popup", { timeout: 30_000 }).catch(() => null);
     await rzp.getByRole("button", { name: /^(continue|pay)/i }).last().click();
