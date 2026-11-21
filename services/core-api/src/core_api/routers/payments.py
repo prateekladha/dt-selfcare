@@ -26,7 +26,10 @@ def gateway_for(country: str, subscriber_id: str) -> PaymentGateway:
         s = get_settings()
         if name != "razorpay":
             raise HTTPException(503, f"payment gateway {name!r} not available")
-        _gateways[name] = Razorpay(s.razorpay_key_id, s.razorpay_key_secret, s.razorpay_webhook_secret)
+        try:
+            _gateways[name] = Razorpay(s.razorpay_key_id, s.razorpay_key_secret, s.razorpay_webhook_secret)
+        except RuntimeError as e:  # keys not provisioned in Vault yet
+            raise HTTPException(503, "payments are not configured") from e
     return _gateways[name]
 
 
@@ -97,7 +100,10 @@ def status(payment_id: str, p: Principal = Depends(current_principal)) -> dict:
 async def razorpay_webhook(request: Request, x_razorpay_signature: str = Header(default="")) -> dict:
     body = await request.body()
     s = get_settings()
-    gw = _gateways.get("razorpay") or Razorpay(s.razorpay_key_id, s.razorpay_key_secret, s.razorpay_webhook_secret)
+    try:
+        gw = _gateways.get("razorpay") or Razorpay(s.razorpay_key_id, s.razorpay_key_secret, s.razorpay_webhook_secret)
+    except RuntimeError as e:
+        raise HTTPException(503, "payments are not configured") from e
     if not gw.verify_webhook(body, x_razorpay_signature):
         raise HTTPException(401, "bad signature")
     event = await request.json()
