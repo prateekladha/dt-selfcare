@@ -119,3 +119,14 @@ def test_structured_explanation_single_call_verified_and_cached(world):
     assert out["status"] == "VERIFIED" and out["explanation"]["drivers"][0]["impact"] == "+7.40 EUR"
     again = explain_bill(scripted_llm(r, []), r, cur, prev)  # no LLM call available -> must come from cache
     assert again["trace"]["cache"].startswith("hit")
+
+
+
+def test_greeting_is_a_single_conversational_answer_without_repairs(world):
+    engine, r, state = world
+    llm = scripted_llm(r, [("text", "Hi! I can help with your bills, usage, plan and payments. What would you like to know?")])
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
+    events = list(run_stream("Hello", ctx, llm, engine))
+    kinds = [e["type"] for e in events]
+    assert "repairing" not in kinds and "replace" not in kinds and kinds.count("done") == 1
+    assert events[-1]["status"] == "CONVERSATIONAL" and events[-1]["answer"].startswith("Hi!")

@@ -59,7 +59,7 @@ function Answer({ t }: { t: Turn }) {
           : t.text ? body
           : <p className="flex items-center gap-2 text-[14px] text-[var(--ink-3)]"><Loader2 size={15} className="animate-spin" /> Thinking…</p>}
         {t.repairing && <p className="mt-3 text-xs text-[var(--warn)]">Double-checking a number against your records…</p>}
-        {t.status && (
+        {t.status && t.status !== "CONVERSATIONAL" && (
           <p className="mt-4 flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
             <ShieldCheck size={13} className={ok ? "text-[var(--good)]" : "text-[var(--warn)]"} />
             {ok ? (t.status === "REPAIRED" ? "Checked against your records (corrected once)" : "Checked against your records") : "Couldn't be fully checked"}
@@ -67,7 +67,7 @@ function Answer({ t }: { t: Turn }) {
           </p>
         )}
       </div>
-      {t.status && (items.length > 0 || t.trace) && (
+      {t.status && items.length > 0 && (
         <div className="border-t border-[var(--line)]">
           <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
                   className="flex w-full items-center justify-between px-6 py-3.5 text-left text-sm font-semibold text-[var(--ink-2)] hover:bg-[var(--surface-2)]">

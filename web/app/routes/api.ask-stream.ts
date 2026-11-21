@@ -1,10 +1,10 @@
 import { rawCore } from "~/lib/api.server";
-import { requireToken } from "~/lib/session.server";
+import { freshToken } from "~/lib/session.server";
 import type { Route } from "./+types/api.ask-stream";
 
 // Streams the agent's Server-Sent Events from core-api to the browser (token never leaves the server).
 export async function action({ request }: Route.ActionArgs) {
-  const token = await requireToken(request);
+  const { token } = await freshToken(request);
   const { question, lang } = await request.json();
   const upstream = await rawCore("/v1/me/assistant/stream", {
     method: "POST",

@@ -30,9 +30,10 @@ export async function action({ request }: Route.ActionArgs) {
   if (!res.ok) {
     return { error: res.status === 429 ? "Too many attempts. Please wait a few minutes and try again." : "That number and password don't match.", subscriber_id };
   }
-  const { access_token } = await res.json();
+  const { access_token, refresh_token } = await res.json();
   const session = await sessions.getSession(request.headers.get("Cookie"));
   session.set("token", access_token);
+  session.set("refresh", refresh_token);
   session.set("sub", subscriber_id);
   return redirect("/", { headers: { "Set-Cookie": await sessions.commitSession(session) } });
 }

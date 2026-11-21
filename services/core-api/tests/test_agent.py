@@ -134,6 +134,7 @@ def test_answer_cache_and_stage_spend_cap(world):
 def test_verify_rules():
     labels = {"D1": "Roaming data 372 MB costs 7.40 EUR"}
     assert verify("Roaming cost 7.40 EUR [D1].", labels) == []
-    assert verify("Roaming cost 7.40 EUR.", labels) == ["no citations"]
+    assert verify("Roaming cost 7.40 EUR.", labels) == ["numbers without citations"]
+    assert verify("Hi! I can help with your bills, usage and payments.", labels) == []  # conversational
     assert any("[D9]" in p for p in verify("x [D9].", labels))
 

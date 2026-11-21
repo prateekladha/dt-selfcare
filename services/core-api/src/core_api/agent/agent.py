@@ -69,8 +69,11 @@ def verify(answer: str, labels: dict[str, str]) -> list[str]:
     """-> problems (empty = verified). labels maps D#/G# -> document text."""
     cited = _CITE.findall(answer)
     problems = [f"unknown citation [{c}]" for c in cited if c not in labels]
+    body_numbers = [t for t in _NUM.findall(_CITE.sub("", answer)) if len(_norm(t)) > 1]
     if not cited:
-        return ["no citations"]
+        # factual claims with numbers must be cited; a conversational reply (greeting, clarifying
+        # question) has nothing to cite and is fine as is
+        return ["numbers without citations"] if body_numbers else []
     supported = set().union(*(numbers_in(labels[c]) for c in cited if c in labels))
     body = _CITE.sub("", answer)
     for tok in _NUM.findall(body):
