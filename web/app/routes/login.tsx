@@ -16,10 +16,15 @@ const DEMO = [
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
-  const res = await rawCore("/v1/auth/login", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ subscriber_id: form.get("subscriber_id"), password: form.get("password") }),
-  });
+  let res: Response;
+  try {
+    res = await rawCore("/v1/auth/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subscriber_id: form.get("subscriber_id"), password: form.get("password") }),
+    });
+  } catch {
+    return { error: "We can't reach the service right now. Please try again in a moment." };
+  }
   if (!res.ok) return { error: res.status === 429 ? "Too many attempts. Try again later." : "Wrong number or password." };
   const { access_token } = await res.json();
   const session = await sessions.getSession(request.headers.get("Cookie"));
