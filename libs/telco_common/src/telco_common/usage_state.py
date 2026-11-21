@@ -14,11 +14,12 @@ from dataclasses import dataclass
 from importlib.resources import files
 
 import valkey
+
 from telco_common.catalog import MB, get_addon, get_plan
 from telco_common.models import EventKind, UsageRecord
 from telco_common.partitioning import partition_for, slot_tag
 
-LUA = files("usage_aggregator").joinpath("apply.lua").read_text()
+LUA = files("telco_common").joinpath("apply.lua").read_text()
 
 SEEN_TTL_S = 7 * 24 * 3600
 USAGE_TTL_S = 400 * 24 * 3600  # > 12 months of history for trends / disputes
@@ -73,6 +74,10 @@ class UsageState:
     def committed_offset(self, partition: int) -> int | None:
         v = self.r.get(offset_key(partition))
         return int(v) if v is not None else None
+
+    def committed_offset_for(self, subscriber_id: str) -> int | None:
+        """Monotonic version of a subscriber's usage view (offset of their partition)."""
+        return self.committed_offset(partition_for(subscriber_id, self.partitions))
 
     # ---- the hot path ----
     def apply(self, partition: int, offset: int, msg_id: str, records: list[UsageRecord],

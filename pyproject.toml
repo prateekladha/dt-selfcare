@@ -2,13 +2,14 @@
 name = "dt-selfcare"
 version = "0.1.0"
 requires-python = ">=3.13,<3.14"
-dependencies = ["telco-common", "usage-aggregator", "usage-collector", "network-emulator"]
+dependencies = ["telco-common", "usage-aggregator", "usage-collector", "network-emulator", "core-api"]
 
 [tool.uv.sources]
 telco-common = { workspace = true }
 usage-aggregator = { workspace = true }
 usage-collector = { workspace = true }
 network-emulator = { workspace = true }
+core-api = { workspace = true }
 
 [tool.uv.workspace]
 members = ["libs/telco_common", "services/*"]
@@ -25,3 +26,6 @@ addopts = "--import-mode=importlib"
 [tool.ruff]
 line-length = 110
 target-version = "py313"
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Header", "fastapi.Query"]

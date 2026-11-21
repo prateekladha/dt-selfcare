@@ -14,9 +14,9 @@ from prometheus_client import Counter, Gauge, Histogram
 from telco_common.codec import decode_records
 from telco_common.logging import configure_logging
 from telco_common.streaming import StreamSettings
+from telco_common.usage_state import UsageState
 
 from .runtime import AlertLevels, Settings, bootstrap
-from .state import UsageState
 
 MSGS = Counter("aggregator_messages_total", "Stream messages handled", ["result"])
 RECORDS = Counter("aggregator_records_total", "Usage records applied")

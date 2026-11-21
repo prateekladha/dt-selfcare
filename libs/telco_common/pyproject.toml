@@ -2,7 +2,7 @@
 name = "telco-common"
 version = "0.1.0"
 requires-python = ">=3.13"
-dependencies = ["pydantic>=2.9", "pydantic-settings>=2.6", "openfeature-sdk>=0.7", "structlog>=24.4"]
+dependencies = ["pydantic>=2.9", "pydantic-settings>=2.6", "openfeature-sdk>=0.7", "structlog>=24.4", "valkey>=6.0"]
 
 [build-system]
 requires = ["hatchling"]

@@ -5,7 +5,7 @@ import pytest
 from telco_common.catalog import MB
 from telco_common.models import Country, EventKind, UsageRecord, UsageType
 from telco_common.partitioning import partition_for
-from usage_aggregator.state import UsageState, outbox_key
+from telco_common.usage_state import UsageState, outbox_key
 
 P = 4
 LEVELS = [50, 80, 100]

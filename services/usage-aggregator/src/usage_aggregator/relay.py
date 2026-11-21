@@ -13,9 +13,9 @@ from confluent_kafka import Producer
 from prometheus_client import Counter
 from telco_common.logging import configure_logging
 from telco_common.streaming import StreamSettings
+from telco_common.usage_state import outbox_key
 
 from .runtime import Settings, bootstrap
-from .state import outbox_key
 
 RELAYED = Counter("relay_alerts_published_total", "Alerts published to the alerts topic")
 GROUP, CONSUMER = "relay", "relay-0"
