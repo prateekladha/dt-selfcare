@@ -53,6 +53,7 @@ metadata:
     {{- include "selfcare.labels" . | nindent 4 }}
 spec:
   replicas: 1
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } }   # background worker: tasks wait in their queue
   selector: { matchLabels: { app: workflow-worker } }
   template:
     metadata: { labels: { app: workflow-worker } }
