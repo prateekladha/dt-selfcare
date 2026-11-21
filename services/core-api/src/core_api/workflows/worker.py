@@ -50,8 +50,16 @@ async def legacy_bss(client: Client, stop: asyncio.Event) -> None:
 
 async def amain() -> None:
     create_schema(get_engine())
-    client = await Client.connect(os.environ.get("TEMPORAL_ADDRESS", "temporal:7233"),
-                                  namespace=os.environ.get("TEMPORAL_NAMESPACE", "default"))
+    for attempt in range(60):  # server may still be starting (rollout order): wait instead of crash-looping
+        try:
+            client = await Client.connect(os.environ.get("TEMPORAL_ADDRESS", "temporal:7233"),
+                                          namespace=os.environ.get("TEMPORAL_NAMESPACE", "default"))
+            break
+        except RuntimeError:
+            log.warning("temporal_not_ready", attempt=attempt)
+            await asyncio.sleep(min(2 + attempt, 10))
+    else:
+        raise SystemExit("temporal unreachable")
     stop = asyncio.Event()
     # Legacy BSS can take only a few hundred calls/s: Temporal enforces a task-queue-wide activity rate
     # (across ALL worker pods) and a per-pod concurrency cap. Excess work waits durably in the queue

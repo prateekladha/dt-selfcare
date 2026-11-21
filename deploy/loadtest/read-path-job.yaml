@@ -1,0 +1,71 @@
+# Read-path load test: the home-screen aggregate (/v1/me/home), i.e. what 2,500 sessions/s at peak hit.
+# Measures rps, latency percentiles, errors and the cache-hit ratio of the event-invalidated read model.
+#   sed -e "s|REGISTRY|<ocir>|" -e "s|IMAGE_TAG|<tag>|" deploy/loadtest/read-path-job.yaml | kubectl -n selfcare apply -f -
+#   kubectl -n selfcare logs -f job/read-path-loadtest
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: read-path-loadtest }
+data:
+  run.py: |
+    import asyncio, os, statistics, time
+    import httpx
+
+    CORE = os.environ.get("TARGET", "http://core-api:8080")
+    LINES = ["4915100000001", "4915100000002", "4915100000003", "4915100000004", "48600000001"]
+    CONC, DUR = int(os.environ.get("CONCURRENCY", "64")), int(os.environ.get("DURATION_S", "60"))
+
+    async def main():
+        async with httpx.AsyncClient(timeout=10, limits=httpx.Limits(max_connections=CONC)) as c:
+            toks = []
+            for n in LINES:
+                r = await c.post(f"{CORE}/v1/auth/login", json={"subscriber_id": n, "password": os.environ["APP_DEMO_PASSWORD"]})
+                r.raise_for_status(); toks.append(r.json()["access_token"])
+            lat, errs, hits = [], 0, 0
+            end = time.monotonic() + DUR
+            async def worker(i):
+                nonlocal errs, hits
+                h = {"Authorization": f"Bearer {toks[i % len(toks)]}"}
+                while time.monotonic() < end:
+                    t0 = time.monotonic()
+                    try:
+                        r = await c.get(f"{CORE}/v1/me/home", headers=h)
+                        if r.status_code != 200: errs += 1; continue
+                        hits += r.headers.get("x-home-cache") == "hit"
+                        lat.append((time.monotonic() - t0) * 1000)
+                    except Exception:
+                        errs += 1
+            t = time.monotonic()
+            await asyncio.gather(*(worker(i) for i in range(CONC)))
+            el = time.monotonic() - t
+            q = statistics.quantiles(lat, n=100)
+            print(f"requests={len(lat)} errors={errs} rps={len(lat)/el:.0f} p50={q[49]:.0f}ms p95={q[94]:.0f}ms "
+                  f"p99={q[98]:.0f}ms cache_hit={hits/max(len(lat),1):.1%} concurrency={CONC} duration={el:.0f}s")
+
+    asyncio.run(main())
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: read-path-loadtest
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      imagePullSecrets: [{ name: ocir-pull }]
+      containers:
+        - name: loadgen
+          image: REGISTRY/core-api:IMAGE_TAG
+          command: ["python", "/opt/lt/run.py"]
+          env:
+            - { name: CONCURRENCY, value: "64" }
+            - { name: DURATION_S, value: "60" }
+            - name: APP_DEMO_PASSWORD
+              valueFrom: { secretKeyRef: { name: selfcare-secrets, key: demo-password } }
+          resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { memory: 512Mi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
+          volumeMounts: [{ name: script, mountPath: /opt/lt }]
+      volumes: [{ name: script, configMap: { name: read-path-loadtest } }]
