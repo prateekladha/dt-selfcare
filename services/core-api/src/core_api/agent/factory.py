@@ -16,3 +16,8 @@ def build_agent(country: str | None, subscriber_id: str) -> BillingAgent:
     if provider == "template":
         provider = "deepseek"
     return BillingAgent(s, get_engine(), get_valkey(), get_usage_state(), get_embedder(), LLM(s, get_valkey(), provider))
+
+
+def build_llm(country: str | None, subscriber_id: str) -> LLM:
+    provider = flag_str("ai-provider", country, subscriber_id)
+    return LLM(get_settings(), get_valkey(), "deepseek" if provider == "template" else provider)

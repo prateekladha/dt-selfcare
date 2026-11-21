@@ -34,8 +34,8 @@ PROMPT_VERSION = "agent-v1"
 LANGS = {"en": "English", "de": "German", "pl": "Polish"}
 DOC_CHARS = 2400          # L4 item-level budget: ~600 tokens per document
 CONTEXT_CHARS = 12000     # L4 total customer-context budget: ~3k tokens
-_NUM = re.compile(r"\d+(?:[.,\s]\d{3})*(?:[.,]\d+)?")
-_CITE = re.compile(r"\[([DG]\d{1,2})\]")
+_NUM = re.compile(r"\d+(?:[.,]\d{3})*(?:[.,]\d+)?")  # no space separators: "Z2 372" is two numbers
+_CITE = re.compile(r"\[([DGS]\d{1,2})\]")
 EVIDENCE_WORDS = {"cdr", "cdrs", "record", "records", "raw", "proof", "prove", "verify", "evidence"}
 
 SYSTEM = """You are the billing assistant of a mobile operator. You answer the customer's question using ONLY
@@ -54,7 +54,7 @@ SHARED KNOWLEDGE
 
 
 def _norm(tok: str) -> str:
-    return re.sub(r"[.,\s]", "", tok).lstrip("0") or "0"
+    return re.sub(r"[.,]", "", tok).lstrip("0") or "0"
 
 
 def numbers_in(t: str) -> set[str]:

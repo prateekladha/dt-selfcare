@@ -135,7 +135,7 @@ def test_home_snapshot_bills_explanation_and_pdf(env):
     assert body["trend"][0]["status"] == "PAID" and body["outstanding"]["bill_id"] == f"{SUB}:2026-10"
 
     ex = client.get("/v1/me/bills/2026-10/explanation", headers=h).json()
-    assert ex["status"] == "UNAVAILABLE" and ex["narrative"] == ""  # AI flag off: no canned text, breakdown only
+    assert ex["status"] == "UNAVAILABLE" and ex["llm"] is None  # AI flag off: no canned text, breakdown only
     assert ex["explanation"]["drivers"][0]["code"] == "ROAMING_DATA:Z2"
     assert "increased" in ex["explanation"]["facts"][0]
 

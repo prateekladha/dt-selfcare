@@ -1,0 +1,209 @@
+"""Agent tools. Every tool is READ-only and scoped to the caller (no subscriber argument exists, so a
+tool can never be pointed at another customer). Each result carries a `source` so answers can cite it.
+Only the Broker may execute tools."""
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+
+from sqlalchemy import select
+from telco_common.billing import data_usage_pct, rate
+from telco_common.catalog import COUNTRIES, get_plan
+from telco_common.explainer import explain, fmt_money
+from telco_common.models import cycle_of
+from telco_common.partitioning import partition_for
+
+from ..db import notifications, payments, subscribers
+from ..services.bills import get_bill_row, list_bills, previous_cycle, row_to_bill
+
+
+@dataclass
+class ToolContext:
+    subscriber_id: str
+    country: str
+    engine: object
+    state: object
+    embedder: object
+    llm: object | None = None
+    trace: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Tool:
+    name: str
+    description: str
+    parameters: dict
+    run: Callable[[dict, ToolContext], dict]
+    tier: str = "read"
+
+
+def _sub(ctx: ToolContext):
+    with ctx.engine.connect() as cx:
+        return cx.execute(select(subscribers).where(subscribers.c.id == ctx.subscriber_id)).one()
+
+
+def _month(cycle: str) -> str:
+    return datetime(int(cycle[:4]), int(cycle[5:]), 1).strftime("%B %Y")
+
+
+def t_list_bills(args: dict, ctx: ToolContext) -> dict:
+    rows = list_bills(ctx.engine, ctx.subscriber_id, int(args.get("months", 12)))
+    return {"source": "adb:bills", "bills": [
+        {"cycle": r.cycle, "month": _month(r.cycle), "total": fmt_money(r.total, r.currency), "status": r.status,
+         "paid": fmt_money(r.amount_paid, r.currency), "due": r.due_date.date().isoformat()} for r in rows]}
+
+
+def t_get_bill(args: dict, ctx: ToolContext) -> dict:
+    row = get_bill_row(ctx.engine, ctx.subscriber_id, args["cycle"])
+    if row is None:
+        return {"error": f"no bill for {args['cycle']}"}
+    b = row_to_bill(row)
+    cur = b.currency
+    return {"source": f"adb:bills:{row.id}", "month": _month(b.cycle), "status": row.status,
+            "total": fmt_money(b.total, cur), "net": fmt_money(b.subtotal, cur), "vat": fmt_money(b.vat, cur),
+            "vat_rate": f"{int(float(b.vat_rate) * 100)}%", "due": row.due_date.date().isoformat(),
+            "lines": [f"{x.label}: {x.quantity:,} {x.unit} = {fmt_money(x.amount, cur)}" for x in b.lines],
+            "usage": {"data": f"{b.usage.data_mb:,} MB of {b.usage.data_allowance_mb:,} MB",
+                      "calls": f"{b.usage.voice_min:,} min", "sms": b.usage.sms,
+                      "roaming_outside_eu": {z: f"{mb:,} MB" for z, mb in b.usage.roaming_data_mb.items()}}}
+
+
+def t_compare_bills(args: dict, ctx: ToolContext) -> dict:
+    cycle = args["cycle"]
+    row = get_bill_row(ctx.engine, ctx.subscriber_id, cycle)
+    if row is None:
+        return {"error": f"no bill for {cycle}"}
+    prev = get_bill_row(ctx.engine, ctx.subscriber_id, previous_cycle(cycle))
+    ex = explain(row_to_bill(row), row_to_bill(prev) if prev else None)
+    return {"source": f"rating-engine:compare:{cycle}", "facts": [*ex.facts, *ex.usage_changes],
+            "changes": [{"item": d.label, "change": fmt_money(d.delta, ex.currency), "detail": d.detail} for d in ex.drivers]}
+
+
+def t_current_usage(args: dict, ctx: ToolContext) -> dict:
+    sub = _sub(ctx)
+    plan = get_plan(sub.plan_code)
+    now = datetime.now(UTC)
+    cycle = cycle_of(now)
+    counters = ctx.state.counters(ctx.subscriber_id, cycle)
+    b = rate(ctx.subscriber_id, cycle, plan, counters)
+    u = b.usage
+    pct = data_usage_pct(plan, counters)
+    days = 30
+    proj = int(u.data_mb / max(now.day, 1) * days)
+    return {"source": f"valkey:u:{{p{partition_for(ctx.subscriber_id, ctx.state.partitions)}}}:{cycle}",
+            "as_of": now.strftime("%d %B %Y %H:%M UTC"), "day_of_cycle": now.day,
+            "data_used": f"{u.data_mb:,} MB", "data_allowance": f"{u.data_allowance_mb:,} MB", "data_used_pct": f"{pct:.0f}%",
+            "projected_month_end": f"{proj:,} MB", "calls": f"{u.voice_min:,} min", "sms": u.sms,
+            "unbilled_total": fmt_money(b.total, b.currency),
+            "unbilled_lines": [f"{x.label}: {fmt_money(x.amount, b.currency)}" for x in b.lines],
+            "overage_policy": plan.overage_policy}
+
+
+def t_search_knowledge(args: dict, ctx: ToolContext) -> dict:
+    """L2: hybrid BM25 + vector (Oracle 23ai) + RRF over the context spine, graded (CRAG)."""
+    from .retrieve import hybrid
+
+    docs, meta = hybrid(ctx.engine, ctx.embedder, args["query"], ctx.subscriber_id, top_k=6)
+    chunks = [{"id": d.id, "title": d.title, "text": d.body[:900], "source": d.source_ref, "scores": d.scores} for d in docs]
+    grade = "ambiguous"
+    if ctx.llm is not None and chunks:
+        import json
+
+        listing = "\n".join(f"{i}: {c['title']}: {c['text'][:240]}" for i, c in enumerate(chunks))
+        try:
+            res = ctx.llm.chat("grade", [
+                {"role": "system", "content": 'Grade retrieved snippets for the query. JSON: {"grade": "correct|ambiguous|incorrect", "relevant": [indices]}'},
+                {"role": "user", "content": f"Query: {args['query']}\n{listing}"}], json_mode=True)
+            ctx.trace.setdefault("stages", []).append(res.as_trace())
+            g = json.loads(res.text)
+            grade = g.get("grade", "ambiguous")
+            keep = [i for i in g.get("relevant", []) if isinstance(i, int) and 0 <= i < len(chunks)]
+            if keep:
+                chunks = [chunks[i] for i in keep]
+        except Exception as e:  # noqa: BLE001 - grader is advisory (fails open to ambiguous)
+            ctx.trace.setdefault("degraded", []).append(f"grader: {type(e).__name__}")
+    if grade == "incorrect":
+        return {"source": "spine:search", "grade": grade, "chunks": [],
+                "note": "Nothing relevant found. Do not guess; say what is missing."}
+    return {"source": "spine:search", "grade": grade, "vector_engine": meta["vector_engine"], "chunks": chunks}
+
+
+def t_cdr_evidence(args: dict, ctx: ToolContext) -> dict:
+    from ..services.evidence import cdr_evidence
+
+    ev = cdr_evidence(ctx.state, ctx.subscriber_id, args["cycle"])
+    return {"source": ev["source"], "cdr_count": ev["cdr_count"], "first": ev["first_event"], "last": ev["last_event"],
+            "all_match": ev["all_match"], "totals": [f"{x['key']}: {x['cdr_records']} CDRs = {x['from_cdrs']:,} {x['unit']}"
+                                                      f" ({'matches' if x['match'] else 'differs from'} running total)"
+                                                      for x in ev["reconciliation"]]}
+
+
+def t_payments(args: dict, ctx: ToolContext) -> dict:
+    with ctx.engine.connect() as cx:
+        rows = cx.execute(select(payments).where(payments.c.subscriber_id == ctx.subscriber_id)
+                          .order_by(payments.c.created_at.desc()).limit(10)).all()
+    return {"source": "adb:payments", "payments": [
+        {"date": r.created_at.date().isoformat(), "purpose": r.purpose.lower(), "amount": fmt_money(r.amount, r.currency),
+         "status": r.status, "bill": r.bill_id.split(":")[1] if r.bill_id else None} for r in rows]}
+
+
+def t_alerts(args: dict, ctx: ToolContext) -> dict:
+    with ctx.engine.connect() as cx:
+        rows = cx.execute(select(notifications).where(notifications.c.subscriber_id == ctx.subscriber_id)
+                          .order_by(notifications.c.created_at.desc()).limit(10)).all()
+    return {"source": "adb:notifications", "alerts": [f"{r.created_at.date().isoformat()}: {r.title}" for r in rows]}
+
+
+def t_simulate(args: dict, ctx: ToolContext) -> dict:
+    from ..services.simulate import SCENARIOS, scenario_counters
+
+    sub = _sub(ctx)
+    plan = get_plan(sub.plan_code)
+    key = args["scenario"]
+    if key not in SCENARIOS:
+        return {"error": f"unknown scenario; choose one of {sorted(SCENARIOS)}"}
+    last = list_bills(ctx.engine, ctx.subscriber_id, 1)
+    counters = scenario_counters(key)
+    if last:
+        for k, v in ctx.state.counters(ctx.subscriber_id, last[-1].cycle).items():
+            counters[k] = counters.get(k, 0) + v
+    b = rate(ctx.subscriber_id, cycle_of(datetime.now(UTC)), plan, counters)
+    cur = COUNTRIES[plan.country].currency
+    return {"source": f"rating-engine:simulate:{key}", "scenario": SCENARIOS[key]["title"],
+            "based_on": f"your {_month(last[-1].cycle)} usage" if last else "the plan only",
+            "estimated_total": fmt_money(b.total, cur), "lines": [f"{x.label}: {fmt_money(x.amount, cur)}" for x in b.lines]}
+
+
+CYCLE = {"type": "object", "properties": {"cycle": {"type": "string", "pattern": r"^\d{4}-\d{2}$",
+                                                    "description": "billing month, YYYY-MM"}},
+         "required": ["cycle"], "additionalProperties": False}
+NONE = {"type": "object", "properties": {}, "additionalProperties": False}
+
+TOOLS: dict[str, Tool] = {t.name: t for t in [
+    Tool("list_bills", "List the customer's recent bills (month, total, status).",
+         {"type": "object", "properties": {"months": {"type": "integer", "minimum": 1, "maximum": 13}},
+          "additionalProperties": False}, t_list_bills),
+    Tool("get_bill", "Full detail of one issued bill: lines, VAT, usage, status.", CYCLE, t_get_bill),
+    Tool("compare_bills", "Facts about how a bill changed versus the previous month (computed by the rating engine).",
+         CYCLE, t_compare_bills),
+    Tool("get_current_usage", "Live usage and unbilled amount for the current month from the CDR totals, with a month-end projection.",
+         NONE, t_current_usage),
+    Tool("search_knowledge", "Search the customer's records and the tariff/policy knowledge (hybrid lexical + semantic search, graded).",
+         {"type": "object", "properties": {"query": {"type": "string", "minLength": 3, "maxLength": 200}},
+          "required": ["query"], "additionalProperties": False}, t_search_knowledge),
+    Tool("get_cdr_evidence", "Re-read the raw CDRs of a month from the archive and reconcile them with the running totals.",
+         CYCLE, t_cdr_evidence),
+    Tool("get_payments", "Recent payments and their status (status comes from the payment gateway's status API).",
+         NONE, t_payments),
+    Tool("get_alerts", "Data alerts sent to the customer.", NONE, t_alerts),
+    Tool("simulate_usage", "Price a what-if scenario on top of the customer's last month of real usage.",
+         {"type": "object", "properties": {"scenario": {"type": "string", "enum": [
+             "us-trip-2-weeks", "eu-summer-holiday", "heavy-streaming", "calling-family-abroad", "light-month"]}},
+          "required": ["scenario"], "additionalProperties": False}, t_simulate),
+]}
+
+
+def declarations(names: list[str]) -> list[dict]:
+    return [{"type": "function", "function": {"name": TOOLS[n].name, "description": TOOLS[n].description,
+                                              "parameters": TOOLS[n].parameters}} for n in names]

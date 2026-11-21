@@ -17,7 +17,7 @@ from telco_common.flags import flag_bool
 from telco_common.models import cycle_of
 
 from ..db import get_engine, notifications, subscribers
-from ..deps import get_usage_state
+from ..deps import get_usage_state, get_valkey
 from ..security import Principal, current_principal
 from ..services.bills import get_bill_row, list_bills, previous_cycle, row_to_bill, unbilled
 from ..services.pdf import render_bill_pdf
@@ -122,19 +122,20 @@ def bill_explanation(cycle: str, response: Response, lang: str = Query("en", pat
     out = {"explanation": ex.model_dump(), "partial": cycle == "current",
            "bill_id": None if cycle == "current" else f"{p.subscriber_id}:{cycle}"}
     if not ai:
-        return out | {"narrative": "", "provider": "none", "status": "SKIPPED", "citations": [], "trace": {}}
-    from .assistant import run_agent
+        return out | {"llm": None, "status": "SKIPPED"}
+    from ..agent.explain_llm import explain_bill
+    from ..agent.factory import build_llm
 
-    month = datetime(int(bill.cycle[:4]), int(bill.cycle[5:]), 1).strftime("%B %Y")
-    question = (f"How is my usage and unbilled amount so far in {month}, and what is driving it?" if cycle == "current"
-                else f"Why did my {month} bill change compared with the previous month, and what drove it?")
+    if not flag_bool("ai-explanations", p.country, p.subscriber_id):
+        return out | {"llm": None, "status": "UNAVAILABLE", "reason": "switched off"}
     try:
-        res = run_agent(p, question, lang, bill.cycle)
-    except HTTPException as e:
-        return out | {"narrative": "", "provider": "none", "status": "UNAVAILABLE", "citations": [],
-                      "trace": {"degraded": [e.detail]}}
-    return out | {"narrative": res["answer"], "provider": res["provider"], "status": res["status"],
-                  "citations": res["citations"], "trace": res["trace"]}
+        res = explain_bill(build_llm(p.country, p.subscriber_id), get_valkey(), bill,
+                           row_to_bill(prev_row) if prev_row else None, lang)
+    except RuntimeError as e:
+        return out | {"llm": None, "status": "UNAVAILABLE", "reason": str(e)}
+    except Exception as e:  # noqa: BLE001 - provider outage: show the bill, say the explanation is unavailable
+        return out | {"llm": None, "status": "UNAVAILABLE", "reason": type(e).__name__}
+    return out | {"llm": res["explanation"], "status": res["status"], "sources": res["sources"], "trace": res["trace"]}
 
 
 @router.get("/bills/{cycle}/evidence")
