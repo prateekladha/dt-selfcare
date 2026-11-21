@@ -2,6 +2,15 @@ import { redirect } from "react-router";
 import { freshToken, sessions } from "./session.server";
 
 const CORE = process.env.CORE_API_URL ?? "http://localhost:8080";
+const PAYMENTS = process.env.PAYMENTS_URL ?? CORE;
+const ASSISTANT = process.env.ASSISTANT_URL ?? CORE;
+
+/** Each path goes to the service that owns it (payments-service, assistant-service, core-api). */
+export function baseFor(path: string) {
+  if (path.startsWith("/v1/me/payments") || path.startsWith("/v1/webhooks")) return PAYMENTS;
+  if (path.startsWith("/v1/me/assistant")) return ASSISTANT;
+  return CORE;
+}
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -11,7 +20,7 @@ export class ApiError extends Error {
 
 /** Server-side call to core-api with the caller's token. 401 -> back to login. */
 export async function api<T = unknown>(request: Request, path: string, init: RequestInit = {}): Promise<T> {
-  const call = (token: string) => fetch(`${CORE}${path}`, {
+  const call = (token: string) => fetch(`${baseFor(path)}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -37,7 +46,7 @@ export async function api<T = unknown>(request: Request, path: string, init: Req
 }
 
 export async function rawCore(path: string, init: RequestInit) {
-  return fetch(`${CORE}${path}`, { ...init, signal: init.signal ?? AbortSignal.timeout(15_000) });
+  return fetch(`${baseFor(path)}${path}`, { ...init, signal: init.signal ?? AbortSignal.timeout(15_000) });
 }
 
 export const PRIVATE = { "Cache-Control": "private, no-store" };

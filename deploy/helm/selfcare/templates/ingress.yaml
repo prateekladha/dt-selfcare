@@ -34,6 +34,6 @@ spec:
     - host: {{ .Values.domain | quote }}
       http:
         paths:
-          - { path: /v1/webhooks/razorpay, pathType: Exact, backend: { service: { name: core-api, port: { number: 8080 } } } }
+          - { path: /v1/webhooks/razorpay, pathType: Exact, backend: { service: { name: payments-service, port: { number: 8080 } } } }
           - { path: /, pathType: Prefix, backend: { service: { name: web, port: { number: 80 } } } }
 {{- end }}

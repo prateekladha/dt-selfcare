@@ -89,7 +89,11 @@ def explain_bill(llm: LLM, r, cur: Bill, prev: Bill | None, lang: str = "en") ->
         out = json.loads(cached)
         out["trace"] = {**out.get("trace", {}), "cache": "hit (explanation cache)"}
         return out
-    system = SYSTEM.replace("{knowledge}", "\n".join(f"[{k}] {v}" for k, v in knowledge.items()))
+    from .prompts import get_prompt
+
+    template, prompt_version = get_prompt("explainer-system", SYSTEM)  # versioned in Langfuse
+    trace["prompt_version"] = f"{PROMPT_VERSION} ({prompt_version})"
+    system = template.replace("{knowledge}", "\n".join(f"[{k}] {v}" for k, v in knowledge.items()))
     user = ("Sources:\n" + "\n".join(f"[{k}] {v}" for k, v in sources.items())
             + f"\n\nExplain the {cur.cycle} bill. Write in {LANGS[lang]}.")
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]

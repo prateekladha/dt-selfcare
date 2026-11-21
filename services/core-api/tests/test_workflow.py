@@ -3,11 +3,10 @@ import asyncio
 import uuid
 
 import pytest
+from core_api.workflows.addon import AddonPurchaseWorkflow
 from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
-
-from core_api.workflows.addon import AddonPurchaseWorkflow
 
 calls: list = []
 BSS = {"status": "SUBMITTED"}
@@ -45,9 +44,9 @@ async def finish_order(order_id: str, status: str, detail: str) -> None:
 async def run(signal: str | None, poll_status: str = "SUBMITTED") -> str:
     calls.clear()
     BSS["status"] = poll_status
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        async with Worker(env.client, task_queue="t", workflows=[AddonPurchaseWorkflow],
-                          activities=[validate_order, submit_to_bss, bss_status, apply_addon, finish_order]):
+    async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
+            env.client, task_queue="t", workflows=[AddonPurchaseWorkflow],
+            activities=[validate_order, submit_to_bss, bss_status, apply_addon, finish_order]):
             h = await env.client.start_workflow(AddonPurchaseWorkflow.run, "o1", id=f"wf-{uuid.uuid4()}", task_queue="t")
             if signal:
                 await asyncio.sleep(0.5)

@@ -89,7 +89,11 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
     broker = Broker(list(TOOLS))
     tools = declarations(list(TOOLS))
     today = datetime.now(UTC).strftime("%d %B %Y")
-    messages: list[dict] = [{"role": "system", "content": SYSTEM}]  # stable prefix (+ tool decls) -> prefix cache
+    from .prompts import get_prompt
+
+    system_prompt, prompt_version = get_prompt("assistant-system", SYSTEM)  # versioned in Langfuse
+    trace["prompt_version"] = f"{PROMPT_VERSION} ({prompt_version})"
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]  # stable prefix (+ tool decls) -> prefix cache
     for h in history or []:  # conversation memory: earlier questions and final answers (no tool payloads)
         messages += [{"role": "user", "content": h["q"]}, {"role": "assistant", "content": h["a"]}]
     messages.append({"role": "user", "content": f"Today is {today}. Reply in {'German' if lang == 'de' else 'Polish' if lang == 'pl' else 'English'}.\n\n{question}"})

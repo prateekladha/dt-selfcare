@@ -1,0 +1,31 @@
+# Runs the golden-question evaluation as a Langfuse experiment against the live assistant-service.
+#   sed -e "s|REGISTRY|<ocir registry>|" -e "s|IMAGE_TAG|<tag>|" deploy/loadtest/evals-job.yaml | kubectl -n selfcare apply -f -
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: assistant-evals
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      imagePullSecrets: [{ name: ocir-pull }]
+      containers:
+        - name: evals
+          image: REGISTRY/core-api:IMAGE_TAG
+          command: ["run-evals"]
+          env:
+            - name: APP_DEMO_PASSWORD
+              valueFrom: { secretKeyRef: { name: selfcare-secrets, key: demo-password } }
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom: { secretKeyRef: { name: selfcare-langfuse-public-key, key: value } }
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: selfcare-langfuse-secret-key, key: value } }
+            - { name: LANGFUSE_HOST, value: "https://cloud.langfuse.com" }
+          resources: { requests: { cpu: 50m, memory: 192Mi }, limits: { memory: 512Mi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+      volumes: [{ name: tmp, emptyDir: {} }]

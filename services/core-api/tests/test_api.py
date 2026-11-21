@@ -9,6 +9,7 @@ import pytest
 from core_api import deps
 from core_api.db import create_schema, set_engine
 from core_api.routers import payments as pay_router
+from core_api.services.billing_ledger import drain_outbox_into_billing
 from core_api.services.gateway import GatewayOrder
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -82,6 +83,11 @@ def env(monkeypatch):
     monkeypatch.setattr(sim_mod, "get_usage_state", lambda: state)
     import core_api.main as main_mod
     monkeypatch.setattr(main_mod, "get_usage_state", lambda: state)
+    if not getattr(main_mod.app, "_test_services_mounted", False):  # payments + assistant are separate services
+        from core_api.routers import assistant as assistant_router
+        main_mod.app.include_router(pay_router.router)
+        main_mod.app.include_router(assistant_router.router)
+        main_mod.app._test_services_mounted = True
     gw = FakeGateway()
     monkeypatch.setattr(pay_router, "gateway_for", lambda *_: gw)
     monkeypatch.setitem(pay_router._gateways, "razorpay", gw)
@@ -178,6 +184,8 @@ def test_payment_is_idempotent_and_settles_once_from_both_paths(env):
     wh = client.post("/v1/webhooks/razorpay", content=json.dumps(hook), headers={"X-Razorpay-Signature": "good"})
     assert wh.json()["settled"] is False and wh.json()["result"] == "already_paid"  # settled by the browser path
 
+    assert drain_outbox_into_billing(engine) == 1  # payment-events -> billing (exactly once)
+    assert drain_outbox_into_billing(engine) == 0  # redelivery is a no-op
     bill = client.get("/v1/me/bills/2026-10", headers=h).json()
     assert bill["status"] == "PAID" and bill["outstanding"] == 0
     from core_api.db import outbox
@@ -225,6 +233,7 @@ def test_settlement_in_inr_keeps_bill_currency_for_the_ledger(env, monkeypatch):
     sig = hmac.new(b"s3cret", f"{p['order_id']}|pay_y".encode(), hashlib.sha256).hexdigest()
     client.post(f"/v1/me/payments/{p['payment_id']}/confirm", json={"gateway_payment_id": "pay_y", "signature": sig},
                 headers=h)
+    drain_outbox_into_billing(engine)
     bill = client.get("/v1/me/bills/2026-10", headers=h).json()
     assert bill["status"] == "PAID" and bill["amount_paid"] == bill["total"]  # ledger in EUR, not INR
 
@@ -313,6 +322,7 @@ def test_out_of_order_failed_webhook_after_capture_cannot_undo_paid(env):
                                                                          "status": "failed"}}}}
     r = client.post("/v1/webhooks/razorpay", content=json.dumps(late), headers={"X-Razorpay-Signature": "good"}).json()
     assert r["result"] == "already_paid"
+    drain_outbox_into_billing(engine)
     assert client.get("/v1/me/bills/2026-10", headers=h).json()["status"] == "PAID"
 
 
@@ -344,6 +354,7 @@ def test_reconciler_catches_up_after_downtime_and_expires_abandoned_orders(env):
     assert paid_later["order_id"] in due and abandoned["order_id"] in due
     for oid in due:
         reconcile_order(engine, gw, oid, "reconciler", now=now)
+    drain_outbox_into_billing(engine)
     assert client.get("/v1/me/bills/2026-10", headers=h).json()["status"] == "PAID"
     later = datetime.now(UTC) + timedelta(hours=30)
     assert reconcile_order(engine, gw, abandoned["order_id"], "reconciler", now=later)["result"] == "expired"

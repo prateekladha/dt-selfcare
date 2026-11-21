@@ -63,6 +63,11 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 - { name: APP_COLLECTOR_URL, value: "http://usage-collector:8080" }
 - name: APP_SOURCE_TOKEN
   valueFrom: { secretKeyRef: { name: selfcare-secrets, key: source-token } }
+- name: LANGFUSE_PUBLIC_KEY
+  valueFrom: { secretKeyRef: { name: selfcare-langfuse-public-key, key: value, optional: true } }
+- name: LANGFUSE_SECRET_KEY
+  valueFrom: { secretKeyRef: { name: selfcare-langfuse-secret-key, key: value, optional: true } }
+- { name: LANGFUSE_HOST, value: {{ .Values.llmGateway.langfuseHost | quote }} }
 - name: APP_DEEPSEEK_API_KEY
   valueFrom: { secretKeyRef: { name: selfcare-deepseek-api-key, key: value, optional: true } }
 - name: APP_MISTRAL_API_KEY

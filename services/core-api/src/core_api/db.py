@@ -176,6 +176,15 @@ agent_traces = Table(
     Column("created_at", DateTime(timezone=True), default=utcnow, nullable=False),
 )
 
+# ---- billing ledger: payments applied to bills (owned by billing; fed by payment-events) ----
+bill_payments = Table(
+    "bill_payments", metadata,
+    Column("payment_id", String(36), primary_key=True),   # idempotency: an event is applied once
+    Column("bill_id", String(64), nullable=False),
+    Column("amount", BigInteger, nullable=False),
+    Column("applied_at", DateTime(timezone=True), default=utcnow, nullable=False),
+)
+
 # ---- write actions: orders (system of record) + the legacy BSS emulator's own table ----
 orders = Table(
     "orders", metadata,

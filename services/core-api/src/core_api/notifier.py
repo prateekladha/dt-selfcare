@@ -104,6 +104,28 @@ def outbox_loop(stop: threading.Event) -> None:
         stop.wait(2)
 
 
+def billing_loop(stop: threading.Event) -> None:
+    """Billing consumer of payment-events: applies PAYMENT_SUCCEEDED to bills exactly once."""
+    from .services.billing_ledger import apply_payment_event
+
+    stream = StreamSettings()
+    engine = get_engine()
+    c = Consumer(stream.client_config() | {"group.id": "billing", "enable.auto.commit": False,
+                                           "auto.offset.reset": "earliest"})
+    c.subscribe(["payment-events"])
+    while not stop.is_set():
+        for m in c.consume(num_messages=100, timeout=1.0):
+            if m.error():
+                continue
+            try:
+                if apply_payment_event(engine, json.loads(m.value())):
+                    log.info("payment_applied_to_bill")
+            except Exception as e:  # noqa: BLE001
+                log.warning("payment_apply_failed", error=str(e)[:200])
+        c.commit(asynchronous=True)
+    c.close()
+
+
 SPINE_DIRTY: set[str] = set()
 
 
@@ -171,7 +193,7 @@ def main() -> None:
     import signal
 
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
-    threads = [threading.Thread(target=f, args=(stop,), daemon=True) for f in (alerts_loop, outbox_loop, spine_loop, reconcile_loop)]
+    threads = [threading.Thread(target=f, args=(stop,), daemon=True) for f in (alerts_loop, outbox_loop, spine_loop, billing_loop)]
     for t in threads:
         t.start()
     log.info("notifier_started")
