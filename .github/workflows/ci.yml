@@ -98,3 +98,27 @@ jobs:
         run: |
           DOMAIN=$(grep -E '^domain:' deploy/helm/values-oci.yaml | awk '{print $2}' | tr -d '"')
           for i in $(seq 1 30); do curl -fsS "https://$DOMAIN/healthz" && exit 0; sleep 10; done; exit 1
+      # ---- Browser end-to-end on the LIVE site: a real customer journey, desktop + mobile ----
+      - uses: actions/setup-node@v5
+        with: { node-version: 24, cache: npm, cache-dependency-path: web/package-lock.json }
+      - name: install e2e deps
+        working-directory: web
+        run: npm ci && npx playwright install --with-deps chromium
+      - name: e2e (Playwright, live)
+        working-directory: web
+        env: { SUPPRESS_LABEL_WARNING: "True" }
+        run: |
+          VAULT=$(grep -E '^  vaultId:' ../deploy/helm/values-oci.yaml | awk '{print $2}')
+          DOMAIN=$(grep -E '^domain:' ../deploy/helm/values-oci.yaml | awk '{print $2}' | tr -d '"')
+          PW=$(oci secrets secret-bundle get-secret-bundle-by-name --secret-name dt-selfcare-demo-password --vault-id "$VAULT" \
+               --query 'data."secret-bundle-content".content' --raw-output | base64 -d)
+          echo "::add-mask::$PW"
+          E2E_PASSWORD="$PW" E2E_BASE_URL="https://$DOMAIN" npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-screens-and-report
+          path: |
+            web/e2e-results
+            web/e2e-report
+          retention-days: 14

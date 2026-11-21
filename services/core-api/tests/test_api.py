@@ -205,3 +205,20 @@ def test_settlement_in_inr_keeps_bill_currency_for_the_ledger(env, monkeypatch):
                 headers=h)
     bill = client.get("/v1/me/bills/2026-10", headers=h).json()
     assert bill["status"] == "PAID" and bill["amount_paid"] == bill["total"]  # ledger in EUR, not INR
+
+
+def test_system_overview_shows_every_layer_and_only_my_data(env, monkeypatch):
+    client, engine, state, _ = env
+    from core_api.routers import system
+    monkeypatch.setattr(system, "_stream", lambda: {"engine": "stub", "partitions": []})
+    monkeypatch.setattr(system, "get_usage_state", lambda: state)
+    monkeypatch.setattr(system, "get_valkey", lambda: state.r)
+    monkeypatch.setattr(system, "_cache", {})
+    monkeypatch.setattr(system, "_valkey", lambda: {"engine": "stub", "keys": state.r.dbsize()})  # fakeredis: no INFO
+    add_usage(state, SUB, datetime.now(UTC), [(UsageType.DATA, None, 500 * MB)])
+    issue(engine, state, "2026-10")
+    body = client.get("/v1/system/overview", headers=login(client)).json()
+    assert body["database"]["tables"]["bills"] == 6 and body["valkey"]["keys"] > 0
+    assert body["you"]["valkey_usage_hash"]["DATA"] == str(500 * MB)
+    assert all(b["id"].startswith(SUB) for b in body["you"]["db_bills"])
+    assert "ai-provider" in body["flags"]

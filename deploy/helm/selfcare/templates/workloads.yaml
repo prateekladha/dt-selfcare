@@ -28,6 +28,8 @@ spec:
           env:
             {{- include "selfcare.env" $ | nindent 12 }}
             - { name: APP_OCI_AUTH, value: instance_principal }
+            - { name: APP_VERSION, value: {{ $.Values.image.tag | quote }} }
+            - { name: OCI_REGION, value: {{ $.Values.oci.region | quote }} }
           {{- if $w.port }}
           ports: [{ name: http, containerPort: {{ $w.port }} }]
           readinessProbe: { httpGet: { path: /readyz, port: http }, periodSeconds: 10, timeoutSeconds: 3 }

@@ -6,8 +6,10 @@ export default [
   route("healthz", "routes/healthz.ts"),
   layout("routes/_app.tsx", [
     index("routes/home.tsx"),
+    route("bills", "routes/bills.tsx"),
     route("bills/:cycle", "routes/bill.tsx"),
     route("insights", "routes/insights.tsx"),
+    route("system", "routes/system.tsx"),
   ]),
   route("bills/:cycle/pdf", "routes/bill-pdf.ts"),
   route("api/pay", "routes/api.pay.ts"),

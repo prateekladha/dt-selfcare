@@ -18,3 +18,12 @@ export function dateLabel(iso: string, locale = "en-GB") {
 export function mbToGb(mb: number) {
   return (mb / 1000).toLocaleString("en-GB", { maximumFractionDigits: 1 });
 }
+
+export function phoneLabel(id: string) {
+  // E.164 digits -> "+49 151 0000 0002" style grouping (display only)
+  const cc = id.startsWith("49") ? 2 : id.startsWith("48") ? 2 : 2;
+  const rest = id.slice(cc);
+  return `+${id.slice(0, cc)} ${rest.slice(0, 3)} ${rest.slice(3, 7)} ${rest.slice(7)}`.trim();
+}
+
+export const FLAGS: Record<string, string> = { DE: "🇩🇪", PL: "🇵🇱" };
