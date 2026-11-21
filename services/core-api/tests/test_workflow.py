@@ -57,9 +57,30 @@ async def run(signal: str | None, poll_status: str = "SUBMITTED") -> str:
 @pytest.mark.parametrize("signal,poll,expected,applied", [
     ("CONFIRMED", "SUBMITTED", "COMPLETED", True),      # legacy system calls back
     ("REJECTED", "SUBMITTED", "FAILED", False),         # rejected -> compensation, nothing applied
-    (None, "CONFIRMED", "COMPLETED", True),             # callback lost -> durable timer -> poll finds it
-    (None, "SUBMITTED", "FAILED", False),               # never confirmed -> gives up after 30 min (time-skipped)
+    (None, "completed", "COMPLETED", True),             # callback lost -> durable timer -> poll finds it (TMF622 state)
+    (None, "acknowledged", "FAILED", False),            # never confirmed -> gives up after 30 min (time-skipped)
 ])
 def test_addon_workflow_paths(signal, poll, expected, applied):
     assert asyncio.run(run(signal, poll)) == expected
     assert ("apply" in calls) is applied and calls[-1] == f"finish:{expected}"
+
+
+def test_country_adapters_speak_tmf622_and_translate_per_market():
+    from core_api.adapters.bss import TMF_STATE, for_country, product_order
+    from core_api.db import create_schema
+    from sqlalchemy import create_engine
+
+    engine = create_engine("sqlite://")
+    create_schema(engine)
+    de, pl = for_country("DE"), for_country("PL")
+    o = product_order("ord-1", "4915100000001", "DATA_5GB", "DE")
+    assert o["@type"] == "ProductOrder" and o["productOrderItem"][0]["productOffering"]["id"] == "DATA_5GB"
+    bid = de.submit(engine, o)
+    assert bid.startswith("DEB-") and de.submit(engine, o) == bid           # idempotent
+    assert '"aktion": "BUCHEN"' in de.last_wire and de.state(engine, bid) == "acknowledged"
+    pid = pl.submit(engine, product_order("ord-2", "48600000001", "DATA_5GB", "PL"))
+    assert pid.startswith("PLB-") and "<ord:CreateOrder>" in pl.last_wire
+    assert TMF_STATE["CONFIRMED"] == "completed"
+    import pytest
+    with pytest.raises(LookupError):
+        for_country("FR")
