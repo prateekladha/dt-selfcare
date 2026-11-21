@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Form, NavLink, Outlet, useNavigation, useRouteLoaderData } from "react-router";
-import { Bell, FlaskConical, Home as HomeIcon, LogOut, Receipt, Server } from "lucide-react";
+import { Bell, FlaskConical, Home as HomeIcon, LogOut, MessageSquareText, Receipt, Server } from "lucide-react";
 import { LiveNotifications } from "~/components/LiveNotifications";
 import { Avatar, Logo } from "~/components/ui";
 import { api, PRIVATE } from "~/lib/api.server";
@@ -25,6 +25,7 @@ const NAV = [
   { to: "/", label: "Overview", icon: HomeIcon, end: true },
   { to: "/bills", label: "Bills", icon: Receipt },
   { to: "/insights", label: "Try your usage", icon: FlaskConical },
+  { to: "/assistant", label: "Assistant", icon: MessageSquareText },
   { to: "/system", label: "System", icon: Server },
 ];
 
@@ -97,7 +98,7 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         </div>
       </header>
       <main className="mx-auto max-w-[1200px] px-5 py-8" onClick={() => menu !== "none" && setMenu("none")}><Outlet /></main>
-      <nav className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 border-t border-[var(--line)] bg-[var(--surface)] md:hidden" aria-label="Main">
+      <nav className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-5 border-t border-[var(--line)] bg-[var(--surface)] md:hidden" aria-label="Main">
         {NAV.map(({ to, label, icon: Icon, end }) => (
           <NavLink key={to} to={to} end={end} className={({ isActive }) => `flex flex-col items-center gap-1 py-2.5 text-[11px] font-semibold ${isActive ? "text-[var(--brand)]" : "text-[var(--ink-3)]"}`}>
             <Icon size={20} />{label.replace("Try your usage", "Try usage")}

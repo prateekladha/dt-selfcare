@@ -11,10 +11,16 @@ COPY libs libs
 COPY services services
 ARG SERVICE
 RUN test -n "$SERVICE" && uv sync --frozen --no-dev --no-editable --package "$SERVICE"
+# core-api: bake the local embedding model (all-MiniLM-L6-v2, ONNX, ~87 MB) so pods never download it
+RUN mkdir -p /opt/models && if [ "$SERVICE" = "core-api" ]; then \
+      /app/.venv/bin/python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/all-MiniLM-L6-v2', cache_dir='/opt/models')"; \
+    fi
 
 FROM python:3.13-slim
 RUN useradd --uid 10001 --create-home app
 COPY --from=build --chown=10001:10001 /app/.venv /app/.venv
-ENV PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+COPY --from=build --chown=10001:10001 /opt/models /opt/models
+ENV PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
+    FASTEMBED_CACHE=/opt/models HF_HUB_OFFLINE=1
 USER 10001
 WORKDIR /app

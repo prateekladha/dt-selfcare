@@ -9,6 +9,7 @@ export default [
     route("bills", "routes/bills.tsx"),
     route("bills/:cycle", "routes/bill.tsx"),
     route("insights", "routes/insights.tsx"),
+    route("assistant", "routes/assistant.tsx"),
     route("system", "routes/system.tsx"),
   ]),
   route("bills/:cycle/pdf", "routes/bill-pdf.ts"),
@@ -17,4 +18,5 @@ export default [
   route("api/events", "routes/api.events.ts"),
   route("api/sample.csv", "routes/api.sample.ts"),
   route("api/evidence/:cycle", "routes/api.evidence.ts"),
+  route("api/ask", "routes/api.ask.ts"),
 ] satisfies RouteConfig;

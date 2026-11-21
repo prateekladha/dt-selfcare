@@ -17,12 +17,10 @@ from telco_common.flags import flag_bool
 from telco_common.models import cycle_of
 
 from ..db import get_engine, notifications, subscribers
-from ..deps import RateLimiter, get_usage_state, get_valkey
+from ..deps import get_usage_state
 from ..security import Principal, current_principal
-from ..services.ai import Narrator
 from ..services.bills import get_bill_row, list_bills, previous_cycle, row_to_bill, unbilled
 from ..services.pdf import render_bill_pdf
-from ..settings import get_settings
 
 router = APIRouter(prefix="/v1/me", tags=["me"])
 NO_STORE = {"Cache-Control": "private, no-store"}
@@ -121,12 +119,22 @@ def bill_explanation(cycle: str, response: Response, lang: str = Query("en", pat
         _, bill = _load(p, cycle)
         prev_row = get_bill_row(get_engine(), p.subscriber_id, previous_cycle(cycle))
     ex = explain(bill, row_to_bill(prev_row) if prev_row else None)
-    s = get_settings()
-    budget = lambda: RateLimiter(get_valkey()).allow(f"ai:{p.subscriber_id}", s.ai_daily_limit_per_subscriber, 86400)
-    text, provider = Narrator(s, get_engine()).narrate(ex, p.subscriber_id, p.country, lang, allow_llm=ai, budget=budget)
-    sources = [*ex.facts, *ex.usage_changes]  # numbered [1..n] exactly as given to the model
-    return {"explanation": ex.model_dump(), "narrative": text, "provider": provider, "partial": cycle == "current",
-            "sources": sources, "bill_id": None if cycle == "current" else f"{p.subscriber_id}:{cycle}"}
+    out = {"explanation": ex.model_dump(), "partial": cycle == "current",
+           "bill_id": None if cycle == "current" else f"{p.subscriber_id}:{cycle}"}
+    if not ai:
+        return out | {"narrative": "", "provider": "none", "status": "SKIPPED", "citations": [], "trace": {}}
+    from .assistant import run_agent
+
+    month = datetime(int(bill.cycle[:4]), int(bill.cycle[5:]), 1).strftime("%B %Y")
+    question = (f"How is my usage and unbilled amount so far in {month}, and what is driving it?" if cycle == "current"
+                else f"Why did my {month} bill change compared with the previous month, and what drove it?")
+    try:
+        res = run_agent(p, question, lang, bill.cycle)
+    except HTTPException as e:
+        return out | {"narrative": "", "provider": "none", "status": "UNAVAILABLE", "citations": [],
+                      "trace": {"degraded": [e.detail]}}
+    return out | {"narrative": res["answer"], "provider": res["provider"], "status": res["status"],
+                  "citations": res["citations"], "trace": res["trace"]}
 
 
 @router.get("/bills/{cycle}/evidence")

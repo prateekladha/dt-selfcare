@@ -82,10 +82,10 @@ const LANGS = [["en", "English"], ["de", "Deutsch"], ["pl", "Polski"]] as const;
 export function Narrative({ narrative, lang, basePath, title = "In plain words", languages = true, cycle }:
   { narrative: Promise<ExplanationResponse> | ExplanationResponse; lang: string; basePath: string; title?: string; languages?: boolean; cycle?: string }) {
   const [open, setOpen] = useState(false);
-  const [hl, setHl] = useState<number | null>(null);
-  const cite = (n: number) => {
-    setOpen(true); setHl(n);
-    setTimeout(() => document.getElementById(`src-${n}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+  const [hl, setHl] = useState<string | null>(null);
+  const cite = (label: string) => {
+    setOpen(true); setHl(label);
+    setTimeout(() => document.getElementById(`src-${label}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
   };
   return (
     <Card className="overflow-hidden">
@@ -101,14 +101,19 @@ export function Narrative({ narrative, lang, basePath, title = "In plain words",
       <div className="px-6 py-5">
         <Suspense key={lang} fallback={<div className="space-y-2.5" aria-busy="true"><Skeleton className="h-4 w-full" /><Skeleton className="h-4 w-11/12" /><Skeleton className="h-4 w-4/5" /><Skeleton className="h-4 w-2/3" /></div>}>
           <Await resolve={narrative} errorElement={<p className="text-sm text-[var(--ink-3)]">The written explanation is unavailable right now. The breakdown is complete.</p>}>
-            {(r) => (
+            {(r) => r.narrative ? (
               <div className="fade-up">
                 <CitedText text={r.narrative} onCite={cite} />
-                <p className="mt-4 flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
+                <p className="mt-4 flex flex-wrap items-center gap-1.5 text-xs text-[var(--ink-3)]">
                   <ShieldCheck size={13} />
-                  {r.provider === "template" ? "Generated from your bill data." : `Written by AI (${r.provider.split(":")[1] ?? r.provider}) from the numbered facts below. Every number is checked against them, and each fact traces back to your CDRs.`}
+                  {r.status === "VERIFIED" && <span className="font-semibold text-[var(--good)]">Verified</span>}
+                  {r.status === "REPAIRED" && <span className="font-semibold text-[var(--good)]">Verified after self-correction</span>}
+                  {r.status === "UNVERIFIED" && <span className="font-semibold text-[var(--warn)]">Not verified</span>}
+                  <span>· Answered by the billing agent ({r.provider.split(":")[1] ?? r.provider}) from documents built from your records. Every number is checked against the cited documents.</span>
                 </p>
               </div>
+            ) : (
+              <p className="text-sm text-[var(--ink-3)]">The AI explanation is unavailable right now{r.trace?.degraded?.length ? ` (${r.trace.degraded[0]})` : ""}. The breakdown below is exact and computed from your CDRs.</p>
             )}
           </Await>
         </Suspense>
@@ -116,7 +121,7 @@ export function Narrative({ narrative, lang, basePath, title = "In plain words",
       {cycle && (
         <Suspense fallback={null}>
           <Await resolve={narrative} errorElement={null}>
-            {(r) => r.sources?.length ? <SourcesPanel sources={r.sources} cycle={cycle} open={open} setOpen={setOpen} highlight={hl} /> : null}
+            {(r) => <SourcesPanel citations={r.citations ?? []} trace={r.trace} cycle={cycle} open={open} setOpen={setOpen} highlight={hl} />}
           </Await>
         </Suspense>
       )}

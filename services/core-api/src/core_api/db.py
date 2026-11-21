@@ -141,6 +141,34 @@ def set_engine(engine: Engine) -> None:
     _engine = engine
 
 
+# ---- AI agent: Layer 1 durable context spine + run traces ----
+context_docs = Table(
+    "context_docs", metadata,
+    Column("id", String(160), primary_key=True),        # deterministic: <subscriber|global>:<type>:<key>
+    Column("subscriber_id", String(32)),                 # NULL = shared knowledge (tariffs, policies)
+    Column("doc_type", String(32), nullable=False),
+    Column("cycle", String(7)),
+    Column("title", String(200), nullable=False),
+    Column("body", Text, nullable=False),
+    Column("source_ref", String(300), nullable=False),   # where the facts came from (bill id, Valkey key, ...)
+    Column("content_hash", String(64), nullable=False),  # re-embed only when content changes
+    Column("embedding_json", Text, nullable=False),      # portable copy; Oracle also has a native VECTOR column
+    Column("updated_at", DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False),
+)
+Index("ix_ctx_sub", context_docs.c.subscriber_id, context_docs.c.doc_type)
+
+agent_traces = Table(
+    "agent_traces", metadata,
+    Column("id", String(36), primary_key=True),
+    Column("subscriber_id", String(32), nullable=False),
+    Column("question", String(500), nullable=False),
+    Column("status", String(24), nullable=False),        # VERIFIED | REPAIRED | UNVERIFIED | BUDGET | ERROR
+    Column("answer", Text, nullable=False),
+    Column("trace", Text, nullable=False),               # JSON: retrieval, grades, corrective actions, stages
+    Column("cost_usd", String(24), nullable=False),
+    Column("created_at", DateTime(timezone=True), default=utcnow, nullable=False),
+)
+
 schema_migrations = Table(
     "schema_migrations", metadata,
     Column("id", String(64), primary_key=True),
@@ -167,6 +195,8 @@ MIGRATIONS: list[tuple[str, list]] = [
         "fx_rate VARCHAR2(24 CHAR))"),
     ]),
     ("0003_purge_backfill_notifications", [_purge_backfill_notifications]),
+    # Oracle 23ai AI Vector Search: native vector column for semantic retrieval (L2)
+    ("0004_context_docs_vector", ["ALTER TABLE context_docs ADD (embedding VECTOR(384, FLOAT32))"]),
 ]
 
 
@@ -183,8 +213,13 @@ def create_schema(engine: Engine) -> None:
             for step in statements:
                 if callable(step):
                     step(cx)
-                elif not fresh and engine.dialect.name == "oracle":
-                    cols = {c["name"].lower() for c in inspect(cx).get_columns("payments")}
-                    if "charged_amount" not in cols:
+                elif engine.dialect.name == "oracle":
+                    if mid == "0002_payment_settlement_currency" and (fresh or "charged_amount" in {
+                            c["name"].lower() for c in inspect(cx).get_columns("payments")}):
+                        continue
+                    try:
                         cx.exec_driver_sql(step)
+                    except Exception as e:
+                        if "ORA-01430" not in str(e) and "ORA-00955" not in str(e):
+                            raise
             cx.execute(insert(schema_migrations).values(id=mid))

@@ -73,6 +73,7 @@ def alerts_loop(stop: threading.Event) -> None:
                 DUPES.inc()
                 continue
             r.publish(f"notif:{alert['subscriber_id']}", json.dumps({"kind": kind, "title": title, "body": body}))
+            SPINE_DIRTY.add(alert["subscriber_id"])  # event-driven: re-embed this customer's context now
             NOTIFIED.labels(alert["level"]).inc()
             log.info("notified", alert_id=alert["alert_id"], kind=kind)
         c.commit(asynchronous=True)
@@ -103,6 +104,40 @@ def outbox_loop(stop: threading.Event) -> None:
         stop.wait(2)
 
 
+SPINE_DIRTY: set[str] = set()
+
+
+def spine_loop(stop: threading.Event) -> None:
+    """Layer 1 builder. Event-driven (alert -> refresh that subscriber immediately) plus a sweep every
+    60 s that picks up new CDR totals, issued bills and payments. Content-hash upserts make an unchanged
+    subscriber cost one DB read and zero embeddings."""
+    from .agent.embed import get_embedder
+    from .agent.spine import refresh_global, refresh_subscriber
+    from .deps import get_usage_state
+
+    engine, state = get_engine(), get_usage_state()
+    emb = get_embedder()
+    refresh_global(engine, emb)
+    last_sweep = 0.0
+    import time as _t
+
+    while not stop.is_set():
+        due = set(SPINE_DIRTY)
+        SPINE_DIRTY.clear()
+        if _t.monotonic() - last_sweep > 60:
+            with engine.connect() as cx:
+                due |= {r[0] for r in cx.execute(select(subscribers.c.id))}
+            last_sweep = _t.monotonic()
+        for sub in due:
+            try:
+                st = refresh_subscriber(engine, state, emb, sub)
+                if st["embedded"]:
+                    log.info("spine_refreshed", subscriber=sub[-4:], **st)
+            except Exception as e:  # noqa: BLE001
+                log.warning("spine_refresh_failed", error=str(e)[:200])
+        stop.wait(5)
+
+
 def main() -> None:
     init_flags()
     create_schema(get_engine())
@@ -111,7 +146,7 @@ def main() -> None:
     import signal
 
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
-    threads = [threading.Thread(target=f, args=(stop,), daemon=True) for f in (alerts_loop, outbox_loop)]
+    threads = [threading.Thread(target=f, args=(stop,), daemon=True) for f in (alerts_loop, outbox_loop, spine_loop)]
     for t in threads:
         t.start()
     log.info("notifier_started")
