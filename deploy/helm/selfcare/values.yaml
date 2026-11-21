@@ -65,12 +65,12 @@ workloads:
     port: 8080
     replicas: 2
     hpa: { min: 2, max: 8, cpu: 70 }
-    resources: { requests: { cpu: 150m, memory: 256Mi }, limits: { memory: 768Mi } }
-  notifier:
+    resources: { requests: { cpu: 150m, memory: 384Mi }, limits: { memory: 1Gi } }
+  notifier:   # also runs the context-spine builder (L1) - loads the embedding model
     image: core-api
     command: ["notifier"]
     replicas: 1
-    resources: { requests: { cpu: 50m, memory: 192Mi }, limits: { memory: 384Mi } }
+    resources: { requests: { cpu: 50m, memory: 320Mi }, limits: { memory: 768Mi } }
 
 web:
   replicas: 2

@@ -18,6 +18,8 @@ dependencies = [
   "python-multipart>=0.0.12",
   "oci>=2.130",
   "openfeature-provider-flagd>=0.1.5",
+  "fastembed>=0.5",
+  "numpy>=2.0",
 ]
 
 [tool.uv.sources]

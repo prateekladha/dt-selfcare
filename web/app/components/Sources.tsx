@@ -1,22 +1,46 @@
 import { useState } from "react";
-import { CheckCircle2, Database, FileSearch, Layers, Loader2, XCircle } from "lucide-react";
-import type { Evidence } from "~/lib/types";
+import { BrainCircuit, CheckCircle2, Database, FileSearch, Layers, Loader2, XCircle } from "lucide-react";
+import type { AgentTrace, Citation, Evidence } from "~/lib/types";
+import { AgentTraceView } from "./AgentTrace";
 
-/** Narrative text with [n] citations rendered as links to the numbered sources below. */
-export function CitedText({ text, onCite }: { text: string; onCite: (n: number) => void }) {
-  const parts = text.split(/(\[\d{1,2}\])/g);
+/** Answer text with [D#]/[G#] citations rendered as links to the cited documents below. */
+export function CitedText({ text, onCite }: { text: string; onCite: (label: string) => void }) {
+  const parts = text.split(/(\[[DG]\d{1,2}\])/g);
   return (
     <p className="whitespace-pre-line text-[16px] leading-[1.7] text-[var(--ink)]">
       {parts.map((part, i) => {
-        const m = part.match(/^\[(\d{1,2})\]$/);
+        const m = part.match(/^\[([DG]\d{1,2})\]$/);
         if (!m) return <span key={i}>{part}</span>;
-        const n = Number(m[1]);
         return (
-          <button key={i} type="button" onClick={() => onCite(n)} aria-label={`Source ${n}`}
-                  className="mx-0.5 inline-flex h-[18px] min-w-[18px] -translate-y-1 items-center justify-center rounded bg-[var(--brand-bg)] px-1 align-baseline text-[11px] font-bold text-[var(--brand-ink)] hover:bg-[var(--brand)] hover:text-white">{n}</button>
+          <button key={i} type="button" onClick={() => onCite(m[1])} aria-label={`Source ${m[1]}`}
+                  className="mx-0.5 inline-flex h-[18px] min-w-[22px] -translate-y-1 items-center justify-center rounded bg-[var(--brand-bg)] px-1 align-baseline text-[10px] font-bold text-[var(--brand-ink)] hover:bg-[var(--brand)] hover:text-white">{m[1]}</button>
         );
       })}
     </p>
+  );
+}
+
+const DOC_KIND: Record<string, string> = {
+  bill: "Bill (Autonomous DB)", bill_change: "Bill comparison (rating engine)", usage_live: "Live usage (CDR totals in Valkey)",
+  profile: "Plan (CRM)", alerts: "Alerts", payments: "Payments", tariff: "Tariff (product catalogue)", policy: "Policy (product catalogue)",
+  cdr_evidence: "Raw CDR evidence (archive)",
+};
+
+export function CitedDocs({ citations, highlight }: { citations: Citation[]; highlight: string | null }) {
+  return (
+    <ol className="space-y-2">
+      {citations.map((c) => (
+        <li key={c.label} id={`src-${c.label}`} className={`rounded-md border px-3 py-2 transition-colors ${highlight === c.label ? "border-[var(--brand)] bg-[var(--brand-bg)]" : "border-[var(--line)]"}`}>
+          <div className="flex flex-wrap items-baseline gap-2">
+            <span className="rounded bg-[var(--chip)] px-1.5 text-[11px] font-bold">{c.label}</span>
+            <span className="text-[13px] font-semibold">{c.title}</span>
+            <span className="text-[11px] text-[var(--ink-3)]">{DOC_KIND[c.doc_type] ?? c.doc_type}</span>
+          </div>
+          <p className="mt-1 text-[12.5px] leading-relaxed text-[var(--ink-2)]">{c.body}</p>
+          <p className="mt-1 font-mono text-[11px] text-[var(--ink-3)]">source: {c.source_ref}</p>
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -24,8 +48,8 @@ const fmtQty = (q: number, unit: string) =>
   unit === "bytes" ? `${(q / 1e6).toLocaleString("en-GB", { maximumFractionDigits: 1 })} MB`
   : unit === "seconds" ? `${Math.floor(q / 60)} min ${q % 60}s` : q.toLocaleString("en-GB");
 
-export function SourcesPanel({ sources, cycle, open, setOpen, highlight }:
-  { sources: string[]; cycle: string; open: boolean; setOpen: (v: boolean) => void; highlight: number | null }) {
+export function SourcesPanel({ citations, trace, cycle, open, setOpen, highlight }:
+  { citations: Citation[]; trace?: AgentTrace; cycle: string; open: boolean; setOpen: (v: boolean) => void; highlight: string | null }) {
   const [ev, setEv] = useState<Evidence | null>(null);
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
   const [err, setErr] = useState("");
@@ -44,22 +68,21 @@ export function SourcesPanel({ sources, cycle, open, setOpen, highlight }:
     <div className="border-t border-[var(--line)]">
       <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
               className="flex w-full items-center justify-between px-6 py-3 text-left text-sm font-semibold text-[var(--ink-2)] hover:bg-[var(--surface-2)]">
-        <span className="inline-flex items-center gap-2"><FileSearch size={16} /> Sources and evidence ({sources.length})</span>
+        <span className="inline-flex items-center gap-2"><FileSearch size={16} /> Sources, evidence and how this answer was made ({citations.length})</span>
         <span className="text-xs text-[var(--ink-3)]">{open ? "Hide" : "Show"}</span>
       </button>
       {open && (
         <div className="space-y-5 px-6 pb-6">
           <div>
-            <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)]"><Layers size={13} /> Facts given to the AI (computed from your bills)</p>
-            <ol className="space-y-1.5">
-              {sources.map((s, i) => (
-                <li key={i} id={`src-${i + 1}`} className={`flex gap-2.5 rounded-md px-2 py-1.5 text-[13px] transition-colors ${highlight === i + 1 ? "bg-[var(--brand-bg)]" : ""}`}>
-                  <span className="mt-px flex h-[18px] min-w-[18px] items-center justify-center rounded bg-[var(--chip)] text-[11px] font-bold">{i + 1}</span>
-                  <span className="text-[var(--ink-2)]">{s}</span>
-                </li>
-              ))}
-            </ol>
+            <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)]"><Layers size={13} /> Documents the answer cites (built from your records)</p>
+            <CitedDocs citations={citations} highlight={highlight} />
           </div>
+          {trace && (
+            <details className="rounded-lg border border-[var(--line)] p-4" open={false}>
+              <summary className="flex cursor-pointer items-center gap-1.5 text-sm font-semibold"><BrainCircuit size={15} /> How this answer was made (agent trace)</summary>
+              <div className="mt-3"><AgentTraceView trace={trace} /></div>
+            </details>
+          )}
 
           <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-2)] p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">

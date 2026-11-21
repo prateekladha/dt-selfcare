@@ -10,7 +10,21 @@ export type Explanation = {
   delta_total: number | null; delta_pct: number | null; direction: "UP" | "DOWN" | "SAME" | "FIRST_BILL";
   drivers: Driver[]; top_usage_drivers: UsageDriver[]; usage_changes: string[]; facts: string[];
 };
-export type ExplanationResponse = { explanation: Explanation; narrative: string; provider: string; partial: boolean; sources?: string[]; bill_id?: string | null };
+export type Citation = { label: string; id: string; title: string; doc_type: string; cycle: string | null; source_ref: string; body: string };
+export type AgentTrace = {
+  prompt_version?: string; cache?: string; latency_ms?: number; degraded?: string[];
+  spine?: { subscriber: { docs: number; embedded: number }; shared: { docs: number; embedded: number } };
+  retrieval?: { candidates: number; vector_engine: string; target_cycle: string | null; rankers: string[];
+    results: { label: string; id: string; title: string; type: string; relevant: boolean; scores: Record<string, number | null> }[];
+    grader: { sufficient: boolean; missing: string } };
+  corrective?: { action: string; [k: string]: unknown }[];
+  attempts?: { attempt: number; verified: boolean; problems: string[] }[];
+  stages?: { stage: string; model: string; prompt_tokens: number; completion_tokens: number; cache_hit_tokens: number; cache_miss_tokens: number; cost_usd: number; seconds: number }[];
+  totals?: { cost_usd: number; prompt_tokens: number; completion_tokens: number; cache_hit_tokens: number; cache_hit_ratio: number | null; llm_calls: number };
+};
+export type ExplanationResponse = { explanation: Explanation; narrative: string; provider: string; partial: boolean; status?: string;
+  citations?: Citation[]; trace?: AgentTrace; bill_id?: string | null };
+export type AgentAnswer = { status: string; answer: string; citations: Citation[]; provider: string; trace: AgentTrace };
 export type Evidence = {
   subscriber_id: string; cycle: string; partition: number; source: string; objects_scanned: number; cdr_count: number;
   first_event: string | null; last_event: string | null; all_match: boolean; note: string | null; bill_id: string | null;

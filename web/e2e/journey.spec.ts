@@ -46,7 +46,7 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   await expect(page.getByText(/Why your .* bill/)).toBeVisible();
   // fail the journey if login silently fell back to a rate-limit / error state
   await expect(page.getByRole("alert")).toHaveCount(0);
-  await expect(page.getByText(/Written by AI|Generated from your bill data/)).toBeVisible({ timeout: 45_000 });
+  await expect(page.getByText(/Answered by the billing agent/)).toBeVisible({ timeout: 45_000 });
   await shot(page, "02-overview");
 
   // Bills list -> detail -> PDF
@@ -62,12 +62,13 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   expect(pdf.status()).toBe(200);
   expect(pdf.headers()["content-type"]).toContain("application/pdf");
   expect((await pdf.body()).subarray(0, 4).toString()).toBe("%PDF");
-  await expect(page.getByText(/Written by AI|Generated from your bill data/)).toBeVisible({ timeout: 45_000 });
+  await expect(page.getByText(/Answered by the billing agent/)).toBeVisible({ timeout: 45_000 });
   await shot(page, "04-bill-detail");
 
   // Evidence trail: sources + raw CDRs re-summed from the archive must match the real-time counters
-  await page.getByRole("button", { name: /Sources and evidence/ }).click();
-  await expect(page.locator("#src-1")).toBeVisible();
+  await page.getByRole("button", { name: /Sources, evidence and how this answer was made/ }).click();
+  await expect(page.getByText(/^Verified/).first()).toBeVisible();
+  await expect(page.locator('[id^="src-D"]').first()).toBeVisible();  // cited customer documents
   await page.getByRole("button", { name: "Re-sum my CDRs" }).click();
   await expect(page.getByText(/every total matches the real-time counters/)).toBeVisible({ timeout: 60_000 });
   await shot(page, "04b-bill-evidence");
@@ -75,7 +76,7 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   // Language switch re-explains in German
   await page.getByRole("tab", { name: "Deutsch" }).click();
   await expect(page).toHaveURL(/lang=de/);
-  await expect(page.getByText(/Written by AI|Generated from your bill data/)).toBeVisible({ timeout: 45_000 });
+  await expect(page.getByText(/Answered by the billing agent/)).toBeVisible({ timeout: 45_000 });
 
   // This month (unbilled)
   await page.goto("/bills/current");
@@ -90,6 +91,14 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
     buffer: Buffer.from("usage_type,quantity,unit,roaming_zone\nDATA,6,GB,\nROAMING_DATA,800,MB,Z3\nVOICE,120,min,\n") });
   await page.getByRole("button", { name: "Analyse" }).click();
   await expect(page.getByText(/file: my usage\.csv/i)).toBeVisible({ timeout: 45_000 });
+
+  // Assistant: the agent answers from the spine with citations, verification and a trace
+  await page.goto("/assistant");
+  await page.getByRole("button", { name: /Why did my .* bill change\?/ }).click();
+  await expect(page.getByText(/^(Verified|Verified after self-correction)$/)).toBeVisible({ timeout: 90_000 });
+  await page.getByText("How this answer was made").click();
+  await expect(page.getByText(/L2 hybrid retrieval/)).toBeVisible();
+  await shot(page, "05b-assistant");
 
   // System transparency
   await page.goto("/system");

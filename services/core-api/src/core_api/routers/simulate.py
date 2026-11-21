@@ -68,6 +68,8 @@ async def simulate(p: Principal = Depends(current_principal), scenario: str | No
     s = get_settings()
     budget = lambda: RateLimiter(get_valkey()).allow(f"ai:{p.subscriber_id}", s.ai_daily_limit_per_subscriber, 86400)
     text, provider = Narrator(s, engine).narrate(ex, p.subscriber_id, p.country, lang, budget=budget)
+    if provider == "template":  # no canned prose: the deterministic breakdown is shown instead
+        text, provider = "", "none"
     return {"source": source, "compared_to": last.cycle if last else None, "baseline": "your-last-cycle" if (personal and last) else None,
             "bill": simulated.model_dump(),
             "explanation": ex.model_dump(), "narrative": text, "provider": provider}
