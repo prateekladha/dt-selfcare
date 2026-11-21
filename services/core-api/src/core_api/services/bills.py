@@ -98,10 +98,24 @@ def cli() -> None:
     ap.add_argument("--cycle", help="YYYY-MM; default: previous month")
     ap.add_argument("--backfill-months", type=int, default=0, help="also close N cycles before --cycle")
     ap.add_argument("--settle-before", help="mark bills of cycles before YYYY-MM as paid (history import)")
+    ap.add_argument("--wait-quiet-seconds", type=int, default=0,
+                    help="first wait until the aggregator has drained (offsets unchanged for N seconds)")
     a = ap.parse_args()
+    if a.wait_quiet_seconds:
+        import time
+
+        st, last, quiet = get_usage_state(), None, 0
+        while quiet < a.wait_quiet_seconds:
+            snap = [st.committed_offset(p) for p in range(st.partitions)]
+            quiet = quiet + 5 if snap == last else 0
+            last = snap
+            time.sleep(5)
+        print(json.dumps({"aggregator_drained_at_offsets": last}))
     engine = get_engine()
     create_schema(engine)
     target = a.cycle or previous_cycle(cycle_of(datetime.now(UTC)))
+    if a.settle_before == "LAST":  # history import: everything before the latest cycle was paid
+        a.settle_before = target
     for n in range(a.backfill_months, -1, -1):
         c = previous_cycle(target, n)
         print(json.dumps({"cycle": c, **close_cycle(engine, get_usage_state(), c, a.settle_before)}))

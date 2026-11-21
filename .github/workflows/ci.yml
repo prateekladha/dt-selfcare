@@ -1,0 +1,98 @@
+name: ci-cd
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  OCI_REGION: ap-mumbai-1
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with: { version: "0.13.9" }
+      - run: uv sync --frozen
+      - run: uv run ruff check libs services
+      - run: uv run pytest -q
+      - uses: actions/setup-node@v5
+        with: { node-version: 24, cache: npm, cache-dependency-path: web/package-lock.json }
+      - run: npm ci && npm run typecheck && npm run build
+        working-directory: web
+      - name: helm lint
+        run: helm lint deploy/helm/selfcare -f deploy/helm/values-oci.yaml
+
+  images:
+    if: github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-24.04-arm   # native arm64 = same arch as the Ampere A1 nodes
+    strategy:
+      matrix:
+        image: [core-api, usage-collector, usage-aggregator, network-emulator, web]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.OCI_REGION }}.ocir.io
+          username: ${{ secrets.OCIR_USERNAME }}
+          password: ${{ secrets.OCIR_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image == 'web' && 'web' || '.' }}
+          build-args: ${{ matrix.image != 'web' && format('SERVICE={0}', matrix.image) || '' }}
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ vars.OCIR_REGISTRY }}/${{ matrix.image }}:${{ github.sha }}
+            ${{ vars.OCIR_REGISTRY }}/${{ matrix.image }}:latest
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: images
+    runs-on: ubuntu-24.04
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+      - name: OCI credentials (CI user, deploy-only permissions)
+        env:
+          KEY: ${{ secrets.OCI_CI_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.oci && printf '%s\n' "$KEY" > ~/.oci/key.pem && chmod 600 ~/.oci/key.pem
+          cat > ~/.oci/config <<CFG
+          [DEFAULT]
+          user=${{ secrets.OCI_CI_USER_OCID }}
+          fingerprint=${{ secrets.OCI_CI_FINGERPRINT }}
+          tenancy=${{ secrets.OCI_TENANCY_OCID }}
+          region=${{ env.OCI_REGION }}
+          key_file=~/.oci/key.pem
+          CFG
+          chmod 600 ~/.oci/config
+          pipx install oci-cli
+      - name: kubeconfig
+        env: { SUPPRESS_LABEL_WARNING: "True" }
+        run: oci ce cluster create-kubeconfig --cluster-id "${{ vars.OCI_CLUSTER_ID }}" --file ~/.kube/config --token-version 2.0.0 --kube-endpoint PUBLIC_ENDPOINT
+      - uses: azure/setup-helm@v4
+      - name: helm upgrade
+        env: { SUPPRESS_LABEL_WARNING: "True" }
+        run: |
+          helm upgrade --install selfcare deploy/helm/selfcare -n selfcare \
+            -f deploy/helm/values-oci.yaml --set image.tag=${{ github.sha }} \
+            --wait --timeout 20m --history-max 5
+      - name: smoke test
+        run: |
+          DOMAIN=$(grep -E '^domain:' deploy/helm/values-oci.yaml | awk '{print $2}' | tr -d '"')
+          for i in $(seq 1 30); do curl -fsS "https://$DOMAIN/healthz" && exit 0; sleep 10; done; exit 1

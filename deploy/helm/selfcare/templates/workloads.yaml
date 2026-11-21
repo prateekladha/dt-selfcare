@@ -1,0 +1,73 @@
+{{- range $name, $w := .Values.workloads }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    app: {{ $name }}
+    {{- include "selfcare.labels" $ | nindent 4 }}
+spec:
+  replicas: {{ $w.replicas }}
+  revisionHistoryLimit: 3
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  selector: { matchLabels: { app: {{ $name }} } }
+  template:
+    metadata:
+      labels: { app: {{ $name }} }
+      annotations: { prometheus.io/scrape: "true", prometheus.io/port: {{ ($w.port | default 9000) | quote }}, prometheus.io/path: /metrics }
+    spec:
+      {{- include "selfcare.podSecurity" $ | nindent 6 }}
+      terminationGracePeriodSeconds: 45
+      topologySpreadConstraints:
+        - { maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: ScheduleAnyway, labelSelector: { matchLabels: { app: {{ $name }} } } }
+      containers:
+        - name: {{ $name }}
+          image: {{ include "selfcare.image" (dict "root" $ "name" $w.image) }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: {{ toJson $w.command }}
+          env:
+            {{- include "selfcare.env" $ | nindent 12 }}
+            - { name: APP_OCI_AUTH, value: instance_principal }
+          {{- if $w.port }}
+          ports: [{ name: http, containerPort: {{ $w.port }} }]
+          readinessProbe: { httpGet: { path: /readyz, port: http }, periodSeconds: 10, timeoutSeconds: 3 }
+          livenessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 20, failureThreshold: 3 }
+          startupProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 5, failureThreshold: 36 }
+          {{- else }}
+          livenessProbe: { tcpSocket: { port: 9000 }, periodSeconds: 20, failureThreshold: 3, initialDelaySeconds: 20 }
+          {{- end }}
+          resources: {{- toYaml $w.resources | nindent 12 }}
+          {{- include "selfcare.containerSecurity" $ | nindent 10 }}
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+      volumes: [{ name: tmp, emptyDir: {} }]
+---
+{{- if $w.port }}
+apiVersion: v1
+kind: Service
+metadata: { name: {{ $name }}, labels: { app: {{ $name }} } }
+spec:
+  selector: { app: {{ $name }} }
+  ports: [{ name: http, port: 8080, targetPort: http }]
+---
+{{- end }}
+{{- if $w.hpa }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: {{ $name }} }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ $name }} }
+  minReplicas: {{ $w.hpa.min }}
+  maxReplicas: {{ $w.hpa.max }}
+  metrics: [{ type: Resource, resource: { name: cpu, target: { type: Utilization, averageUtilization: {{ $w.hpa.cpu }} } } }]
+---
+{{- end }}
+{{- if gt (int $w.replicas) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: {{ $name }} }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: {{ $name }} } }
+---
+{{- end }}
+{{- end }}

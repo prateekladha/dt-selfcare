@@ -1,0 +1,12 @@
+# Non-secret environment values for the OCI deployment (secrets live in OCI Vault).
+image:
+  registry: ap-mumbai-1.ocir.io/bmsf4adv5ypr/dt-selfcare
+oci:
+  region: ap-mumbai-1
+  vaultId: ocid1.vault.oc1.ap-mumbai-1.fbvqcprcaaf7g.abrg6ljrmzlpbvcvmptz2d7pubvyfrnpzmrcgtgoyixjceoflzdizistzvfq
+  namespace: bmsf4adv5ypr
+  rawBucket: dt-selfcare-usage-raw
+stream:
+  bootstrap: cell-1.streaming.ap-mumbai-1.oci.oraclecloud.com:9092
+  partitions: 4
+domain: ""

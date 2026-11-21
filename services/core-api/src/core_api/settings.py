@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     env: str = "dev"
     # Autonomous DB: oracle+oracledb://ADMIN:<pwd>@<tls-connect-string>; sqlite for unit tests.
     database_url: str = "sqlite:///./core.db"
+    # When db_dsn is set we connect to Oracle ADB over TLS as a least-privilege app user.
+    db_dsn: str = ""
+    db_user: str = "SELFCARE"
+    db_password: str = ""
     valkey_url: str = "redis://valkey:6379/0"
     stream_partitions: int = 4
 

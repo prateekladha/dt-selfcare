@@ -109,6 +109,7 @@ def bill_pdf(cycle: str, p: Principal = Depends(current_principal)) -> Response:
 
 @router.get("/bills/{cycle}/explanation")
 def bill_explanation(cycle: str, response: Response, lang: str = Query("en", pattern="^(en|de|pl)$"),
+                     ai: bool = Query(True, description="false = deterministic facts only (fast path for SSR)"),
                      p: Principal = Depends(current_principal)) -> dict:
     response.headers.update(NO_STORE)
     if cycle == "current":
@@ -120,8 +121,8 @@ def bill_explanation(cycle: str, response: Response, lang: str = Query("en", pat
         prev_row = get_bill_row(get_engine(), p.subscriber_id, previous_cycle(cycle))
     ex = explain(bill, row_to_bill(prev_row) if prev_row else None)
     s = get_settings()
-    within_budget = RateLimiter(get_valkey()).allow(f"ai:{p.subscriber_id}", s.ai_daily_limit_per_subscriber, 86400)
-    text, provider = Narrator(s, get_engine()).narrate(ex, p.subscriber_id, p.country, lang, allow_llm=within_budget)
+    allow = ai and RateLimiter(get_valkey()).allow(f"ai:{p.subscriber_id}", s.ai_daily_limit_per_subscriber, 86400)
+    text, provider = Narrator(s, get_engine()).narrate(ex, p.subscriber_id, p.country, lang, allow_llm=allow)
     return {"explanation": ex.model_dump(), "narrative": text, "provider": provider, "partial": cycle == "current"}
 
 

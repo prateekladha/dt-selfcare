@@ -1,0 +1,100 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-init
+  annotations: { "helm.sh/hook": pre-install,pre-upgrade, "helm.sh/hook-weight": "0", "helm.sh/hook-delete-policy": before-hook-creation }
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: OnFailure
+      {{- include "selfcare.podSecurity" . | nindent 6 }}
+      containers:
+        - name: db-init
+          image: {{ include "selfcare.image" (dict "root" . "name" "core-api") }}
+          command: ["db-init"]
+          env:
+            - name: DB_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: selfcare-secrets, key: db-admin-password } }
+            - name: APP_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: selfcare-secrets, key: db-app-password } }
+            - name: APP_DB_DSN
+              valueFrom: { secretKeyRef: { name: selfcare-secrets, key: db-dsn } }
+          resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { memory: 256Mi } }
+          {{- include "selfcare.containerSecurity" . | nindent 10 }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: bill-run }
+spec:
+  schedule: "0 2 1 * *"   # 02:00 UTC on the 1st: close the previous cycle
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        spec:
+          restartPolicy: OnFailure
+          {{- include "selfcare.podSecurity" . | nindent 10 }}
+          containers:
+            - name: bill-run
+              image: {{ include "selfcare.image" (dict "root" . "name" "core-api") }}
+              command: ["bill-run", "--wait-quiet-seconds", "30"]
+              env: {{- include "selfcare.env" . | nindent 16 }}
+              resources: { requests: { cpu: 50m, memory: 192Mi }, limits: { memory: 384Mi } }
+              {{- include "selfcare.containerSecurity" . | nindent 14 }}
+{{- if .Values.demo.seed }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: demo-backfill
+  annotations: { "helm.sh/hook": post-install, "helm.sh/hook-weight": "10", "helm.sh/hook-delete-policy": before-hook-creation }
+spec:
+  backoffLimit: 4
+  template:
+    spec:
+      restartPolicy: OnFailure
+      {{- include "selfcare.podSecurity" . | nindent 6 }}
+      initContainers:
+        - name: usage-history
+          image: {{ include "selfcare.image" (dict "root" . "name" "network-emulator") }}
+          command: ["network-emulator", "backfill", "--months", {{ .Values.demo.backfillMonths | quote }}]
+          env:
+            - { name: COLLECTOR_URL, value: "http://usage-collector:8080" }
+            - name: SOURCE_TOKEN
+              valueFrom: { secretKeyRef: { name: selfcare-secrets, key: source-token } }
+          resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { memory: 512Mi } }
+          {{- include "selfcare.containerSecurity" . | nindent 10 }}
+      containers:
+        - name: close-past-cycles
+          image: {{ include "selfcare.image" (dict "root" . "name" "core-api") }}
+          command: ["bill-run", "--wait-quiet-seconds", "30", "--backfill-months", {{ sub (int .Values.demo.backfillMonths) 2 | quote }},
+                    "--settle-before", "LAST"]
+          env: {{- include "selfcare.env" . | nindent 12 }}
+          resources: { requests: { cpu: 50m, memory: 192Mi }, limits: { memory: 384Mi } }
+          {{- include "selfcare.containerSecurity" . | nindent 10 }}
+{{- end }}
+{{- if .Values.demo.live }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: network-emulator-live }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: network-emulator-live } }
+  template:
+    metadata: { labels: { app: network-emulator-live } }
+    spec:
+      {{- include "selfcare.podSecurity" . | nindent 6 }}
+      containers:
+        - name: emulator
+          image: {{ include "selfcare.image" (dict "root" . "name" "network-emulator") }}
+          command: ["network-emulator", "live", "--interval-s", "60"]
+          env:
+            - { name: COLLECTOR_URL, value: "http://usage-collector:8080" }
+            - name: SOURCE_TOKEN
+              valueFrom: { secretKeyRef: { name: selfcare-secrets, key: source-token } }
+          resources: { requests: { cpu: 20m, memory: 64Mi }, limits: { memory: 256Mi } }
+          {{- include "selfcare.containerSecurity" . | nindent 10 }}
+{{- end }}

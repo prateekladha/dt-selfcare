@@ -13,6 +13,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     Index,
+    Identity,
     Integer,
     MetaData,
     String,
@@ -80,7 +81,7 @@ payments = Table(
 
 notifications = Table(
     "notifications", metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("id", Integer, Identity(), primary_key=True),
     Column("subscriber_id", String(32), nullable=False),
     Column("alert_id", String(96), nullable=False, unique=True),  # dedupe key from the pipeline
     Column("kind", String(32), nullable=False),
@@ -103,7 +104,7 @@ explanations = Table(
 
 outbox = Table(
     "outbox", metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("id", Integer, Identity(), primary_key=True),
     Column("topic", String(64), nullable=False),
     Column("event_key", String(64), nullable=False),
     Column("payload", Text, nullable=False),
@@ -119,11 +120,14 @@ def get_engine(url: str | None = None) -> Engine:
     if _engine is None:
         from .settings import get_settings
 
-        url = url or get_settings().database_url
-        kwargs = {"pool_pre_ping": True}
-        if url.startswith("oracle"):
-            kwargs |= {"pool_size": 5, "max_overflow": 5, "pool_recycle": 1800}
-        _engine = create_engine(url, **kwargs)
+        s = get_settings()
+        kwargs: dict = {"pool_pre_ping": True}
+        if url is None and s.db_dsn:
+            from sqlalchemy.engine import URL
+
+            url = URL.create("oracle+oracledb", username=s.db_user, password=s.db_password)
+            kwargs |= {"connect_args": {"dsn": s.db_dsn}, "pool_size": 5, "max_overflow": 5, "pool_recycle": 1800}
+        _engine = create_engine(url or s.database_url, **kwargs)
     return _engine
 
 

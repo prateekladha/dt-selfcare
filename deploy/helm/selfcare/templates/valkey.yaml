@@ -1,0 +1,62 @@
+{{- /* Usage state store. AOF (fsync every second) on an OCI block volume; noeviction because
+       losing a running total silently would be a billing bug. Rebuildable from the raw archive. */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: valkey-config
+  labels:
+    {{- include "selfcare.labels" . | nindent 4 }}
+data:
+  valkey.conf: |
+    appendonly yes
+    appendfsync everysec
+    maxmemory {{ .Values.valkey.maxmemory }}
+    maxmemory-policy noeviction
+    save 900 1
+    dir /data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey
+  labels:
+    {{- include "selfcare.labels" . | nindent 4 }}
+spec:
+  selector: { app: valkey }
+  ports: [{ port: 6379, targetPort: 6379 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey
+  labels:
+    {{- include "selfcare.labels" . | nindent 4 }}
+spec:
+  serviceName: valkey
+  replicas: 1
+  selector: { matchLabels: { app: valkey } }
+  template:
+    metadata: { labels: { app: valkey } }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 999, fsGroup: 999, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: valkey
+          image: valkey/valkey:8.1-alpine
+          args: ["/etc/valkey/valkey.conf"]
+          ports: [{ containerPort: 6379 }]
+          resources: { requests: { cpu: 100m, memory: 512Mi }, limits: { memory: 1536Mi } }
+          readinessProbe: { exec: { command: ["valkey-cli", "ping"] }, periodSeconds: 5 }
+          livenessProbe: { exec: { command: ["valkey-cli", "ping"] }, periodSeconds: 15, failureThreshold: 6 }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: config, mountPath: /etc/valkey }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
+      volumes:
+        - name: config
+          configMap: { name: valkey-config }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.valkey.storageClass }}
+        resources: { requests: { storage: {{ .Values.valkey.storage }} } }
