@@ -69,10 +69,12 @@ spec:
       annotations: { checksum/config: {{ toJson .Values.llmGateway | sha256sum }} }
     spec:
       enableServiceLinks: false
-      securityContext: { seccompProfile: { type: RuntimeDefault } }
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      imagePullSecrets: [{ name: ocir-pull }]
       containers:
         - name: litellm
-          image: {{ .Values.llmGateway.image }}
+          image: {{ include "selfcare.image" (dict "root" . "name" "llm-gateway") }}   # slim self-built (deploy/docker/gateway.Dockerfile)
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["--config", "/etc/litellm/config.yaml", "--port", "4000"]   # single process; scale with pods (HPA). --num_workers never binds the port in this image
           ports: [{ containerPort: 4000 }]
           env:
@@ -89,7 +91,7 @@ spec:
             - { name: LANGFUSE_HOST, value: {{ .Values.llmGateway.langfuseHost | quote }} }
           readinessProbe: { httpGet: { path: /health/readiness, port: 4000 }, periodSeconds: 10, timeoutSeconds: 5 }
           livenessProbe: { httpGet: { path: /health/liveliness, port: 4000 }, periodSeconds: 20, timeoutSeconds: 5, failureThreshold: 5 }
-          startupProbe: { httpGet: { path: /health/liveliness, port: 4000 }, periodSeconds: 5, failureThreshold: 120 }
+          startupProbe: { httpGet: { path: /health/liveliness, port: 4000 }, periodSeconds: 3, failureThreshold: 40 }
           resources: { requests: { cpu: 150m, memory: 512Mi }, limits: { memory: 1536Mi } }
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
           volumeMounts: [{ name: config, mountPath: /etc/litellm }]

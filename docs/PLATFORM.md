@@ -64,11 +64,15 @@ flowchart LR
   `order-workflows` consumer turns it into a workflow signal. Measured live: 0.7 s from legacy result to
   signal. If an event is lost, the workflow asks the adapter for the state every 45 s.
 - **order-adapter: Temporal never calls a legacy system.** Activities call one internal API (TMF622
-  ProductOrder). It picks the country adapter (DE REST, PL SOAP) and enforces each legacy system's capacity
-  across all pods (Valkey 1-second window, `bss_max_rps`). Over capacity it answers **429 + Retry-After**,
-  and the activity backs off (up to 5 min between tries, for up to 12 h). A bill-day spike becomes a
-  durable queue in Temporal, not an outage of the legacy system. Temporal also caps the task queue's
-  activity rate across workers.
+  ProductOrder), which picks the country adapter (DE REST, PL SOAP).
+- **Bill-day spikes wait in a queue.** The legacy-facing activities (submit, status) run on **one Temporal
+  task queue per country** (`legacy-bss-DE`, `legacy-bss-PL`). The Temporal server caps that queue's
+  dispatch rate across all worker pods at the legacy system's capacity (`bss_max_rps`). On a spike, calls
+  wait durably in the queue (roughly in arrival order; task queues are partitioned) and flow out at
+  exactly the capacity rate: no 429 churn, no growing backoff. The customer's card says
+  "In line for the network system…", and a notification arrives when the order is done.
+- **Safety net.** The adapter still enforces each country's capacity (Valkey 1-second window). If it ever
+  answers 429 + Retry-After, the activity backs off and the card switches to an explicit "Queued" message.
 - **Tariff change** (`PlanChangeWorkflow`) shares the same activities and adapters (`action: modify`).
   The switch applies from today; this month is billed on the new tariff (pro-rating is out of scope).
   Available from the `/plan` page and from the assistant (`propose_plan_change`, approval card).
@@ -80,10 +84,21 @@ one trial request decides whether it closes. 4xx and 429 don't trip it.
 
 | Caller → callee | Connect / read | Breaker |
 |---|---|---|
-| web BFF → core-api, payments, assistant | fetch timeout 5 s (30 s explanation, 120 s assistant stream) | 5 fails → open 20 s → 503 page message |
+| web BFF → core-api, payments, assistant | fetch timeout 5 s (30 s explanation, 120 s assistant stream) | **opossum**: ≥50% of ≥5 calls fail in 10 s → open 20 s → half-open trial |
 | workflow activities → order-adapter | 1 s / 5 s | 5 fails → open 30 s → Temporal retries |
 | workflow activities → usage-collector | 1 s / 10 s | Temporal retry policy |
 | services → LLM gateway | per stage, with retries/backoff | gateway cooldown + fallback |
+
+### What the customer sees when a circuit is open
+| Service down | BFF fallback | Customer sees |
+|---|---|---|
+| core-api | last good snapshot (per customer, ≤ 1 h, in BFF memory) | their account with a banner "Showing your account as of HH:MM, live updates are delayed"; the page re-checks every 20 s and swaps in live data. No snapshot → a styled "We'll be right back" page with Try again. |
+| payments-service | `degraded: ["payments"]` in the page data | Pay buttons replaced by "Payments are briefly unavailable. Your bill and due date are not affected." |
+| assistant-service | `degraded: ["assistant"]` | banner on the Assistant page; input disabled; the rest of the app works |
+| LLM explanation | section-level error boundary | "The explanation isn't available right now. Your bill breakdown above is complete and exact." |
+
+A circuit opens on observed failures, so the first few requests after an outage still fail (with a clear
+message) before the up-front degradation kicks in.
 
 ## Bill day
 - The `bill-run` CronJob issues the bills (init container), then **`explain-batch`** runs: it warms every

@@ -5,7 +5,7 @@ import { OrderCard } from "~/components/OrderCard";
 import { CiteMap, RichText, SourceList } from "~/components/RichText";
 import { Card } from "~/components/ui";
 import type { AgentTrace, ToolSource } from "~/lib/types";
-import { useSnapshot } from "./_app";
+import { useDegraded, useSnapshot } from "./_app";
 
 export const meta = () => [{ title: "Assistant · Self-care" }];
 
@@ -98,6 +98,7 @@ function Answer({ t }: { t: Turn }) {
 
 export default function Assistant() {
   const { home } = useSnapshot();
+  const assistantDown = useDegraded("assistant");
   const last = home.last_bill?.cycle;
   const m = last ? month(last).split(" ")[0] : "last";
   const suggestions = [
@@ -240,11 +241,16 @@ export default function Assistant() {
         <div ref={endRef} />
       </div>
 
+      {assistantDown && (
+        <div role="status" className="rounded-[var(--radius)] border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-4 py-3 text-[14px]">
+          The assistant is briefly unavailable. Your bills, usage and payments work as normal; please try again in a few minutes.
+        </div>
+      )}
       <form onSubmit={(e) => { e.preventDefault(); ask(q); }}
             className="sticky bottom-20 flex items-center gap-2 rounded-[var(--radius)] border border-[var(--line-strong)] bg-[var(--surface)] p-2 shadow-[var(--shadow-lg)] md:bottom-6">
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ask about your bills, usage or plan" aria-label="Your question"
+        <input disabled={assistantDown} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ask about your bills, usage or plan" aria-label="Your question"
                className="h-11 min-w-0 flex-1 bg-transparent px-3 text-[15px] outline-none" maxLength={400} />
-        <button disabled={busy || q.trim().length < 2} aria-label="Ask" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)] text-white disabled:opacity-40">
+        <button disabled={busy || assistantDown || q.trim().length < 2} aria-label="Ask" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)] text-white disabled:opacity-40">
           {busy ? <Loader2 size={18} className="animate-spin" /> : <ArrowUp size={18} />}
         </button>
       </form>

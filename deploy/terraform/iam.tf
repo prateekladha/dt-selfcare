@@ -118,7 +118,7 @@ resource "oci_identity_policy" "objectstorage_service" {
 
 # ---- Container registry repositories (private) ----
 resource "oci_artifacts_container_repository" "repos" {
-  for_each       = toset(["core-api", "usage-collector", "usage-aggregator", "network-emulator", "web"])
+  for_each       = toset(["core-api", "usage-collector", "usage-aggregator", "network-emulator", "web", "llm-gateway"])
   compartment_id = var.compartment_ocid
   display_name   = "${var.name}/${each.key}"
   is_public      = false

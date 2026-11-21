@@ -131,7 +131,7 @@ def test_plan_change_workflow_on_temporal():
 
     @activity.defn(name="validate_order")
     async def validate_order(order_id: str) -> dict:
-        return {"subscriber_id": SUB, "addon_code": "DE-M", "kind": "PLAN"}
+        return {"subscriber_id": SUB, "addon_code": "DE-M", "kind": "PLAN", "country": "DE"}
 
     @activity.defn(name="submit_to_bss")
     async def submit_to_bss(order_id: str) -> str:
@@ -153,7 +153,8 @@ def test_plan_change_workflow_on_temporal():
     async def run():
         async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
                 env.client, task_queue="t", workflows=[PlanChangeWorkflow],
-                activities=[validate_order, submit_to_bss, bss_status, apply_plan, finish_order]):
+                activities=[validate_order, apply_plan, finish_order]), Worker(
+                env.client, task_queue="legacy-bss-DE", activities=[submit_to_bss, bss_status]):
             h = await env.client.start_workflow(PlanChangeWorkflow.run, "o1", id=f"wf-{uuid.uuid4()}", task_queue="t")
             await asyncio.sleep(0.5)
             await h.signal("bss_callback", "CONFIRMED")   # what the bss-events consumer sends
@@ -200,3 +201,66 @@ def test_adapter_unknown_order_is_404(world):
     c = TestClient(app_mod.build("order-adapter-test2", [app_mod.router]))
     assert c.get(f"{BASE}/DEB-NOTEXIST").status_code == 404
     assert c.get(f"{BASE}/XYZ-1").status_code == 404
+
+
+def test_429_tells_the_customer_their_order_is_queued(world, monkeypatch):
+    from core_api.workflows import addon
+    from core_api.workflows.orders import propose_addon, set_status
+    from temporalio.exceptions import ApplicationError
+    from temporalio.testing import ActivityEnvironment
+
+    engine, _ = world
+    o = propose_addon(engine, SUB, "DE-DATA-5GB", "app")
+    set_status(engine, o["order_id"], "APPROVED", "Approved: processing")
+
+    class Busy:
+        async def request(self, *a, **k):
+            return httpx.Response(429, headers={"Retry-After": "1"})
+    monkeypatch.setattr(addon, "adapter_client", lambda: Busy())
+    with pytest.raises(ApplicationError) as e:
+        asyncio.run(ActivityEnvironment().run(addon.submit_to_bss, o["order_id"]))
+    assert e.value.type == "AtCapacity"
+    with engine.connect() as cx:
+        row = cx.execute(select(orders).where(orders.c.id == o["order_id"])).one()
+    assert row.status == "APPROVED" and row.detail.startswith("Queued")
+
+
+def test_legacy_calls_run_on_the_customers_country_queue():
+    """A PL order's legacy calls are dispatched ONLY on legacy-bss-PL (the queue rate-limited to PL's capacity)."""
+    from core_api.workflows.addon import AddonPurchaseWorkflow
+    from temporalio import activity
+    from temporalio.testing import WorkflowEnvironment
+    from temporalio.worker import Worker
+
+    seen = []
+
+    @activity.defn(name="validate_order")
+    async def validate_order(order_id: str) -> dict:
+        return {"subscriber_id": "48600000001", "addon_code": "PL-DATA-5GB", "kind": "ADDON", "country": "PL"}
+
+    @activity.defn(name="submit_to_bss")
+    async def submit_to_bss(order_id: str) -> str:
+        seen.append(activity.info().task_queue)
+        return "PLB-1"
+
+    @activity.defn(name="bss_status")
+    async def bss_status(bss_id: str) -> str:
+        seen.append(activity.info().task_queue)
+        return "completed"
+
+    @activity.defn(name="apply_addon")
+    async def apply_addon(order_id: str, sub: str, code: str) -> str:
+        return "accepted"
+
+    @activity.defn(name="finish_order")
+    async def finish_order(order_id: str, status: str, detail: str) -> None:
+        return None
+
+    async def run():
+        async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
+                env.client, task_queue="t", workflows=[AddonPurchaseWorkflow],
+                activities=[validate_order, apply_addon, finish_order]), Worker(
+                env.client, task_queue="legacy-bss-PL", activities=[submit_to_bss, bss_status]):
+            return await env.client.execute_workflow(AddonPurchaseWorkflow.run, "o1", id=f"wf-{uuid.uuid4()}", task_queue="t")
+    assert asyncio.run(run()) == "COMPLETED"
+    assert seen and set(seen) == {"legacy-bss-PL"}
