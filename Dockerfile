@@ -21,21 +21,8 @@ COPY services/network-emulator/pyproject.toml services/network-emulator/pyprojec
 ARG SERVICE
 RUN test -n "$SERVICE" && uv sync --frozen --no-dev --no-install-workspace --package "$SERVICE"
 # OCI SDK: keep auth/signing/config + the services we call (object storage, identity); drop the other ~150
-RUN SP=/app/.venv/lib/python3.13/site-packages; if [ -d "$SP/oci" ]; then \
-      /app/.venv/bin/python - "$SP/oci" <<'PY'
-import os, shutil, sys
-root = sys.argv[1]
-src = open(os.path.join(root, "__init__.py")).read()
-services = set(src.split('"developer_tool_configuration",', 1)[1].split("]", 1)[0].replace('"', "").replace(" ", "").replace("\n", "").split(","))
-keep = {"object_storage", "identity", "identity_data_plane", "secrets", "vault", "key_management"}
-gone = 0
-for name in sorted(services - keep - {""}):
-    path = os.path.join(root, name)
-    if os.path.isdir(path):
-        shutil.rmtree(path); gone += 1
-print(f"oci sdk: removed {gone} unused service modules")
-PY
-    fi
+COPY deploy/docker/trim_oci.py /tmp/trim_oci.py
+RUN /app/.venv/bin/python /tmp/trim_oci.py /app/.venv/lib/python3.13/site-packages
 # core-api: bake the local embedding model (all-MiniLM-L6-v2, ONNX, ~87 MB) so pods never download it
 RUN mkdir -p /opt/models && if [ "$SERVICE" = "core-api" ]; then \
       /app/.venv/bin/python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/all-MiniLM-L6-v2', cache_dir='/opt/models')"; \
