@@ -1,0 +1,27 @@
+[project]
+name = "dt-selfcare"
+version = "0.1.0"
+requires-python = ">=3.13,<3.14"
+dependencies = ["telco-common", "usage-aggregator", "usage-collector", "network-emulator"]
+
+[tool.uv.sources]
+telco-common = { workspace = true }
+usage-aggregator = { workspace = true }
+usage-collector = { workspace = true }
+network-emulator = { workspace = true }
+
+[tool.uv.workspace]
+members = ["libs/telco_common", "services/*"]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "fakeredis[lua]>=2.26", "ruff>=0.7", "httpx>=0.27"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["libs", "services"]
+addopts = "--import-mode=importlib"
+
+[tool.ruff]
+line-length = 110
+target-version = "py313"
