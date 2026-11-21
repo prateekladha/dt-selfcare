@@ -113,6 +113,7 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
 // separate demo line (Paul, desktop only) so demo bills stay unpaid for walkthroughs.
 test("payment: pay in advance with UPI in Razorpay test mode, settled exactly once", async ({ page }) => {
   test.skip(test.info().project.name !== "desktop", "one real payment per run");
+  test.setTimeout(180_000);  // third-party checkout + bank simulator pages are slow
   await signIn(page, "Paul Becker");
   await page.getByRole("button", { name: /Pay in advance/ }).first().click();
   const rzp = page.frameLocator("iframe.razorpay-checkout-frame");
@@ -129,6 +130,8 @@ test("payment: pay in advance with UPI in Razorpay test mode, settled exactly on
   }
   await shot(page, "08-pay-2-methods");
 
+  const methods = await rzp.locator("body").innerText().catch(() => "");
+  console.log("razorpay methods:", methods.replace(/\s+/g, " ").slice(0, 300));
   const upi = rzp.getByText(/^UPI$/i).first();
   if (await upi.isVisible({ timeout: 3_000 }).catch(() => false)) {
     await upi.click();
