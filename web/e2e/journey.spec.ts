@@ -154,7 +154,11 @@ test("payment @payment: Razorpay checkout opens for the right order with the cus
   const res = await created;
   expect(res.status(), "our payments-service created a gateway order").toBeLessThan(300);
   const order = await res.json();
-  expect(order.currency ?? order.gateway?.currency ?? "EUR").toBe("EUR");
+  expect(order.currency, "the bill/ledger currency is the customer's own").toBe("EUR");
+  // Demo settlement: Razorpay test mode can't take non-INR (international) orders, so the gateway is
+  // charged the INR equivalent at a recorded rate.
+  expect(order.charged_currency).toBe("INR");
+  expect(order.charged_amount).toBe(Math.round(order.amount * Number(order.fx_rate)));
 
   const rzp = page.frameLocator("iframe.razorpay-checkout-frame");
   await expect(rzp.locator("body")).toBeVisible({ timeout: 30_000 });
