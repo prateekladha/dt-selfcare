@@ -17,7 +17,7 @@ from temporalio.worker import Worker
 
 from ..db import create_schema, get_engine
 from ..settings import get_settings
-from .addon import ACTIVITIES, TASK_QUEUE, WORKFLOWS
+from .addon import ACTIVITIES, LEGACY_ACTIVITIES, TASK_QUEUE, WORKFLOWS, legacy_queue
 
 log = configure_logging("workflow-worker")
 
@@ -60,17 +60,22 @@ async def amain() -> None:
     else:
         raise SystemExit("temporal unreachable")
     stop = threading.Event()
-    # Legacy BSS can take only a few hundred calls/s: Temporal enforces a task-queue-wide activity rate
-    # (across ALL worker pods) and a per-pod concurrency cap. Excess work waits durably in the queue
-    # instead of hammering the legacy system; a bill-day spike becomes a backlog, not an outage.
+    # Workflows + our own activities on "orders" (no throttling). Legacy calls on one task queue per
+    # country, whose dispatch rate the Temporal SERVER limits across ALL worker pods to that legacy
+    # system's capacity (max_task_queue_activities_per_second). On a bill-day spike the calls wait in
+    # the queue, durable and roughly in arrival order, and flow out at the capacity rate.
+    from ..adapters.bss import ADAPTERS
+
     s = get_settings()
-    worker = Worker(client, task_queue=TASK_QUEUE, workflows=WORKFLOWS, activities=ACTIVITIES,
-                    max_task_queue_activities_per_second=s.bss_max_rps,
-                    max_concurrent_activities=s.bss_max_concurrency)
-    log.info("workflow_worker_started", task_queue=TASK_QUEUE)
+    workers = [Worker(client, task_queue=TASK_QUEUE, workflows=WORKFLOWS, activities=ACTIVITIES)]
+    for country in ADAPTERS:
+        workers.append(Worker(client, task_queue=legacy_queue(country), activities=LEGACY_ACTIVITIES,
+                              max_task_queue_activities_per_second=s.bss_max_rps,
+                              max_concurrent_activities=s.bss_max_concurrency))
+    log.info("workflow_worker_started", queues=[TASK_QUEUE, *(legacy_queue(c) for c in ADAPTERS)], legacy_rps=s.bss_max_rps)
     threading.Thread(target=bss_events_consumer, args=(client, asyncio.get_running_loop(), stop), daemon=True).start()
     try:
-        await worker.run()
+        await asyncio.gather(*(w.run() for w in workers))
     finally:
         stop.set()
 

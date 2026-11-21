@@ -1,4 +1,5 @@
 import { redirect } from "react-router";
+import CircuitBreaker from "opossum";
 import { freshToken, sessions } from "./session.server";
 
 const CORE = process.env.CORE_API_URL ?? "http://localhost:8080";
@@ -12,29 +13,42 @@ export function baseFor(path: string) {
   return CORE;
 }
 
-/** Per-service circuit breaker (BFF -> service). After 5 consecutive failures (timeouts, connection
- *  errors, 5xx) the circuit opens for 20 s: calls fail fast with 503 instead of tying up SSR workers on
- *  a struggling service. Then one trial request (half-open) decides whether it closes again. */
-type Breaker = { failures: number; openedAt: number; halfOpen: boolean };
-const breakers = new Map<string, Breaker>();
-const FAIL_THRESHOLD = 5, RESET_MS = 20_000;
-function breakerFor(base: string): Breaker {
+/** One opossum circuit breaker per downstream service (BFF -> core-api / payments / assistant).
+ *  - each call has a timeout (5 s; 30 s for the LLM explanation; 120 s for the assistant stream);
+ *  - failures = timeouts, connection errors, 5xx (4xx is the caller's problem and doesn't count);
+ *  - the circuit OPENS when >= 50% of at least 5 calls in a 10 s window fail; while open, calls fail
+ *    fast (no request leaves the BFF) and the page falls back (stale snapshot / degraded UI);
+ *  - after 20 s one trial call is let through (HALF_OPEN): success closes it, failure re-opens it. */
+class UpstreamError extends Error {
+  constructor(public res: Response) { super(`upstream ${res.status}`); }
+}
+type Call = { url: string; init: RequestInit; path: string };
+const breakers = new Map<string, CircuitBreaker<[Call], Response>>();
+const SERVICE_NAMES: Record<string, string> = {};
+SERVICE_NAMES[CORE] = "core"; SERVICE_NAMES[PAYMENTS] = PAYMENTS === CORE ? "core" : "payments";
+SERVICE_NAMES[ASSISTANT] = ASSISTANT === CORE ? "core" : "assistant";
+
+function breakerFor(base: string) {
   let b = breakers.get(base);
-  if (!b) { b = { failures: 0, openedAt: 0, halfOpen: false }; breakers.set(base, b); }
+  if (!b) {
+    b = new CircuitBreaker(async ({ url, init, path }: Call) => {
+      const res = await fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(timeoutFor(path)) });
+      if (res.status >= 500) throw new UpstreamError(res);   // counts as a failure
+      return res;
+    }, { timeout: false, errorThresholdPercentage: 50, volumeThreshold: 5, rollingCountTimeout: 10_000, resetTimeout: 20_000,
+         name: SERVICE_NAMES[base] ?? base });
+    const name = SERVICE_NAMES[base] ?? base;
+    b.on("open", () => console.warn(JSON.stringify({ event: "circuit_open", service: name })));
+    b.on("halfOpen", () => console.warn(JSON.stringify({ event: "circuit_half_open", service: name })));
+    b.on("close", () => console.warn(JSON.stringify({ event: "circuit_closed", service: name })));
+    breakers.set(base, b);
+  }
   return b;
 }
-function admit(b: Breaker): boolean {
-  if (b.failures < FAIL_THRESHOLD) return true;
-  if (Date.now() - b.openedAt >= RESET_MS && !b.halfOpen) { b.halfOpen = true; return true; }
-  return false;
-}
-function record(b: Breaker, ok: boolean) {
-  if (ok) { b.failures = 0; b.halfOpen = false; return; }
-  b.failures += 1; b.halfOpen = false;
-  if (b.failures >= FAIL_THRESHOLD) b.openedAt = Date.now();
-}
-export function breakerStates() {
-  return Object.fromEntries([...breakers].map(([k, b]) => [k, b.failures >= FAIL_THRESHOLD ? "OPEN" : "CLOSED"]));
+
+/** Services whose circuit is not CLOSED right now -> the UI degrades those features up front. */
+export function degradedServices(): string[] {
+  return [...breakers].filter(([, b]) => !b.closed).map(([base]) => SERVICE_NAMES[base] ?? base);
 }
 
 /** Read budget per call; the assistant stream and LLM explanation get more (they wait for a model). */
@@ -44,16 +58,14 @@ function timeoutFor(path: string) {
   return 5_000;
 }
 
-/** fetch with a timeout and the service's circuit breaker. */
+/** fetch through the service's circuit breaker; returns the upstream response (incl. 5xx) or throws ApiError. */
 async function guardedFetch(url: string, base: string, init: RequestInit, path: string): Promise<Response> {
-  const b = breakerFor(base);
-  if (!admit(b)) throw new ApiError(503, "This part of the service is temporarily unavailable. Please try again shortly.");
   try {
-    const res = await fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(timeoutFor(path)) });
-    record(b, res.status < 500);
-    return res;
+    return await breakerFor(base).fire({ url, init, path });
   } catch (e) {
-    record(b, false);
+    if (e instanceof UpstreamError) return e.res;
+    if ((e as { code?: string })?.code === "EOPENBREAKER")
+      throw new ApiError(503, "This part of the service is temporarily unavailable. Please try again shortly.");
     throw new ApiError(504, "The service took too long to respond. Please try again.");
   }
 }

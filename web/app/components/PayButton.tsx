@@ -1,3 +1,4 @@
+import { useDegraded } from "~/routes/_app";
 import { useRef, useState } from "react";
 import { useRevalidator } from "react-router";
 import { CheckCircle2, CreditCard, Loader2 } from "lucide-react";
@@ -22,6 +23,7 @@ function loadCheckout(): Promise<void> {
  * same gateway order, so the customer can never be charged twice for one intent. */
 export function PayButton({ purpose, billId, label, name, contact, email, variant = "primary", full = false }: { purpose: "BILL" | "ADVANCE"; billId?: string | null; label: string; name: string; contact?: string; email?: string; variant?: "primary" | "secondary"; full?: boolean }) {
   const idem = useRef<string | null>(null);
+  const paymentsDown = useDegraded("payments");
   const [state, setState] = useState<"idle" | "busy" | "done" | "error">("idle");
   const [msg, setMsg] = useState("");
   const revalidator = useRevalidator();
@@ -62,6 +64,13 @@ export function PayButton({ purpose, billId, label, name, contact, email, varian
     }
   }
 
+  if (paymentsDown && state === "idle") {
+    return (
+      <p role="status" className="max-w-[300px] rounded-lg border border-[var(--line-strong)] bg-[var(--chip)] px-3 py-2 text-[13px] text-[var(--ink-2)]">
+        Payments are briefly unavailable. Your bill and due date are not affected; please try again in a few minutes.
+      </p>
+    );
+  }
   return (
     <div className={`flex flex-col gap-1.5 ${full ? "items-stretch" : "items-start"}`}>
       <Button onClick={pay} variant={variant} disabled={state === "busy" || state === "done"} className={full ? "w-full" : ""}>
