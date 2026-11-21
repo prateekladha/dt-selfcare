@@ -34,7 +34,7 @@ export type Evidence = {
 };
 export type Home = {
   as_of: string;
-  subscriber: { id: string; name: string; country: string; locale: string };
+  subscriber: { id: string; name: string; email?: string; country: string; locale: string };
   plan: { code: string; name: string; monthly_fee: number; data_mb: number; voice_min: number | null; sms: number | null; overage_policy: string };
   usage: { cycle: string; data_pct: number; version: number | null; data_mb: number; data_allowance_mb: number; voice_min: number; sms: number;
            intl_voice_min: number; roaming_data_mb: Record<string, number>; roaming_voice_min: Record<string, number>; eu_roaming_data_mb: number };
