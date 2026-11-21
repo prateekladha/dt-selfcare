@@ -97,7 +97,8 @@ workloads:
 web:
   replicas: 2
   hpa: { min: 2, max: 6, cpu: 70 }
-  resources: { requests: { cpu: 25m, memory: 128Mi }, limits: { memory: 384Mi } }
+  # realistic request: with 25m the HPA saw "busy" at idle and ran 6 pods
+  resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { memory: 384Mi } }
 
 temporal:
   enabled: true

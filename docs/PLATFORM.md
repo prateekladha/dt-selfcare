@@ -77,6 +77,23 @@ flowchart LR
   The switch applies from today; this month is billed on the new tariff (pro-rating is out of scope).
   Available from the `/plan` page and from the assistant (`propose_plan_change`, approval card).
 
+### Day-level usage (trend chart + exact pro-rating)
+- The aggregator's exactly-once apply writes, next to each cycle total, the same increment into a per-day
+  field of the subscriber's monthly hash: `DATA` and `DATA@21`. The day is the **CDR's event day** (UTC),
+  so a late CDR lands on the day it happened. Same Lua call: the days always add up to the totals, replays
+  stay no-ops, and alerts still read the totals.
+- **Why not a separate daily key per subscriber:** at 50M subscribers that is ~1.5B keys/month of
+  per-key overhead. Fields inside the existing hash cost ~10-20 bytes each in Valkey's compact listpack
+  encoding (`hash-max-listpack-entries 512`). A typical subscriber uses 3-4 usage types, so a month is
+  ~120 extra fields, ~2 KB. 50M × 2 KB ≈ 100 GB across a Valkey cluster: a sizing decision, not a design
+  limit. The hashes already live 13 months, so past months' daily charts cost nothing extra.
+  Long-term history beyond 13 months belongs in the raw archive / a columnar store, not in Valkey.
+- `GET /v1/me/usage/daily?cycle=` serves the chart (Overview: current month with allowance pace and
+  month-end projection; each bill: that month).
+- **Exact pro-rating:** with day detail, each tariff segment is rated on its own tariff, its own
+  pro-rated allowance and its own days of usage (`rate_segments`). Months recorded before day detail
+  existed fall back to blended allowances. Add-ons count in the segment they were bought in.
+
 ### Tariff change pro-rating
 - Every switch is recorded in `plan_changes` (keyed by order id, written in the same transaction as the
   switch, so a retried activity adds nothing).
@@ -84,8 +101,8 @@ flowchart LR
   on 21 Nov in a 30-day cycle gives *Mobile Flex monthly fee, 20 of 30 days* + *Mobile M monthly fee, 10 of
   30 days*. Several switches in one cycle give several lines.
 - **Allowances** (data, minutes, SMS) are pro-rated the same way; unlimited if either tariff is unlimited.
-- **Usage is priced at the tariff in force at cycle end.** Usage counters are cycle totals, not split by
-  date, so overage and roaming rates come from the current tariff (stated on the bill lines).
+- **Usage** is split by day (see above), so each tariff prices its own days. Only cycles recorded before
+  per-day counters existed fall back to "priced at the tariff in force at cycle end".
 - The approval card shows this month's pro-rated fee before the customer approves; the live unbilled
   amount and the bill run both use the same segments (cached in the home read model, invalidated by
   `order-events`).
