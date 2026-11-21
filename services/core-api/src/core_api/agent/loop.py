@@ -38,6 +38,7 @@ HOW TO WORK
 - Every tool result has a "source_label" like S1. After each factual sentence cite the labels it uses, e.g. "... [S2]".
 - Use only numbers that appear in the tool results you cite; keep amounts exactly as written.
 - If the tools don't have the answer, say what is missing.
+- For greetings or small talk, reply briefly and offer what you can help with (bills, usage, plan, payments). No tools needed.
 
 STYLE
 - Lead with the direct answer in one sentence, then the reasons.
@@ -104,10 +105,10 @@ def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: str = "e
 
         labels = dict(broker.sources)
         for attempt in range(3):
-            problems = verify(answer, labels) if labels else (["no tool was used"] if answer else ["empty answer"])
+            problems = verify(answer, labels) if answer else ["empty answer"]
             trace["attempts"].append({"attempt": attempt + 1, "verified": not problems, "problems": problems[:6]})
             if not problems:
-                status = "VERIFIED" if attempt == 0 else "REPAIRED"
+                status = ("VERIFIED" if attempt == 0 else "REPAIRED") if broker.sources else "CONVERSATIONAL"
                 break
             if attempt == 2:
                 break
@@ -118,7 +119,8 @@ def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: str = "e
             rep = llm.chat("repair", messages)
             trace["stages"].append(rep.as_trace())
             answer = rep.text
-            yield {"type": "replace", "text": answer}
+        if trace["attempts"] and len(trace["attempts"]) > 1:
+            yield {"type": "replace", "text": answer}  # one replacement with the checked answer
     except BudgetExceeded as e:
         status, answer = "BUDGET", "I can't answer right now because today's assistant budget has been used. Please try again tomorrow."
         trace.setdefault("degraded", []).append(str(e))

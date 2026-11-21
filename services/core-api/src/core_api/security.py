@@ -48,6 +48,52 @@ def issue_token(subscriber_id: str, country: str, role: str = "customer") -> tup
     return jwt.encode(claims, s.jwt_secret, algorithm="HS256"), s.jwt_ttl_s
 
 
+REFRESH_TTL_S = 30 * 24 * 3600
+ROTATION_GRACE_S = 30
+
+
+def _rt_key(token: str) -> str:
+    import hashlib
+
+    return "rt:" + hashlib.sha256(token.encode()).hexdigest()  # only a hash is stored
+
+
+def issue_refresh(r, subscriber_id: str, country: str, role: str = "customer") -> str:
+    import json
+    import secrets
+
+    token = secrets.token_urlsafe(32)
+    r.set(_rt_key(token), json.dumps({"sub": subscriber_id, "country": country, "role": role}), ex=REFRESH_TTL_S)
+    return token
+
+
+def rotate_refresh(r, token: str) -> dict | None:
+    """One-time use with a short grace window: parallel requests refreshing with the same token at the
+    same moment all receive the same new pair instead of logging the user out."""
+    import json
+
+    key = _rt_key(token)
+    grace = r.get(key + ":next")
+    if grace:
+        return json.loads(grace)
+    raw = r.get(key)
+    if raw is None:
+        return None
+    claims = json.loads(raw)
+    access, ttl = issue_token(claims["sub"], claims["country"], claims.get("role", "customer"))
+    new_refresh = issue_refresh(r, claims["sub"], claims["country"], claims.get("role", "customer"))
+    pair = {"access_token": access, "expires_in": ttl, "refresh_token": new_refresh, "token_type": "bearer"}
+    pipe = r.pipeline()
+    pipe.delete(key)
+    pipe.set(key + ":next", json.dumps(pair), ex=ROTATION_GRACE_S)
+    pipe.execute()
+    return pair
+
+
+def revoke_refresh(r, token: str) -> None:
+    r.delete(_rt_key(token))
+
+
 def decode_token(token: str) -> Principal:
     try:
         c = jwt.decode(token, get_settings().jwt_secret, algorithms=["HS256"], issuer=ISSUER)

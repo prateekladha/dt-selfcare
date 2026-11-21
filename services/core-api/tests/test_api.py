@@ -351,3 +351,16 @@ def test_reconciler_catches_up_after_downtime_and_expires_abandoned_orders(env):
     assert [next_delay_s(n) for n in range(4)] == [30, 60, 120, 240]
     assert [next_delay_s(n, "polynomial") for n in range(4)] == [30, 60, 130, 240]
     assert next_delay_s(20) == 3600  # capped
+
+
+def test_refresh_token_rotates_survives_parallel_use_and_revokes(env):
+    client, *_ = env
+    r = client.post("/v1/auth/login", json={"subscriber_id": SUB, "password": "demo-pass-123"}).json()
+    rt = r["refresh_token"]
+    a = client.post("/v1/auth/refresh", json={"refresh_token": rt})
+    b = client.post("/v1/auth/refresh", json={"refresh_token": rt})  # parallel request within the grace window
+    assert a.status_code == b.status_code == 200 and a.json()["refresh_token"] == b.json()["refresh_token"]
+    new = a.json()
+    assert client.get("/v1/me/home", headers={"Authorization": f"Bearer {new['access_token']}"}).status_code == 200
+    client.post("/v1/auth/logout", json={"refresh_token": new["refresh_token"]})
+    assert client.post("/v1/auth/refresh", json={"refresh_token": new["refresh_token"]}).status_code == 401

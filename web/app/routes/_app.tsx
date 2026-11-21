@@ -1,20 +1,28 @@
 import { useState } from "react";
-import { Form, NavLink, Outlet, useNavigation, useRouteLoaderData } from "react-router";
+import { data, Form, NavLink, Outlet, useNavigation, useRouteLoaderData } from "react-router";
 import { Bell, FlaskConical, Home as HomeIcon, LogOut, MessageSquareText, Receipt, Server } from "lucide-react";
 import { LiveNotifications } from "~/components/LiveNotifications";
 import { Avatar, Logo } from "~/components/ui";
 import { api, PRIVATE } from "~/lib/api.server";
+import { freshToken } from "~/lib/session.server";
 import { dateLabel, FLAGS, phoneLabel } from "~/lib/format";
 import { derive } from "~/lib/snapshot.server";
 import type { Home } from "~/lib/types";
 import type { Route } from "./+types/_app";
 
-export const headers = () => PRIVATE;
+export const headers = ({ loaderHeaders }: Route.HeadersArgs) => {
+  const h = new Headers(PRIVATE);
+  const c = loaderHeaders.get("Set-Cookie");
+  if (c) h.set("Set-Cookie", c);
+  return h;
+};
 
 // One snapshot per navigation for the whole screen (header, page, badges): a single "as of" moment.
+// Also keeps the session fresh: the rotated refresh cookie is sent back on every navigation.
 export async function loader({ request }: Route.LoaderArgs) {
+  const { setCookie } = await freshToken(request);
   const home = await api<Home>(request, "/v1/me/home");
-  return { home, d: derive(home) };
+  return data({ home, d: derive(home) }, setCookie ? { headers: { "Set-Cookie": setCookie } } : undefined);
 }
 
 export function useSnapshot() {
