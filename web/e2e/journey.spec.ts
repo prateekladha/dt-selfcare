@@ -47,7 +47,7 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   await expect(page.getByRole("heading", { name: "Bills" })).toBeVisible();
   expect(await page.locator("tbody tr").count()).toBeGreaterThanOrEqual(11);
   await shot(page, "03-bills");
-  await page.locator("tbody tr").first().getByRole("link").click();
+  await page.locator("tbody tr").first().getByRole("link").first().click();
   await expect(page.getByText("Breakdown")).toBeVisible();
   await expect(page.getByText("Top usage drivers")).toBeVisible();
   const cycle = page.url().split("/bills/")[1].split("?")[0];

@@ -1,22 +1,31 @@
 // Formatting is a pure function of (value, locale, currency) with an explicit time zone, so the
 // server render and the client hydration produce identical text - no flicker, no mismatch.
-export function money(minor: number, currency: string, locale = "en-GB") {
-  return new Intl.NumberFormat(locale, { style: "currency", currency }).format(minor / 100);
+// The UI copy is English, so numbers and dates are formatted in English too (no "Oktober" next to
+// English text); the currency is always the bill's own (EUR / PLN).
+const UI_LOCALE = "en-GB";
+
+export function money(minor: number, currency: string, _locale?: string) {
+  return new Intl.NumberFormat(UI_LOCALE, { style: "currency", currency }).format(minor / 100);
 }
 
-export function cycleLabel(cycle: string, locale = "en-GB", short = false) {
+export function cycleLabel(cycle: string, _locale?: string, short = false) {
   const [y, m] = cycle.split("-").map(Number);
-  return new Intl.DateTimeFormat(locale, { month: short ? "short" : "long", year: short ? "2-digit" : "numeric", timeZone: "UTC" })
+  return new Intl.DateTimeFormat(UI_LOCALE, { month: short ? "short" : "long", year: short ? "2-digit" : "numeric", timeZone: "UTC" })
     .format(new Date(Date.UTC(y, m - 1, 1)));
 }
 
-export function dateLabel(iso: string, locale = "en-GB") {
-  return new Intl.DateTimeFormat(locale, { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" })
+export function dateLabel(iso: string, _locale?: string) {
+  return new Intl.DateTimeFormat(UI_LOCALE, { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" })
     .format(new Date(iso));
 }
 
 export function mbToGb(mb: number) {
-  return (mb / 1000).toLocaleString("en-GB", { maximumFractionDigits: 1 });
+  return (mb / 1000).toLocaleString(UI_LOCALE, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+}
+
+/** "Roaming data, zone Z2" -> "roaming data in zone Z2" (for use inside a sentence). */
+export function inSentence(label: string) {
+  return label.charAt(0).toLowerCase() + label.slice(1).replace(", zone ", " in zone ");
 }
 
 export function phoneLabel(id: string) {

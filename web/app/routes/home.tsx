@@ -5,7 +5,7 @@ import { PayButton } from "~/components/PayButton";
 import { TrendChart } from "~/components/TrendChart";
 import { Card, CardHeader, LinkButton, Pill } from "~/components/ui";
 import { api, PRIVATE } from "~/lib/api.server";
-import { cycleLabel, dateLabel, mbToGb, money } from "~/lib/format";
+import { cycleLabel, dateLabel, inSentence, mbToGb, money } from "~/lib/format";
 import type { ExplanationResponse } from "~/lib/types";
 import { useSnapshot } from "./_app";
 import type { Route } from "./+types/home";
@@ -52,7 +52,7 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
         <Link to={`/bills/${ex.cycle}`} className="group flex items-center gap-4 rounded-[var(--radius)] border border-[var(--brand)]/25 bg-[var(--brand-bg)] px-5 py-4 transition-colors hover:border-[var(--brand)]">
           <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--brand)] text-white"><Sparkles size={18} /></span>
           <p className="text-[15px] leading-snug text-[var(--ink)]">
-            Your <b>{cycleLabel(ex.cycle, loc)}</b> bill was <b>{money(ex.delta_total ?? 0, ex.currency, loc)} higher</b> than {cycleLabel(ex.previous_cycle!, loc, false).split(" ")[0]}, mainly because of <b>{ex.drivers[0].label.toLowerCase()}</b>.
+            Your <b>{cycleLabel(ex.cycle, loc)}</b> bill was <b>{money(ex.delta_total ?? 0, ex.currency, loc)} higher</b> than {cycleLabel(ex.previous_cycle!, loc).split(" ")[0]}, mainly because of <b>{inSentence(ex.drivers[0].label)}</b>.
           </p>
           <span className="ml-auto hidden shrink-0 items-center gap-1 text-sm font-bold text-[var(--brand-ink)] sm:flex">See why <ArrowRight size={16} className="transition-transform group-hover:translate-x-0.5" /></span>
         </Link>
@@ -66,10 +66,12 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
           <div className="flex flex-1 flex-col px-6 pb-6 pt-4">
             <p className="display tabular text-[40px] font-extrabold leading-none">{money(home.outstanding.amount, home.outstanding.currency, loc)}</p>
             <p className="mt-2 text-[13px] text-[var(--ink-3)]">{d.due ? `${cycleLabel(d.due.cycle, loc)} bill, including VAT` : "You're all paid up. Nice."}</p>
-            <div className="mt-auto flex flex-wrap gap-2 pt-6">
-              {d.due && home.features.payments && <PayButton purpose="BILL" billId={d.due.id} label="Pay now" name={home.subscriber.name} />}
-              {home.last_bill && <LinkButton to={`/bills/${home.last_bill.cycle}`} variant="secondary"><Receipt size={16} /> View bill</LinkButton>}
-              {home.last_bill && <LinkButton to={`/bills/${home.last_bill.cycle}/pdf`} variant="ghost" download aria-label="Download PDF"><Download size={16} /></LinkButton>}
+            <div className="mt-auto pt-6">
+              <div className="flex flex-wrap gap-2">
+                {d.due && home.features.payments && <PayButton purpose="BILL" billId={d.due.id} label="Pay now" name={home.subscriber.name} />}
+                {home.last_bill && <LinkButton to={`/bills/${home.last_bill.cycle}`} variant="secondary"><Receipt size={16} /> View bill</LinkButton>}
+              </div>
+              {home.last_bill && <a href={`/bills/${home.last_bill.cycle}/pdf`} download className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-[var(--ink-2)] underline-offset-4 hover:underline"><Download size={15} /> Download PDF</a>}
             </div>
           </div>
         </Card>

@@ -67,3 +67,14 @@ def test_unconfigured_provider_uses_template(monkeypatch):
     n = narrator(reply("unused"), monkeypatch)
     monkeypatch.setattr(ai, "flag_str", lambda *a, **k: "mistral")  # flag points at a provider with no key
     assert n.narrate(EX, "s", "DE")[1] == "template"
+
+
+def test_cache_hits_do_not_consume_the_ai_budget(monkeypatch):
+    total = EX.facts[0].split("from ")[1].split(" EUR")[0]
+    n = narrator(reply(f"It went up because of roaming. Before it was {total} EUR."), monkeypatch)
+    spent = []
+    budget = lambda: spent.append(1) or len(spent) <= 1
+    assert n.narrate(EX, "s", "DE", budget=budget)[1].startswith("deepseek")
+    for _ in range(5):
+        assert n.narrate(EX, "s", "DE", budget=budget)[1].startswith("deepseek")  # cached: free
+    assert len(spent) == 1

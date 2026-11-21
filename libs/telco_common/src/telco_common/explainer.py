@@ -120,7 +120,7 @@ def explain(current: Bill, previous: Bill | None, top_n: int = 3) -> Explanation
         facts.append(f"Your bill {word} by {fmt_money(abs(delta_total or 0), cur)}"
                      + (f" ({abs(delta_pct):.1f}%)" if delta_pct is not None else "")
                      + f", from {fmt_money(previous.total, cur)} to {fmt_money(current.total, cur)} including VAT.")
-        facts.extend(d.detail for d in drivers[:top_n])
+        facts.extend(f"{d.detail}." for d in drivers[:top_n])
     if top:
         facts.append("Biggest charges beyond your plan fee: " + "; ".join(t.detail for t in top) + ".")
     elif previous is not None:
