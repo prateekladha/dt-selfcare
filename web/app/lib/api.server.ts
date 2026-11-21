@@ -78,6 +78,15 @@ export class ApiError extends Error {
   }
 }
 
+/** A loader promise that is streamed to the page (<Await>) instead of awaited. If the render never
+ *  reaches its <Await> - e.g. the layout loader failed and the error page is shown - nobody would
+ *  handle its rejection, and an unhandled rejection terminates Node. Marking it handled here keeps the
+ *  same promise (so <Await> still gets the error and shows its fallback) without that risk. */
+export function streamed<T>(p: Promise<T>): Promise<T> {
+  p.catch(() => {});
+  return p;
+}
+
 /** Server-side call to core-api with the caller's token. 401 -> back to login. */
 export async function api<T = unknown>(request: Request, path: string, init: RequestInit = {}): Promise<T> {
   const base = baseFor(path);
