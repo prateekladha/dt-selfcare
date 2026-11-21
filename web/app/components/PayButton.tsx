@@ -20,7 +20,7 @@ function loadCheckout(): Promise<void> {
 
 /** Tap to pay. One idempotency key per button instance: double taps and retries reuse the
  * same gateway order, so the customer can never be charged twice for one intent. */
-export function PayButton({ purpose, billId, label, name, variant = "primary", full = false }: { purpose: "BILL" | "ADVANCE"; billId?: string | null; label: string; name: string; variant?: "primary" | "secondary"; full?: boolean }) {
+export function PayButton({ purpose, billId, label, name, contact, variant = "primary", full = false }: { purpose: "BILL" | "ADVANCE"; billId?: string | null; label: string; name: string; contact?: string; variant?: "primary" | "secondary"; full?: boolean }) {
   const idem = useRef<string | null>(null);
   const [state, setState] = useState<"idle" | "busy" | "done" | "error">("idle");
   const [msg, setMsg] = useState("");
@@ -43,7 +43,7 @@ export function PayButton({ purpose, billId, label, name, variant = "primary", f
       const rzp = new window.Razorpay!({
         key: p.checkout.key_id, order_id: p.order_id, amount: p.charged_amount, currency: p.charged_currency,
         name: "Self-care", description: purpose === "BILL" ? "Bill payment" : "Pay unbilled usage",
-        prefill: { name }, theme: { color: "#E20074" },
+        prefill: { name, ...(contact ? { contact } : {}) },  // skip the gateway's contact prompt theme: { color: "#E20074" },
         handler: async (r: any) => {
           const c = await fetch("/api/pay/confirm", { method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ payment_id: p.payment_id, gateway_payment_id: r.razorpay_payment_id, signature: r.razorpay_signature }) });
