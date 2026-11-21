@@ -94,4 +94,37 @@ def test_apply_plan_records_history_once_and_bill_run_prorates(world):
     from core_api.services.bills import get_bill_row, row_to_bill
     bill = row_to_bill(get_bill_row(engine, SUB, "2026-09"))
     assert [x.label for x in bill.lines if x.category == "PLAN"] == [
-        "Mobile Flex monthly fee, 10 of 30 days", "Mobile M monthly fee, 20 of 30 days"]
+        "Mobile Flex monthly fee, 10 of 30 days (1 Sep–10 Sep)", "Mobile M monthly fee, 20 of 30 days (11 Sep–30 Sep)"]
+
+
+def test_exact_split_uses_each_tariffs_own_days_including_late_cdrs():
+    """Per-day counters: usage before the switch is rated on the old tariff, after on the new one,
+    even when a pre-switch CDR arrives late (it carries its event day)."""
+    from datetime import timedelta
+
+    from telco_common.models import UsageRecord
+    from telco_common.partitioning import partition_for
+    from telco_common.usage_state import UsageState
+
+    r = fakeredis.FakeRedis()
+    st = UsageState(r, 4)
+    p = partition_for(SUB, 4)
+    base = datetime(2026, 9, 1, 12, tzinfo=UTC)
+
+    def cdr(i, day, mb):
+        return UsageRecord(record_id=f"rec-000{i}", subscriber_id=SUB, country="DE", usage_type=UsageType.DATA,
+                           quantity=mb * MB, event_time=base + timedelta(days=day - 1))
+    st.apply(p, 1, "m1", [cdr(1, 3, 2_500), cdr(2, 25, 4_000)], [80])
+    st.apply(p, 2, "m2", [cdr(3, 5, 1_500)], [80])          # late CDR from 5 Sep, applied after the 25 Sep one
+    flex, m = get_plan("DE-FLEX"), get_plan("DE-M")
+    seg = [(flex, 20), (m, 10)]                               # switched on 21 Sep
+    split = st.split_by_days(SUB, "2026-09", [(1, 20), (21, 30)])
+    assert split[0][str(UsageType.DATA)] == 4_000 * MB and split[1][str(UsageType.DATA)] == 4_000 * MB
+    from telco_common.billing import rate_segments
+    bill = rate_segments(SUB, "2026-09", seg, split)
+    over = [x for x in bill.lines if x.code.endswith("DATA_OVERAGE")]
+    # Flex segment: 4,000 MB used vs 2,000 MB (3 GB x 20/30) -> 2,000 MB charged at Flex's rate;
+    # M segment: 4,000 MB vs 10,000 MB (30 GB x 10/30) -> no overage
+    assert len(over) == 1 and over[0].quantity == 2_000 and "Mobile Flex" in over[0].label
+    assert st.daily(SUB, "2026-09")[5][str(UsageType.DATA)] == 1_500 * MB
+    assert st.counters(SUB, "2026-09")[str(UsageType.DATA)] == 8_000 * MB   # totals exclude per-day fields

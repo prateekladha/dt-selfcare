@@ -9,7 +9,16 @@ from sqlalchemy import select
 
 from ..db import get_engine, orders
 from ..security import Principal, current_principal
-from ..workflows.orders import OrderError, get, propose_addon, propose_plan_change, public, set_status
+from ..workflows.orders import (
+    OrderError,
+    _credit_check,
+    expired,
+    get,
+    propose_addon,
+    propose_plan_change,
+    public,
+    set_status,
+)
 
 router = APIRouter(prefix="/v1/me/orders", tags=["orders"])
 _client = None
@@ -73,8 +82,14 @@ async def approve(order_id: str, p: Principal = Depends(current_principal)) -> d
     row = get(get_engine(), p.subscriber_id, order_id)
     if row is None:
         raise HTTPException(404, "order not found")
-    if row.status not in ("PROPOSED", "APPROVED"):
+    if expired(row):
+        raise HTTPException(410, "This offer has expired. Ask again for a fresh one with today's price.")
+    if row.status not in ("PROPOSED", "APPROVED", "DECLINED"):  # DECLINED: the customer changed their mind
         return public(row)
+    try:
+        _credit_check(get_engine(), p.subscriber_id)
+    except OrderError as e:
+        raise HTTPException(e.status, e.message) from e
     set_status(get_engine(), order_id, "APPROVED", "Approved: processing")
     try:
         wf = PlanChangeWorkflow.run if row.kind == "PLAN" else AddonPurchaseWorkflow.run

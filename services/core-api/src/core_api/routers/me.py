@@ -107,8 +107,25 @@ def bill_detail(cycle: str, response: Response, p: Principal = Depends(current_p
 
 @router.get("/bills/{cycle}/pdf")
 def bill_pdf(cycle: str, p: Principal = Depends(current_principal)) -> Response:
+    from ..db import bill_payments, payments
+    from ..services.pdf import InvoiceContext, PaymentEntry
+
     row, bill = _load(p, cycle)
-    pdf = render_bill_pdf(bill, _subscriber(p).name, row.status, row.due_date.date().isoformat())
+    sub = _subscriber(p)
+    prev_row = get_bill_row(get_engine(), p.subscriber_id, previous_cycle(cycle))
+    with get_engine().connect() as cx:  # payments applied to this bill (billing ledger) + gateway details
+        paid = cx.execute(
+            select(bill_payments.c.amount, bill_payments.c.applied_at, payments.c.gateway,
+                   payments.c.gateway_payment_id, bill_payments.c.payment_id)
+            .select_from(bill_payments.outerjoin(payments, payments.c.id == bill_payments.c.payment_id))
+            .where(bill_payments.c.bill_id == row.id).order_by(bill_payments.c.applied_at)).all()
+    ctx = InvoiceContext(
+        bill=bill, invoice_number=row.id, issued_at=row.issued_at, due_date=row.due_date,
+        amount_paid=row.amount_paid, customer_name=sub.name, msisdn=sub.id, country=sub.country, email=sub.email,
+        previous_bill=row_to_bill(prev_row) if prev_row else None,
+        payments=[PaymentEntry(x.amount, x.applied_at, f"In-app ({x.gateway})" if x.gateway else "In-app",
+                               x.gateway_payment_id or x.payment_id) for x in paid])
+    pdf = render_bill_pdf(ctx)
     return Response(pdf, media_type="application/pdf", headers=NO_STORE | {
         "Content-Disposition": f'attachment; filename="bill-{cycle}.pdf"'})
 

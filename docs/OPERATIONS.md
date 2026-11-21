@@ -137,7 +137,7 @@ Change `defaultVariant`:
 - `ai-provider` → `template` (no LLM) or `mistral`
 - `usage-alert-thresholds` → `strict` (50/75/90/100)
 - `payments-enabled` → `off` (kill switch)
-- `payment-settlement` → `native` (charge the bill currency)
+- `payment-settlement` → `native` (charge the bill currency; needs international payments on the gateway account) or `inr` (demo default: Razorpay test mode is INR-only for us)
 
 Durable change: edit `flags:` in `deploy/helm/selfcare/values.yaml` and push. CI redeploys.
 

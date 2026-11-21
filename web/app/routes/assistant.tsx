@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, BrainCircuit, Check, ChevronDown, History, Loader2, MessageSquare, Plus, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
 import { AgentTraceView } from "~/components/AgentTrace";
-import { OrderCard } from "~/components/OrderCard";
+import { OrderCard, PaymentCard } from "~/components/OrderCard";
 import { CiteMap, RichText, SourceList } from "~/components/RichText";
 import { Card } from "~/components/ui";
+import { cycleLabel } from "~/lib/format";
 import type { AgentTrace, ToolSource } from "~/lib/types";
 import { useDegraded, useSnapshot } from "./_app";
 
 export const meta = () => [{ title: "Assistant · Self-care" }];
 
 type Step = { label: string; done: boolean; ok?: boolean };
-type Proposal = { kind?: string; order_id: string; add_on: string; extra_data: string; price: string };
+type Proposal = { kind?: string; order_id: string; add_on: string; extra_data: string; price: string; purpose?: "BILL" | "ADVANCE"; bill_id?: string | null; cycle?: string; overdue?: boolean };
 type Turn = { q: string; text: string; steps: Step[]; proposals?: Proposal[]; status?: string; citations: ToolSource[]; trace?: AgentTrace; error?: string; repairing?: boolean };
 
 const TOOL_TITLES: Record<string, (a: Record<string, unknown>) => string> = {
@@ -36,6 +37,7 @@ function detailOf(body: string) {
 }
 
 function Answer({ t }: { t: Turn }) {
+  const { home } = useSnapshot();
   const cites = new CiteMap().scan(t.text);
   const [open, setOpen] = useState(false);
   const [hl, setHl] = useState<number | null>(null);
@@ -61,7 +63,10 @@ function Answer({ t }: { t: Turn }) {
           : t.text ? body
           : <p className="flex items-center gap-2 text-[14px] text-[var(--ink-3)]"><Loader2 size={15} className="animate-spin" /> Thinking…</p>}
         {!!t.proposals?.length && (
-          <div className="mt-4 space-y-3">{t.proposals.map((p) => <OrderCard key={p.order_id} orderId={p.order_id} title={p.add_on} extra={p.extra_data} price={`${p.price} + VAT`} kind={p.kind === "PLAN" ? "PLAN" : "ADDON"} />)}</div>
+          <div className="mt-4 space-y-3">{t.proposals.map((p) => p.kind === "PAYMENT"
+            ? <PaymentCard key={p.order_id} purpose={p.purpose ?? "BILL"} billId={p.bill_id ?? null} cycleLabel={cycleLabel(p.cycle ?? "", home.subscriber.locale)}
+                           amount={p.price} overdue={!!p.overdue} name={home.subscriber.name} contact={`+${home.subscriber.id}`} email={home.subscriber.email} />
+            : <OrderCard key={p.order_id} orderId={p.order_id} title={p.add_on} extra={p.extra_data} price={`${p.price} + VAT`} kind={p.kind === "PLAN" ? "PLAN" : "ADDON"} />)}</div>
         )}
         {t.repairing && <p className="mt-3 text-xs text-[var(--warn)]">Double-checking a number against your records…</p>}
         {t.status && t.status !== "CONVERSATIONAL" && (
