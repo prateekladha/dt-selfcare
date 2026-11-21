@@ -6,14 +6,13 @@ from datetime import UTC, datetime
 
 import fakeredis
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.pool import StaticPool
-
 from core_api import deps
 from core_api.db import create_schema, set_engine
 from core_api.routers import payments as pay_router
 from core_api.services.gateway import GatewayOrder
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 from telco_common.catalog import MB
 from telco_common.models import Country, UsageRecord, UsageType
 from telco_common.partitioning import partition_for
@@ -159,8 +158,8 @@ def test_payment_is_idempotent_and_settles_once_from_both_paths(env):
 
     bill = client.get("/v1/me/bills/2026-10", headers=h).json()
     assert bill["status"] == "PAID" and bill["outstanding"] == 0
-    from sqlalchemy import select
     from core_api.db import outbox
+    from sqlalchemy import select
     with engine.connect() as cx:
         assert len(cx.execute(select(outbox)).all()) == 1  # exactly one PAYMENT_SUCCEEDED event
 
@@ -168,3 +167,21 @@ def test_payment_is_idempotent_and_settles_once_from_both_paths(env):
 def test_webhook_rejects_bad_signature(env):
     client, *_ = env
     assert client.post("/v1/webhooks/razorpay", content=b"{}", headers={"X-Razorpay-Signature": "bad"}).status_code == 401
+
+
+def test_simulate_from_scenario_and_upload(env):
+    client, engine, state, _ = env
+    issue(engine, state, "2026-10")
+    h = login(client)
+    assert any(s["key"] == "us-trip-2-weeks" for s in client.get("/v1/me/usage/scenarios", headers=h).json())
+    r = client.post("/v1/me/usage/simulate", data={"scenario": "us-trip-2-weeks"}, headers=h).json()
+    assert r["compared_to"] == "2026-10" and r["explanation"]["direction"] == "UP"
+    assert r["explanation"]["drivers"][0]["category"] == "ROAMING"
+    csv_body = b"usage_type,quantity,unit,roaming_zone\nDATA,2,GB,\nROAMING_DATA,500,MB,Z3\n"
+    up = client.post("/v1/me/usage/simulate", files={"file": ("my.csv", csv_body, "text/csv")}, headers=h)
+    assert up.status_code == 200 and any(x["code"] == "ROAMING_DATA:Z3" for x in up.json()["bill"]["lines"])
+    bad = client.post("/v1/me/usage/simulate", files={"file": ("x.csv", b"usage_type,quantity,unit\nWIFI,1,GB\n")},
+                      headers=h)
+    assert bad.status_code == 422
+    from core_api.services.bills import list_bills
+    assert len(list_bills(engine, SUB)) == 1  # simulation never touched real bills/usage

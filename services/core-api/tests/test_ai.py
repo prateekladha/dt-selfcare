@@ -1,9 +1,8 @@
 import httpx
-from sqlalchemy import create_engine
-
 from core_api.db import create_schema
 from core_api.services import ai
 from core_api.settings import Settings
+from sqlalchemy import create_engine
 from telco_common.billing import rate
 from telco_common.catalog import MB, get_plan
 from telco_common.explainer import explain
