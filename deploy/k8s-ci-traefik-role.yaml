@@ -1,0 +1,12 @@
+# Lets CI manage Traefik middlewares (edge rate limit) in its own namespace only. Apply once as cluster admin:
+#   kubectl apply -f deploy/k8s-ci-traefik-role.yaml
+#   kubectl -n selfcare create rolebinding ci-traefik-middlewares --role=ci-traefik-middlewares \
+#     --user="$(kubectl -n selfcare get rolebinding ci-deployer -o jsonpath='{.subjects[0].name}')"
+# then set edge.rateLimit.enabled=true in values.yaml.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: ci-traefik-middlewares, namespace: selfcare }
+rules:
+  - apiGroups: ["traefik.io"]
+    resources: ["middlewares"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
