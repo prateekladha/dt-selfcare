@@ -40,7 +40,7 @@ export function OrderCard({ orderId, title, extra, price, kind = "ADDON" }:
         <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--brand-bg)] text-[var(--brand-ink)]">{plan ? <ArrowLeftRight size={18} /> : <PackagePlus size={18} />}</span>
         <div className="min-w-0 flex-1">
           <p className="text-[15px] font-semibold">{title}</p>
-          <p className="mt-0.5 text-[13.5px] text-[var(--ink-3)]">{plan ? <>{extra} · {price} · active from today, this month billed on the new tariff</> : <>{extra} for this billing cycle · {price}, added to your next bill</>}</p>
+          <p className="mt-0.5 text-[13.5px] text-[var(--ink-3)]">{plan ? <>{extra} · {price} · active from today; this month is pro-rated by day</> : <>{extra} for this billing cycle · {price}, added to your next bill</>}</p>
         </div>
       </div>
       <div className="mt-4">
