@@ -146,4 +146,4 @@ flags:
 
 # API gateway (Traefik) edge protection
 edge:
-  rateLimit: { average: 40, burst: 120 }   # requests/s per client IP (a page = ~3-6 requests)
+  rateLimit: { enabled: false, average: 40, burst: 120 }   # enable after granting CI the traefik.io Role (deploy/k8s-ci-traefik-role.yaml)   # requests/s per client IP (a page = ~3-6 requests)
