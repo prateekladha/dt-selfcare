@@ -17,6 +17,7 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from ..db import bss_orders, create_schema, get_engine
+from ..settings import get_settings
 from .addon import ACTIVITIES, TASK_QUEUE, AddonPurchaseWorkflow
 
 log = configure_logging("workflow-worker")
@@ -52,7 +53,13 @@ async def amain() -> None:
     client = await Client.connect(os.environ.get("TEMPORAL_ADDRESS", "temporal:7233"),
                                   namespace=os.environ.get("TEMPORAL_NAMESPACE", "default"))
     stop = asyncio.Event()
-    worker = Worker(client, task_queue=TASK_QUEUE, workflows=[AddonPurchaseWorkflow], activities=ACTIVITIES)
+    # Legacy BSS can take only a few hundred calls/s: Temporal enforces a task-queue-wide activity rate
+    # (across ALL worker pods) and a per-pod concurrency cap. Excess work waits durably in the queue
+    # instead of hammering the legacy system; a bill-day spike becomes a backlog, not an outage.
+    s = get_settings()
+    worker = Worker(client, task_queue=TASK_QUEUE, workflows=[AddonPurchaseWorkflow], activities=ACTIVITIES,
+                    max_task_queue_activities_per_second=s.bss_max_rps,
+                    max_concurrent_activities=s.bss_max_concurrency)
     log.info("workflow_worker_started", task_queue=TASK_QUEUE)
     await asyncio.gather(worker.run(), legacy_bss(client, stop))
 

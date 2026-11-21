@@ -43,37 +43,50 @@ def _bill_summary(row) -> dict:
 
 @router.get("/home")
 def home(response: Response, p: Principal = Depends(current_principal)) -> dict:
+    """One call builds the whole home screen (BFF-style aggregate). Profile, bills and notifications come
+    from the event-invalidated cache (hit: zero DB queries); live usage/unbilled from the usage state."""
+    from ..services.home_cache import get_or_build
+
     response.headers.update(NO_STORE)
-    sub = _subscriber(p)
-    plan = get_plan(sub.plan_code)
+
+    def build() -> dict:
+        sub = _subscriber(p)
+        history = list_bills(get_engine(), sub.id, 12)
+        with get_engine().connect() as cx:
+            notes = cx.execute(select(notifications).where(notifications.c.subscriber_id == sub.id)
+                               .order_by(notifications.c.created_at.desc()).limit(10)).all()
+        return {"sub": {"id": sub.id, "name": sub.name, "email": sub.email, "country": sub.country,
+                        "plan_code": sub.plan_code},
+                "bills": [_bill_summary(b) for b in history],
+                "notes": [{"id": n.id, "kind": n.kind, "title": n.title, "body": n.body,
+                           "created_at": n.created_at.isoformat(), "read": n.read_at is not None} for n in notes]}
+
+    snap, hit = get_or_build(get_valkey(), p.subscriber_id, build)
+    response.headers["X-Home-Cache"] = "hit" if hit else "miss"
+    sub, history = snap["sub"], snap["bills"]
+    plan = get_plan(sub["plan_code"])
     state = get_usage_state()
     now = datetime.now(UTC)
-    current = unbilled(state, sub.id, sub.plan_code, now)
-    counters = state.counters(sub.id, current.cycle)
-    history = list_bills(get_engine(), sub.id, 12)
+    current = unbilled(state, sub["id"], sub["plan_code"], now)
+    counters = state.counters(sub["id"], current.cycle)
     last = history[-1] if history else None
-    with get_engine().connect() as cx:
-        notes = cx.execute(select(notifications).where(notifications.c.subscriber_id == sub.id)
-                           .order_by(notifications.c.created_at.desc()).limit(10)).all()
-    outstanding = sum(max(0, b.total - b.amount_paid) for b in history)
     return {
         "as_of": now.isoformat(),
-        "subscriber": {"id": sub.id, "name": sub.name, "email": sub.email, "country": sub.country,
+        "subscriber": {"id": sub["id"], "name": sub["name"], "email": sub["email"], "country": sub["country"],
                        "locale": COUNTRIES[plan.country].locale},
         "plan": {"code": plan.code, "name": plan.name, "monthly_fee": plan.monthly_fee, "data_mb": plan.data_mb,
                  "voice_min": plan.voice_min, "sms": plan.sms, "overage_policy": plan.overage_policy},
         "usage": {"cycle": current.cycle, "data_pct": round(data_usage_pct(plan, counters), 1),
-                  "version": state.committed_offset_for(sub.id), **current.usage.model_dump()},
+                  "version": state.committed_offset_for(sub["id"]), **current.usage.model_dump()},
         "unbilled": {"cycle": current.cycle, "currency": current.currency, "subtotal": current.subtotal,
                      "vat": current.vat, "total": current.total, "lines": [x.model_dump() for x in current.lines]},
-        "outstanding": {"amount": outstanding, "currency": current.currency,
-                        "bill_id": next((b.id for b in reversed(history) if b.total > b.amount_paid), None)},
-        "last_bill": _bill_summary(last) if last else None,
-        "trend": [_bill_summary(b) for b in history],
-        "notifications": [{"id": n.id, "kind": n.kind, "title": n.title, "body": n.body,
-                           "created_at": n.created_at.isoformat(), "read": n.read_at is not None} for n in notes],
-        "features": {"ai_explanations": flag_bool("ai-explanations", sub.country, sub.id),
-                     "payments": flag_bool("payments-enabled", sub.country, sub.id)},
+        "outstanding": {"amount": sum(b["outstanding"] for b in history), "currency": current.currency,
+                        "bill_id": next((b["id"] for b in reversed(history) if b["outstanding"] > 0), None)},
+        "last_bill": last,
+        "trend": history,
+        "notifications": snap["notes"],
+        "features": {"ai_explanations": flag_bool("ai-explanations", sub["country"], sub["id"]),
+                     "payments": flag_bool("payments-enabled", sub["country"], sub["id"])},
     }
 
 
@@ -111,6 +124,11 @@ def bill_explanation(cycle: str, response: Response, lang: str = Query("en", pat
                      ai: bool = Query(True, description="false = deterministic facts only (fast path for SSR)"),
                      p: Principal = Depends(current_principal)) -> dict:
     response.headers.update(NO_STORE)
+    if cycle == "latest":  # lets the home screen ask in one call instead of list-then-fetch
+        last = list_bills(get_engine(), p.subscriber_id, 1)
+        if not last:
+            raise HTTPException(404, "no bills yet")
+        cycle = last[-1].cycle
     if cycle == "current":
         sub = _subscriber(p)
         bill: Bill = unbilled(get_usage_state(), sub.id, sub.plan_code)
@@ -165,4 +183,7 @@ def mark_read(nid: int, p: Principal = Depends(current_principal)) -> Response:
         cx.execute(update(notifications).where(notifications.c.id == nid,
                                                notifications.c.subscriber_id == p.subscriber_id)
                    .values(read_at=datetime.now(UTC)))
+    from ..services.home_cache import bump_default
+
+    bump_default(p.subscriber_id)
     return Response(status_code=204)

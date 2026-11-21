@@ -72,6 +72,9 @@ def alerts_loop(stop: threading.Event) -> None:
             except IntegrityError:
                 DUPES.inc()
                 continue
+            from .services.home_cache import bump
+
+            bump(r, alert["subscriber_id"])  # home read model: rebuild on next read
             r.publish(f"notif:{alert['subscriber_id']}", json.dumps({"kind": kind, "title": title, "body": body}))
             SPINE_DIRTY.add(alert["subscriber_id"])  # event-driven: re-embed this customer's context now
             NOTIFIED.labels(alert["level"]).inc()
