@@ -36,6 +36,7 @@ STAGES = {  # stage -> (max_tokens, daily cap USD, temperature)
     "explain": (900, 2.00, 0.2),     # structured bill explanation (single call)
     "agent": (700, 3.00, 0.2),       # tool-calling turns of the assistant
     "repair": (700, 1.00, 0.0),
+    "title": (20, 0.20, 0.3),        # nano model: chat titles
 }
 
 
@@ -105,7 +106,8 @@ class LLM:
                 provider == "gateway" and not settings.llm_gateway_url):
             raise RuntimeError(f"LLM provider {provider!r} is not configured")
         self.url, self.key, self.model = cfg
-        self.meta: dict = {}  # trace metadata forwarded to the gateway -> Langfuse (trace name, session, user hash)
+        self.meta: dict = {}
+        self.title_model = settings.llm_title_alias if provider == "gateway" else self.model  # trace metadata forwarded to the gateway -> Langfuse (trace name, session, user hash)
 
     def _spend_key(self, stage: str) -> str:
         return f"spend:{stage}:{datetime.now(UTC):%Y%m%d}"
@@ -113,11 +115,12 @@ class LLM:
     def spent_today(self, stage: str) -> float:
         return float(self.r.get(self._spend_key(stage)) or 0)
 
-    def _body(self, stage: str, messages: list[dict], json_mode: bool, tools: list | None, stream: bool) -> dict:
+    def _body(self, stage: str, messages: list[dict], json_mode: bool, tools: list | None, stream: bool,
+              model: str | None = None) -> dict:
         max_tokens, cap, temp = STAGES[stage]
         if self.spent_today(stage) >= cap:
             raise BudgetExceeded(f"daily cap for stage {stage!r} reached (${cap})")
-        body = {"model": self.model, "messages": messages, "max_tokens": max_tokens, "temperature": temp, "stream": stream}
+        body = {"model": model or self.model, "messages": messages, "max_tokens": max_tokens, "temperature": temp, "stream": stream}
         if json_mode:
             body["response_format"] = {"type": "json_object"}
         if tools:
@@ -200,8 +203,9 @@ class LLM:
             self.ahttp = httpx.AsyncClient(timeout=self.s.llm_timeout_s)
         return self.ahttp
 
-    async def achat(self, stage: str, messages: list[dict], json_mode: bool = False, tools: list | None = None) -> LLMResult:
-        body = self._body(stage, messages, json_mode, tools, False)
+    async def achat(self, stage: str, messages: list[dict], json_mode: bool = False, tools: list | None = None,
+                    model: str | None = None) -> LLMResult:
+        body = self._body(stage, messages, json_mode, tools, False, model)
         t0 = time.monotonic()
         async with _aslots(self.s.llm_max_concurrency):
             for attempt in range(3):
@@ -214,7 +218,9 @@ class LLM:
         msg = data["choices"][0]["message"]
         calls = [{"id": c["id"], "name": c["function"]["name"], "arguments": c["function"]["arguments"]}
                  for c in msg.get("tool_calls") or []] or None
-        return self._account(stage, data.get("usage", {}), time.monotonic() - t0, (msg.get("content") or "").strip(), calls)
+        res = self._account(stage, data.get("usage", {}), time.monotonic() - t0, (msg.get("content") or "").strip(), calls)
+        res.model = data.get("model") or body["model"]  # the model the gateway actually used (after fallback)
+        return res
 
     async def astream(self, stage: str, messages: list[dict], tools: list | None = None):
         """Async SSE stream: yields ("token", str) then ("end", LLMResult). Retries the connect on 429/5xx."""

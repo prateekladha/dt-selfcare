@@ -158,3 +158,35 @@ def test_session_memory_feeds_previous_turns_into_the_next_question(world):
                        history=history))
     roles = [m["role"] for m in seen[0]["messages"]]
     assert roles == ["system", "user", "assistant", "user"] and "October" in seen[0]["messages"][1]["content"]
+
+
+def test_chat_history_titles_retention_and_ownership(world):
+    import asyncio as _a
+
+    from core_api.agent import history as hist
+    engine, r, _state = world
+    sid, new = hist.ensure_session(engine, SUB, None)
+    assert new and hist.ensure_session(engine, SUB, sid) == (sid, False)
+    assert hist.ensure_session(engine, "48600000001", sid)[0] != sid  # another customer can't reuse it
+    hist.append_turn(engine, sid, "Why did my October bill go up?", "Roaming in zone Z2 [S1].", "VERIFIED", [{"label": "S1"}])
+    assert hist.recent_turns(engine, sid) == [{"q": "Why did my October bill go up?", "a": "Roaming in zone Z2."}]
+
+    good = scripted_llm(r, [("text", "October roaming bill increase")])
+    assert _a.run(hist.make_title(good, "Why did my October bill go up?", "Roaming"))[0] == "October roaming bill increase"
+
+    def down(req):
+        return httpx.Response(503)
+    t = httpx.MockTransport(down)
+    bad = LLM(Settings(deepseek_api_key="k", database_url="sqlite://"), r, "deepseek",
+              http=httpx.Client(transport=t), ahttp=httpx.AsyncClient(transport=t))
+    title, src = _a.run(hist.make_title(bad, "why did my october bill go up so much?", "x"))
+    assert (title, src) == ("Why did my october bill go up", "question")  # fallback when the gateway is down
+
+    hist.set_title(engine, sid, "October roaming", "title-llm")
+    assert hist.list_sessions(engine, SUB)[0]["title"] == "October roaming"
+    assert hist.get_session(engine, "48600000001", sid) is None  # ownership enforced
+    for _ in range(hist.MAX_SESSIONS + 3):
+        s2, _n = hist.ensure_session(engine, SUB, None)
+        hist.append_turn(engine, s2, "q", "a", "CONVERSATIONAL", [])
+    assert len(hist.list_sessions(engine, SUB)) <= hist.MAX_SESSIONS  # retention
+    assert hist.delete_session(engine, SUB, s2) and hist.get_session(engine, SUB, s2) is None

@@ -176,6 +176,31 @@ agent_traces = Table(
     Column("created_at", DateTime(timezone=True), default=utcnow, nullable=False),
 )
 
+# ---- assistant chat history (owned by assistant-service) ----
+chat_sessions = Table(
+    "chat_sessions", metadata,
+    Column("id", String(32), primary_key=True),
+    Column("subscriber_id", String(32), nullable=False),
+    Column("title", String(120)),
+    Column("title_source", String(32)),                    # title-llm model that wrote it, or "question"
+    Column("turns", Integer, nullable=False, default=0),
+    Column("created_at", DateTime(timezone=True), default=utcnow, nullable=False),
+    Column("updated_at", DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False),
+)
+Index("ix_chat_sessions_sub", chat_sessions.c.subscriber_id, chat_sessions.c.updated_at)
+
+chat_messages = Table(
+    "chat_messages", metadata,
+    Column("id", Integer, Identity(), primary_key=True),
+    Column("session_id", String(32), nullable=False),
+    Column("role", String(12), nullable=False),            # user | assistant
+    Column("content", Text, nullable=False),
+    Column("status", String(16)),                          # VERIFIED | REPAIRED | CONVERSATIONAL | ...
+    Column("citations", Text),                             # JSON list of cited tool results
+    Column("created_at", DateTime(timezone=True), default=utcnow, nullable=False),
+)
+Index("ix_chat_messages_session", chat_messages.c.session_id, chat_messages.c.id)
+
 # ---- billing ledger: payments applied to bills (owned by billing; fed by payment-events) ----
 bill_payments = Table(
     "bill_payments", metadata,

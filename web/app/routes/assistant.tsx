@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import { ArrowUp, BrainCircuit, Check, ChevronDown, Loader2, ShieldCheck, Sparkles } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ArrowUp, BrainCircuit, Check, ChevronDown, History, Loader2, MessageSquare, Plus, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
 import { AgentTraceView } from "~/components/AgentTrace";
 import { OrderCard } from "~/components/OrderCard";
 import { CiteMap, RichText, SourceList } from "~/components/RichText";
@@ -111,6 +111,28 @@ export default function Assistant() {
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);  // follow-up questions keep context
+  const [chats, setChats] = useState<{ id: string; title: string; updated_at: string; turns: number }[]>([]);
+  const [drawer, setDrawer] = useState(false);
+  const loadChats = async () => { const r = await fetch("/api/chats"); if (r.ok) setChats(await r.json()); };
+  useEffect(() => { loadChats(); }, []);
+  async function openChat(id: string) {
+    setDrawer(false);
+    const r = await fetch(`/api/chats?id=${id}`);
+    if (!r.ok) return;
+    const s = await r.json();
+    const t: Turn[] = [];
+    for (const m of s.messages) {
+      if (m.role === "user") t.push({ q: m.content, text: "", steps: [], citations: [] });
+      else if (t.length) Object.assign(t[t.length - 1], { text: m.content, status: m.status ?? "VERIFIED", citations: m.citations ?? [] });
+    }
+    setTurns(t); setSessionId(id);
+  }
+  async function removeChat(id: string) {
+    await fetch(`/api/chats?id=${id}&op=delete`, { method: "POST" });
+    if (id === sessionId) { setTurns([]); setSessionId(null); }
+    loadChats();
+  }
+  const newChat = () => { setTurns([]); setSessionId(null); setDrawer(false); };
   const endRef = useRef<HTMLDivElement>(null);
   const patch = (fn: (t: Turn) => Turn) => setTurns((ts) => ts.map((t, i) => (i === ts.length - 1 ? fn(t) : t)));
 
@@ -136,6 +158,7 @@ export default function Assistant() {
           if (!line.startsWith("data:")) continue;
           const ev = JSON.parse(line.slice(5));
           if (ev.type === "session") setSessionId(ev.session_id);
+          else if (ev.type === "title") loadChats();
           else if (ev.type === "token") patch((t) => ({ ...t, text: t.text + ev.text }));
           else if (ev.type === "reset") patch((t) => ({ ...t, text: "" }));
           else if (ev.type === "step") patch((t) => ({ ...t, steps: [...t.steps, { label: ev.label, done: false }] }));
@@ -143,7 +166,7 @@ export default function Assistant() {
           else if (ev.type === "proposal") patch((t) => ({ ...t, proposals: [...(t.proposals ?? []), ev] }));
           else if (ev.type === "repairing") patch((t) => ({ ...t, repairing: true }));
           else if (ev.type === "replace") patch((t) => ({ ...t, text: ev.text }));
-          else if (ev.type === "done") patch((t) => ({ ...t, text: ev.answer, status: ev.status, citations: ev.citations ?? [], trace: ev.trace, repairing: false }));
+          else if (ev.type === "done") { patch((t) => ({ ...t, text: ev.answer, status: ev.status, citations: ev.citations ?? [], trace: ev.trace, repairing: false })); loadChats(); }
         }
       }
     } catch {
@@ -153,17 +176,48 @@ export default function Assistant() {
     }
   }
 
+  const historyList = (
+    <div className="space-y-1">
+      <button type="button" onClick={newChat} className="mb-2 flex w-full items-center gap-2 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 py-2.5 text-sm font-semibold hover:bg-[var(--chip)]"><Plus size={16} /> New chat</button>
+      {chats.length === 0 && <p className="px-2 py-3 text-[13px] text-[var(--ink-3)]">No previous chats yet.</p>}
+      {chats.map((c) => (
+        <div key={c.id} className={`group flex items-center gap-1 rounded-lg ${c.id === sessionId ? "bg-[var(--brand-bg)]" : "hover:bg-[var(--chip)]"}`}>
+          <button type="button" onClick={() => openChat(c.id)} className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2.5 text-left">
+            <MessageSquare size={15} className="mt-0.5 shrink-0 text-[var(--ink-3)]" />
+            <span className="min-w-0"><span className="block truncate text-[13.5px] font-medium">{c.title}</span>
+              <span className="block text-[11.5px] text-[var(--ink-3)]">{new Date(c.updated_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })} · {c.turns} {c.turns === 1 ? "question" : "questions"}</span></span>
+          </button>
+          <button type="button" onClick={() => removeChat(c.id)} aria-label={`Delete ${c.title}`} className="mr-1 rounded-md p-2 text-[var(--ink-3)] opacity-0 hover:bg-[var(--surface)] hover:text-[var(--bad)] group-hover:opacity-100 focus:opacity-100"><Trash2 size={14} /></button>
+        </div>
+      ))}
+      <p className="px-2 pt-3 text-[11px] leading-relaxed text-[var(--ink-3)]">Your last 50 chats are kept for 90 days.</p>
+    </div>
+  );
+
   return (
-    <div className="mx-auto max-w-[820px] space-y-6 pb-28">
+    <div className="mx-auto grid max-w-[1120px] gap-8 lg:grid-cols-[260px_minmax(0,1fr)]">
+      <aside className="hidden lg:block"><div className="sticky top-24"><p className="mb-3 px-1 text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)]">Chat history</p>{historyList}</div></aside>
+      {drawer && (
+        <div className="fixed inset-0 z-[70] bg-black/40 lg:hidden" onClick={() => setDrawer(false)}>
+          <div className="absolute inset-y-0 left-0 w-[86%] max-w-[340px] overflow-y-auto bg-[var(--surface)] p-4 shadow-[var(--shadow-lg)]" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-3 flex items-center justify-between"><p className="text-sm font-bold">Chat history</p><button type="button" onClick={() => setDrawer(false)} aria-label="Close" className="rounded-md p-2 hover:bg-[var(--chip)]"><X size={16} /></button></div>
+            {historyList}
+          </div>
+        </div>
+      )}
+    <div className="min-w-0 space-y-6 pb-28">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
         <h1 className="display text-[34px] font-extrabold leading-tight">Ask about your bill</h1>
         <p className="mt-2 text-[15px] leading-relaxed text-[var(--ink-3)]">Answers come from your own bills, usage records, payments and the tariff rules. Each one shows its sources.</p>
         </div>
-        {turns.length > 0 && (
-          <button type="button" onClick={() => { setTurns([]); setSessionId(null); }} disabled={busy}
-                  className="h-9 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3.5 text-sm font-semibold hover:bg-[var(--chip)] disabled:opacity-50">New chat</button>
-        )}
+        <div className="flex gap-2">
+          <button type="button" onClick={() => setDrawer(true)} className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 text-sm font-semibold hover:bg-[var(--chip)] lg:hidden"><History size={15} /> History</button>
+          {turns.length > 0 && (
+            <button type="button" onClick={newChat} disabled={busy}
+                    className="h-9 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3.5 text-sm font-semibold hover:bg-[var(--chip)] disabled:opacity-50 lg:hidden">New chat</button>
+          )}
+        </div>
       </div>
 
       {turns.length === 0 && (
@@ -194,6 +248,7 @@ export default function Assistant() {
           {busy ? <Loader2 size={18} className="animate-spin" /> : <ArrowUp size={18} />}
         </button>
       </form>
+    </div>
     </div>
   );
 }

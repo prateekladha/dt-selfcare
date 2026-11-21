@@ -22,13 +22,22 @@ data:
           model: mistral/mistral-small-latest
           api_key: os.environ/MISTRAL_API_KEY
           rpm: {{ .Values.llmGateway.fallbackRpm }}
+      - model_name: title-llm                   # nano model: chat titles
+        litellm_params:
+          model: mistral/ministral-3b-latest
+          api_key: os.environ/MISTRAL_API_KEY
+          rpm: 300
+      - model_name: title-llm-fallback
+        litellm_params:
+          model: deepseek/deepseek-chat
+          api_key: os.environ/DEEPSEEK_API_KEY
     router_settings:
       num_retries: 2
       retry_after: 1
       timeout: 30
       allowed_fails: 3          # failures before a deployment is cooled down
       cooldown_time: 30
-      fallbacks: [{"billing-llm": ["billing-llm-fallback"]}]
+      fallbacks: [{"billing-llm": ["billing-llm-fallback"]}, {"title-llm": ["title-llm-fallback"]}]
     litellm_settings:
       drop_params: true
       {{- if .Values.llmGateway.langfuse }}
