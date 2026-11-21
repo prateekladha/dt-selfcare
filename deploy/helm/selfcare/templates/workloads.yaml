@@ -7,7 +7,9 @@ metadata:
     app: {{ $name }}
     {{- include "selfcare.labels" $ | nindent 4 }}
 spec:
+  {{- if not $w.hpa }}
   replicas: {{ $w.replicas }}
+  {{- end }}
   revisionHistoryLimit: 3
   strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
   selector: { matchLabels: { app: {{ $name }} } }
