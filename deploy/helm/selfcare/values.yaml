@@ -22,6 +22,10 @@ stream:
 
 secretPrefix: dt-selfcare-
 
+# Optional third-party keys synced from Vault (list only what this environment has provisioned;
+# an ExternalSecret for a missing key is NotReady and would block `helm --wait`).
+thirdPartySecrets: [razorpay-key-id, razorpay-key-secret, razorpay-webhook-secret, deepseek-api-key]
+
 valkey:
   storage: 50Gi       # OCI block volume minimum
   storageClass: oci-bv

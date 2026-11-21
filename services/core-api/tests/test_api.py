@@ -177,6 +177,8 @@ def test_simulate_from_scenario_and_upload(env):
     assert any(s["key"] == "us-trip-2-weeks" for s in client.get("/v1/me/usage/scenarios", headers=h).json())
     r = client.post("/v1/me/usage/simulate", data={"scenario": "us-trip-2-weeks"}, headers=h).json()
     assert r["compared_to"] == "2026-10" and r["explanation"]["direction"] == "UP"
+    import re
+    assert re.fullmatch(r"\d{4}-\d{2}", r["bill"]["cycle"])  # must fit VARCHAR2(7) on Oracle
     assert r["explanation"]["drivers"][0]["category"] == "ROAMING"
     csv_body = b"usage_type,quantity,unit,roaming_zone\nDATA,2,GB,\nROAMING_DATA,500,MB,Z3\n"
     up = client.post("/v1/me/usage/simulate", files={"file": ("my.csv", csv_body, "text/csv")}, headers=h)

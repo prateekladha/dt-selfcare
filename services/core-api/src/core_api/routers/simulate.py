@@ -1,8 +1,11 @@
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import select
 from telco_common.billing import rate
 from telco_common.catalog import get_plan
 from telco_common.explainer import explain
+from telco_common.models import cycle_of
 
 from ..db import bills, get_engine, subscribers
 from ..deps import RateLimiter, get_valkey
@@ -50,7 +53,8 @@ async def simulate(p: Principal = Depends(current_principal), scenario: str | No
         sub = cx.execute(select(subscribers).where(subscribers.c.id == p.subscriber_id)).one()
         last = cx.execute(select(bills).where(bills.c.subscriber_id == p.subscriber_id)
                           .order_by(bills.c.cycle.desc()).limit(1)).first()
-    simulated = rate(sub.id, "simulated", get_plan(sub.plan_code), counters)
+    # priced as "this cycle" (YYYY-MM) so it fits every cycle-typed column and renders like a real bill
+    simulated = rate(sub.id, cycle_of(datetime.now(UTC)), get_plan(sub.plan_code), counters)
     ex = explain(simulated, row_to_bill(last) if last else None)
     s = get_settings()
     allowed = RateLimiter(get_valkey()).allow(f"ai:{p.subscriber_id}", s.ai_daily_limit_per_subscriber, 86400)
