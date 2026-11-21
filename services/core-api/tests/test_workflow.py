@@ -46,7 +46,8 @@ async def run(signal: str | None, poll_status: str = "SUBMITTED") -> str:
     BSS["status"] = poll_status
     async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
             env.client, task_queue="t", workflows=[AddonPurchaseWorkflow],
-            activities=[validate_order, submit_to_bss, bss_status, apply_addon, finish_order]):
+            activities=[validate_order, apply_addon, finish_order]), Worker(
+            env.client, task_queue="legacy-bss-DE", activities=[submit_to_bss, bss_status]):
             h = await env.client.start_workflow(AddonPurchaseWorkflow.run, "o1", id=f"wf-{uuid.uuid4()}", task_queue="t")
             if signal:
                 await asyncio.sleep(0.5)

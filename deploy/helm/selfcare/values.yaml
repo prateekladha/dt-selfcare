@@ -105,7 +105,6 @@ temporal:
 
 llmGateway:
   enabled: true
-  image: ghcr.io/berriai/litellm:v1.108.2
   primaryRpm: 300
   primaryTpm: 600000
   fallbackRpm: 120
