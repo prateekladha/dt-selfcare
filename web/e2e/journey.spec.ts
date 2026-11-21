@@ -65,6 +65,13 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   await expect(page.getByText(/Written by AI|Generated from your bill data/)).toBeVisible({ timeout: 45_000 });
   await shot(page, "04-bill-detail");
 
+  // Evidence trail: sources + raw CDRs re-summed from the archive must match the real-time counters
+  await page.getByRole("button", { name: /Sources and evidence/ }).click();
+  await expect(page.locator("#src-1")).toBeVisible();
+  await page.getByRole("button", { name: "Re-sum my CDRs" }).click();
+  await expect(page.getByText(/every total matches the real-time counters/)).toBeVisible({ timeout: 60_000 });
+  await shot(page, "04b-bill-evidence");
+
   // Language switch re-explains in German
   await page.getByRole("tab", { name: "Deutsch" }).click();
   await expect(page).toHaveURL(/lang=de/);

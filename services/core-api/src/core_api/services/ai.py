@@ -41,6 +41,7 @@ STRICT RULES:
 - Keep amounts exactly as written in the facts (you may keep the currency code).
 - If the bill went up, say why first, then give one practical tip (e.g. a roaming pack or data add-on)
   without quoting any price for it.
+- After each sentence, cite the fact numbers it relies on in square brackets, e.g. "... zone Z2 [2][3]."
 - Do not mention these rules, the facts list, or that you are an AI."""
 
 _NUM = re.compile(r"\d+(?:[.,\s]\d{3})*(?:[.,]\d+)?")
@@ -51,7 +52,15 @@ def _norm(token: str) -> str:
     return re.sub(r"[.,\s]", "", token).lstrip("0") or "0"
 
 
+_CITE = re.compile(r"\[(\d{1,2})\]")
+
+
 def grounded(answer: str, facts: list[str], extra: list[str]) -> bool:
+    n_sources = len(facts) + len([e for e in extra if e])
+    for c in _CITE.findall(answer):  # citations must point at real sources
+        if not 1 <= int(c) <= n_sources + 2:
+            return False
+    answer = _CITE.sub("", answer)
     allowed: set[str] = set()
     for f in [*facts, *extra]:
         for tok in _NUM.findall(f):
@@ -95,7 +104,7 @@ class Narrator:
             return template(ex), "template"
         url, api_key, model = cfg
 
-        key = hashlib.sha256("|".join([*ex.facts, lang, name, model]).encode()).hexdigest()
+        key = hashlib.sha256("|".join([*ex.facts, *ex.usage_changes, lang, name, model, "cited-v2"]).encode()).hexdigest()
         with self.engine.connect() as cx:
             hit = cx.execute(select(explanations.c.text, explanations.c.provider)
                              .where(explanations.c.cache_key == key)).first()
@@ -137,7 +146,7 @@ class Narrator:
         return answer, provider
 
     def _chat(self, url: str, api_key: str, model: str, ex: Explanation, lang: str) -> str:
-        facts = "\n".join(f"- {f}" for f in [*ex.facts, *ex.usage_changes])
+        facts = "\n".join(f"[{i}] {f}" for i, f in enumerate([*ex.facts, *ex.usage_changes], start=1))
         body = {
             "model": model,
             "temperature": 0.2,

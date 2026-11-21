@@ -66,7 +66,7 @@ export default function BillPage({ loaderData }: Route.ComponentProps) {
 
       <div className="grid gap-6 lg:grid-cols-5">
         <div className="space-y-6 lg:col-span-3">
-          <Narrative narrative={narrative} lang={lang} basePath={`/bills/${cycle}`} title={isCurrent ? "This month in plain words" : "This bill in plain words"} />
+          <Narrative narrative={narrative} lang={lang} basePath={`/bills/${cycle}`} title={isCurrent ? "This month in plain words" : "This bill in plain words"} cycle={cycle} />
           <WhatChanged ex={ex} locale={loc} title={isCurrent ? "So far vs your last bill" : "What changed"} />
         </div>
         <div className="space-y-6 lg:col-span-2">

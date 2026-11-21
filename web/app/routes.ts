@@ -16,4 +16,5 @@ export default [
   route("api/pay/confirm", "routes/api.pay-confirm.ts"),
   route("api/events", "routes/api.events.ts"),
   route("api/sample.csv", "routes/api.sample.ts"),
+  route("api/evidence/:cycle", "routes/api.evidence.ts"),
 ] satisfies RouteConfig;
