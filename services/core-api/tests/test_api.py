@@ -14,10 +14,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 from telco_common.catalog import MB
+from telco_common.demo import DEMO_SUBSCRIBERS
 from telco_common.models import Country, UsageRecord, UsageType
 from telco_common.partitioning import partition_for
 from telco_common.usage_state import UsageState
 
+N_DEMO = len(DEMO_SUBSCRIBERS)
 SUB, OTHER = "4915100000002", "4915100000001"  # traveller (DE-FLEX), streamer (DE-M)
 
 
@@ -105,9 +107,9 @@ def test_home_snapshot_bills_explanation_and_pdf(env):
     add_usage(state, SUB, datetime(2026, 10, 10, tzinfo=UTC), [(UsageType.DATA, None, 2_000 * MB),
                                                                (UsageType.ROAMING_DATA, "Z2", 500 * MB)])
     add_usage(state, SUB, datetime.now(UTC), [(UsageType.DATA, None, 2_600 * MB)])
-    assert issue(engine, state, "2026-09", settle_before="2026-10") == {"created": 6, "skipped_existing": 0}
-    assert issue(engine, state, "2026-10")["created"] == 6
-    assert issue(engine, state, "2026-10")["skipped_existing"] == 6  # bill run is idempotent
+    assert issue(engine, state, "2026-09", settle_before="2026-10") == {"created": N_DEMO, "skipped_existing": 0}
+    assert issue(engine, state, "2026-10")["created"] == N_DEMO
+    assert issue(engine, state, "2026-10")["skipped_existing"] == N_DEMO  # bill run is idempotent
 
     h = login(client)
     home = client.get("/v1/me/home", headers=h)
@@ -223,7 +225,7 @@ def test_system_overview_shows_every_layer_and_only_my_data(env, monkeypatch):
     add_usage(state, SUB, datetime.now(UTC), [(UsageType.DATA, None, 500 * MB)])
     issue(engine, state, "2026-10")
     body = client.get("/v1/system/overview", headers=login(client)).json()
-    assert body["database"]["tables"]["bills"] == 6 and body["valkey"]["keys"] > 0
+    assert body["database"]["tables"]["bills"] == N_DEMO and body["valkey"]["keys"] > 0
     assert body["you"]["valkey_usage_hash"]["DATA"] == str(500 * MB)
     assert all(b["id"].startswith(SUB) for b in body["you"]["db_bills"])
     assert "ai-provider" in body["flags"]
@@ -259,3 +261,18 @@ def test_demo_panel_is_computed_from_real_bills_and_off_by_default(env, monkeypa
     issue(engine, state, "2026-10")
     jonas = next(a for a in client.get("/v1/demo/accounts").json() if a["subscriber_id"] == SUB)
     assert jonas["headline"].startswith("October bill +") and "roaming data, zone z2" in jonas["headline"]
+
+
+def test_late_cdrs_after_bill_issue_become_an_adjustment_on_the_next_bill(env):
+    _client, engine, state, _ = env
+    from core_api.services.bills import close_cycle, get_bill_row, row_to_bill
+    add_usage(state, SUB, datetime(2026, 9, 10, tzinfo=UTC), [(UsageType.DATA, None, 1_000 * MB)])
+    close_cycle(engine, state, "2026-09")
+    sept_total = get_bill_row(engine, SUB, "2026-09").total
+    # roaming CDR for September arrives in October, after the September bill was issued
+    add_usage(state, SUB, datetime(2026, 9, 28, tzinfo=UTC), [(UsageType.ROAMING_DATA, "Z2", 100 * MB)])
+    close_cycle(engine, state, "2026-10")
+    assert get_bill_row(engine, SUB, "2026-09").total == sept_total  # issued bill is immutable
+    oct_lines = {x.code: x for x in row_to_bill(get_bill_row(engine, SUB, "2026-10")).lines}
+    assert oct_lines["ADJ:2026-09"].amount == 199  # 100 MB * 1.99 cents, net
+    add_usage(state, SUB, datetime(2026, 11, 1, tzinfo=UTC), [(UsageType.DATA, None, 1)])

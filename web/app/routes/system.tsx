@@ -14,6 +14,7 @@ type Overview = {
   stream: { engine?: string; usage_topic?: string; partitions?: Part[]; topics?: Record<string, { partitions: number; messages_retained: number; end: number }>; consumer_groups?: string[]; error?: string };
   valkey: { engine?: string; keys?: number; used_memory?: string; maxmemory_policy?: string; ops_per_sec?: number; aof_enabled?: boolean; uptime_s?: number; connected_clients?: number; error?: string };
   database: { engine?: string; schema_user?: string; tables?: Record<string, number>; migrations?: string[]; payments_by_status?: Record<string, number>; ai_cache_by_provider?: Record<string, number>; outbox_unpublished?: number; error?: string };
+  cdr?: { by_type?: Record<string, number>; collector?: Record<string, number>; quarantine_sample?: { record_id: string | null; reason: string; batch_id: string }[]; error?: string };
   flags: Record<string, unknown>; breakers: Record<string, string>;
   ai: { providers_configured: string[]; daily_limit_per_subscriber: number }; payments: { gateway: string; webhook: string };
   you: { subscriber: string; partition: number; valkey_usage_key: string; valkey_usage_hash: Record<string, string>; valkey_profile: Record<string, string>;
@@ -128,6 +129,26 @@ export default function System({ loaderData }: Route.ComponentProps) {
           <div className="px-6 pb-5 pt-2"><KV rows={[["Keys", n(o.valkey.keys)], ["Memory", o.valkey.used_memory ?? "?"], ["Ops / sec", n(o.valkey.ops_per_sec)], ["Persistence", o.valkey.aof_enabled ? "AOF (fsync 1 s)" : "off"], ["Eviction", o.valkey.maxmemory_policy ?? "?"], ["Clients", n(o.valkey.connected_clients)]]} /></div>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader icon={<Radio size={18} />} title="CDR coverage" subtitle="Records applied per type (atomic counters in the aggregator) and data-quality outcomes at the collector" />
+        <div className="grid gap-6 p-6 pt-4 lg:grid-cols-3">
+          <div className="lg:col-span-2">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {Object.entries(o.cdr?.by_type ?? {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => (
+                <div key={k} className="rounded-lg border border-[var(--line)] px-3 py-2"><p className="truncate text-[11px] font-semibold uppercase tracking-wide text-[var(--ink-3)]">{k}</p><p className="tabular text-base font-bold">{n(v)}</p></div>
+              ))}
+            </div>
+            <p className="mt-3 text-xs text-[var(--ink-3)]">Edge cases are replayed on demand with <code>network-emulator scenarios</code> (lab line +49 151 0000 0099). See docs/CDR_SCENARIOS.md for the full matrix.</p>
+          </div>
+          <div>
+            <KV rows={[["Quarantined (malformed / future-dated)", n(o.cdr?.collector?.quarantined)], ["Duplicates dropped", n(o.cdr?.collector?.duplicates)]]} />
+            {!!o.cdr?.quarantine_sample?.length && (
+              <ul className="mt-3 space-y-1 text-xs text-[var(--ink-3)]">{o.cdr.quarantine_sample.map((q, i) => <li key={i}><span className="font-mono">{q.record_id ?? "?"}</span>: {q.reason}</li>)}</ul>
+            )}
+          </div>
+        </div>
+      </Card>
 
       <div className="grid gap-6 lg:grid-cols-3">
         <Card>

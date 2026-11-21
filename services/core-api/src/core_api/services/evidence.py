@@ -26,8 +26,10 @@ from telco_common.usage_state import UsageState
 
 BUCKET = os.getenv("APP_ARCHIVE_BUCKET", "dt-selfcare-usage-raw")
 TOPIC = os.getenv("STREAM_USAGE_TOPIC", "usage-events")
-UNITS = {"DATA": "bytes", "ROAMING_DATA": "bytes", "VOICE": "seconds", "ROAMING_VOICE": "seconds",
-         "INTL_VOICE": "seconds", "SMS": "count", "addon": "count", "addon_bytes": "bytes"}
+UNITS = {"DATA": "bytes", "ROAMING_DATA": "bytes", "DATA_ZERO_RATED": "bytes", "VOICE": "seconds",
+         "ROAMING_VOICE": "seconds", "ROAMING_VOICE_MT": "seconds", "VOICE_MT": "seconds", "INTL_VOICE": "seconds",
+         "EMERGENCY": "seconds", "TOLLFREE": "seconds", "SMS": "count", "MMS": "count", "SMS_INTL": "count",
+         "PREMIUM": "minor units", "addon": "count", "addon_bytes": "bytes"}
 
 
 @lru_cache

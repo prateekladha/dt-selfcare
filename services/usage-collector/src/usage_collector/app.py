@@ -22,10 +22,11 @@ from fastapi.concurrency import run_in_threadpool
 from prometheus_client import Counter, Histogram, make_asgi_app
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from telco_common.logging import configure_logging
-from telco_common.models import UsageBatch
+from telco_common.models import RawBatch
 from telco_common.streaming import StreamSettings
 
 from .publisher import build_messages, publish
+from .screening import quarantine, remember, screen
 
 BATCHES = Counter("collector_batches_total", "Batches received", ["result"])
 RECORDS = Counter("collector_records_total", "Records accepted")
@@ -104,7 +105,7 @@ def readyz() -> dict:
 
 
 @app.post("/v1/usage-batches", status_code=202)
-async def ingest(batch: UsageBatch, response: Response, source: str = Depends(authenticate)) -> dict:
+async def ingest(batch: RawBatch, response: Response, source: str = Depends(authenticate)) -> dict:
     if batch.source != source:
         raise HTTPException(403, "batch.source does not match authenticated source")
     key = f"batch:{batch.batch_id}"
@@ -117,22 +118,29 @@ async def ingest(batch: UsageBatch, response: Response, source: str = Depends(au
         BATCHES.labels("inflight").inc()
         raise HTTPException(409, "batch is being processed; retry later")
 
-    try:
-        msgs = build_messages(batch, S.stream.partitions)
-        with PUBLISH_SECONDS.time():
-            errors = await run_in_threadpool(publish, S.producer, S.stream.usage_topic, batch.batch_id, msgs)
-    except BufferError:
-        errors = ["producer queue full"]
-    if errors:
-        await run_in_threadpool(S.r.delete, key)
-        BATCHES.labels("failed").inc()
-        log.warning("publish_failed", batch_id=batch.batch_id, errors=errors[:3])
-        raise HTTPException(503, "stream unavailable, retry", headers={"Retry-After": "5"})
+    sc = await run_in_threadpool(screen, batch.records, S.r)
+    await run_in_threadpool(quarantine, source, batch.batch_id, sc.quarantined, S.r)
+    msgs = []
+    if sc.valid:
+        try:
+            msgs = build_messages(batch.batch_id, sc.valid, S.stream.partitions)
+            with PUBLISH_SECONDS.time():
+                errors = await run_in_threadpool(publish, S.producer, S.stream.usage_topic, batch.batch_id, msgs)
+        except BufferError:
+            errors = ["producer queue full"]
+        if errors:
+            await run_in_threadpool(S.r.delete, key)
+            BATCHES.labels("failed").inc()
+            log.warning("publish_failed", batch_id=batch.batch_id, errors=errors[:3])
+            raise HTTPException(503, "stream unavailable, retry", headers={"Retry-After": "5"})
+        await run_in_threadpool(remember, sc.valid, S.r)
 
     await run_in_threadpool(lambda: S.r.set(key, "done", ex=S.settings.batch_done_ttl_s))
+    await run_in_threadpool(lambda: S.r.hincrby("stats:collector", "duplicates", sc.duplicates))
     BATCHES.labels("accepted").inc()
-    RECORDS.inc(len(batch.records))
-    return {"status": "accepted", "batch_id": batch.batch_id, "records": len(batch.records), "messages": len(msgs)}
+    RECORDS.inc(len(sc.valid))
+    return {"status": "accepted", "batch_id": batch.batch_id, "records": len(sc.valid), "messages": len(msgs),
+            "quarantined": sc.quarantined[:20], "quarantined_count": len(sc.quarantined), "duplicates": sc.duplicates}
 
 
 def run() -> None:

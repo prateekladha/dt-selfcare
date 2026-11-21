@@ -31,6 +31,8 @@ DEMO_SUBSCRIBERS: list[DemoSubscriber] = [
     DemoSubscriber("4915100000004", "Paul Becker", "paul.becker@example.com", Country.DE, "DE-S", "light"),
     DemoSubscriber("48600000001", "Zofia Nowak", "zofia.nowak@example.com", Country.PL, "PL-FLEX", "intl_caller"),
     DemoSubscriber("48600000002", "Piotr Kowalski", "piotr.kowalski@example.com", Country.PL, "PL-S", "streamer"),
+    # Scenario lab line: receives every edge-case CDR from `network-emulator scenarios`
+    DemoSubscriber("4915100000099", "Scenario Lab", "lab@example.com", Country.DE, "DE-FLEX", "light"),
 ]
 
 BY_ID = {s.subscriber_id: s for s in DEMO_SUBSCRIBERS}

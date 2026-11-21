@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from telco_common.codec import MAX_MESSAGE_BYTES, encode_records, message_id
-from telco_common.models import UsageBatch, UsageRecord
+from telco_common.models import UsageRecord
 from telco_common.partitioning import partition_for
 
 CHUNK_RECORDS = 2000  # ~2000 * 200 B = 400 KB raw -> ~80 KB gzip; far below the 1 MB message limit
@@ -26,9 +26,9 @@ class OutMessage:
     records: int
 
 
-def build_messages(batch: UsageBatch, partitions: int) -> list[OutMessage]:
+def build_messages(batch_id: str, records: list[UsageRecord], partitions: int) -> list[OutMessage]:
     by_part: dict[int, list[UsageRecord]] = defaultdict(list)
-    for rec in batch.records:
+    for rec in records:
         by_part[partition_for(rec.subscriber_id, partitions)].append(rec)
     out: list[OutMessage] = []
     for p, recs in sorted(by_part.items()):
@@ -37,7 +37,7 @@ def build_messages(batch: UsageBatch, partitions: int) -> list[OutMessage]:
             payload = encode_records(chunk)
             if len(payload) > MAX_MESSAGE_BYTES:
                 raise ValueError("chunk exceeds max message size; lower CHUNK_RECORDS")
-            out.append(OutMessage(p, message_id(batch.batch_id, p, chunk_no), payload, len(chunk)))
+            out.append(OutMessage(p, message_id(batch_id, p, chunk_no), payload, len(chunk)))
     return out
 
 

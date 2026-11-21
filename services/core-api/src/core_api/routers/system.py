@@ -6,6 +6,7 @@ broker watermark lookups cost a network round trip.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 from datetime import UTC, datetime
@@ -130,6 +131,11 @@ def overview(p: Principal = Depends(current_principal)) -> dict:
         "stream": _cached("stream", 5, _stream),
         "valkey": _cached("valkey", 3, _valkey),
         "database": _cached("db", 5, _db),
+        "cdr": _cached("cdr", 5, lambda: {
+            "by_type": state.cdr_type_stats(),
+            "collector": {k.decode(): int(v) for k, v in state.r.hgetall("stats:collector").items()},
+            "quarantine_sample": [json.loads(x) for x in state.r.lrange("quarantine:emu-mediation-01", 0, 4)],
+        }),
         "flags": {k: (flag_bool(k, p.country, p.subscriber_id) if isinstance(v, bool)
                       else flag_obj(k, p.country, p.subscriber_id) if isinstance(v, dict)
                       else flag_str(k, p.country, p.subscriber_id)) for k, v in DEFAULTS.items()},

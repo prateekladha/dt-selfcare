@@ -1,0 +1,27 @@
+# Replays every edge-case CDR scenario against the live pipeline (lab line +49 151 0000 0099) and
+# prints how each was handled (accepted / quarantined / duplicates).
+#   sed -e "s|REGISTRY|<ocir registry>|" -e "s|IMAGE_TAG|<tag>|" deploy/loadtest/scenarios-job.yaml | kubectl -n selfcare apply -f -
+#   kubectl -n selfcare logs job/cdr-scenarios
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cdr-scenarios
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      imagePullSecrets: [{ name: ocir-pull }]
+      containers:
+        - name: scenarios
+          image: REGISTRY/network-emulator:IMAGE_TAG
+          command: ["network-emulator", "scenarios"]
+          env:
+            - { name: COLLECTOR_URL, value: "http://usage-collector:8080" }
+            - name: SOURCE_TOKEN
+              valueFrom: { secretKeyRef: { name: selfcare-secrets, key: source-token } }
+          resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { memory: 256Mi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }

@@ -85,6 +85,27 @@ def live(collector: str = typer.Option(..., envvar="COLLECTOR_URL"),
 
 
 @app.command()
+def scenarios(collector: str = typer.Option(..., envvar="COLLECTOR_URL"),
+              token: str = typer.Option(..., envvar="SOURCE_TOKEN"),
+              source: str = typer.Option("emu-mediation-01", envvar="SOURCE_ID")) -> None:
+    """Send every edge-case CDR scenario to the lab line and print how the platform handled each."""
+    import httpx
+
+    from .scenarios import build
+
+    run = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+    with httpx.Client(timeout=30, headers={"Authorization": f"Bearer {token}", "X-Source": source}) as c:
+        for key, desc, recs in build():
+            r = c.post(collector.rstrip("/") + "/v1/usage-batches",
+                       json={"batch_id": f"{source}:lab:{run}:{key}", "source": source, "records": recs})
+            j = r.json()
+            typer.echo(f"{key:26s} {r.status_code} accepted={j.get('records', 0)} quarantined={j.get('quarantined_count', 0)} "
+                       f"duplicates={j.get('duplicates', 0)}  - {desc}")
+            for q in j.get("quarantined", [])[:3]:
+                typer.echo(f"{'':26s}   quarantined: {q.get('reason')}")
+
+
+@app.command()
 def load(collector: str = typer.Option(..., envvar="COLLECTOR_URL"),
          token: str = typer.Option(..., envvar="SOURCE_TOKEN"),
          source: str = typer.Option("emu-loadgen-01", envvar="SOURCE_ID"),

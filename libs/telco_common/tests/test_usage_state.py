@@ -86,3 +86,9 @@ def test_new_cycle_starts_fresh(state):
     dec = data(1, 100).model_copy(update={"event_time": datetime(2026, 12, 1, tzinfo=UTC)})
     state.apply(PART, 1, "m1", [dec], LEVELS)
     assert state.counters(SUB, "2026-12")["DATA"] == 100 * MB
+
+
+def test_cdr_type_stats_are_counted_atomically(state):
+    state.apply(PART, 0, "m0", [data(0, 10), data(1, 10, "Z2")], LEVELS)
+    state.apply(PART, 0, "m0", [data(0, 10)], LEVELS)  # replay: stats must not double count
+    assert state.cdr_type_stats() == {"DATA": 1, "ROAMING_DATA": 1}
