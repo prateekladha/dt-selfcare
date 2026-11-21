@@ -56,8 +56,8 @@ export default function BillPage({ loaderData }: Route.ComponentProps) {
             <p className="display tabular text-[44px] font-extrabold leading-none">{money(total, cur, loc)}</p>
             <p className="mt-1.5 text-[13px] text-[var(--ink-3)]">incl. {vatPct}% VAT</p>
             <div className="mt-4 flex flex-wrap justify-end gap-2">
-              {bill && bill.outstanding > 0 && home.features.payments && <PayButton purpose="BILL" billId={bill.id} label={`Pay ${money(bill.outstanding, cur, loc)}`} name={home.subscriber.name} />}
-              {isCurrent && home.features.payments && total > 0 && <PayButton purpose="ADVANCE" label="Pay in advance" name={home.subscriber.name} />}
+              {bill && bill.outstanding > 0 && home.features.payments && <PayButton purpose="BILL" billId={bill.id} label={`Pay ${money(bill.outstanding, cur, loc)}`} name={home.subscriber.name} contact={`+${home.subscriber.id}`} />}
+              {isCurrent && home.features.payments && total > 0 && <PayButton purpose="ADVANCE" label="Pay in advance" name={home.subscriber.name} contact={`+${home.subscriber.id}`} />}
               {bill && <LinkButton to={`/bills/${cycle}/pdf`} variant="secondary" download><Download size={16} /> PDF</LinkButton>}
             </div>
           </div>

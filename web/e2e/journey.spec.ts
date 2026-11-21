@@ -121,40 +121,45 @@ test("payment: pay in advance with UPI in Razorpay test mode, settled exactly on
   await page.waitForTimeout(1500);
   await shot(page, "08-pay-1-checkout");
 
-  // Razorpay asks for a contact number first (test mode: any valid-format Indian mobile).
+  // Razorpay inputs are masked: type key by key (like a person) so their validation sees it.
+  const type = async (loc: ReturnType<typeof rzp.locator>, text: string) => {
+    await loc.click({ timeout: 15_000 });
+    await loc.pressSequentially(text, { delay: 60 });
+  };
   const mobile = rzp.getByPlaceholder(/mobile number/i);
-  if (await mobile.isVisible({ timeout: 8_000 }).catch(() => false)) {
-    await mobile.fill("9876543210");
-    await rzp.getByRole("button", { name: /^continue$/i }).last().click();
+  if (await mobile.isVisible({ timeout: 5_000 }).catch(() => false)) {
+    await mobile.clear();
+    await type(mobile, "9876543210");
+    await rzp.getByRole("button", { name: /^continue$/i }).last().click({ timeout: 15_000 });
     await page.waitForTimeout(2000);
   }
   await shot(page, "08-pay-2-methods");
 
-  const methods = await rzp.locator("body").innerText().catch(() => "");
-  console.log("razorpay methods:", methods.replace(/\s+/g, " ").slice(0, 300));
   const upi = rzp.getByText(/^UPI$/i).first();
   if (await upi.isVisible({ timeout: 3_000 }).catch(() => false)) {
-    await upi.click();
-    await rzp.locator('input[name="vpa"]').or(rzp.getByPlaceholder(/@|upi id/i)).first().fill("success@razorpay");
+    await upi.click({ timeout: 15_000 });
+    await type(rzp.locator('input[name="vpa"]').or(rzp.getByPlaceholder(/@|upi id/i)).first(), "success@razorpay");
     await shot(page, "08-pay-3-upi");
-    await rzp.getByRole("button", { name: /verify|pay/i }).last().click();
+    await rzp.getByRole("button", { name: /verify|pay/i }).last().click({ timeout: 15_000 });
   } else {
-    // Card path with Razorpay's documented domestic test card; bank page in test mode offers Success/Failure.
-    await rzp.getByText(/^Cards?$/i).first().click().catch(() => {});
+    // Card path with Razorpay's documented domestic test card; the test-mode bank page offers Success/Failure.
+    await rzp.getByText(/^Cards?$/i).first().click({ timeout: 10_000 }).catch(() => {});
     const field = (name: string, label: RegExp) =>
-      rzp.locator(`input[name="${name}"]`).or(rzp.getByLabel(label)).or(rzp.getByPlaceholder(label)).first();
-    await field("card[number]", /card number/i).fill("5267 3181 8797 5449", { timeout: 15_000 });
-    await field("card[expiry]", /MM ?\/ ?YY|expiry/i).fill("12/30", { timeout: 15_000 });
-    await field("card[cvv]", /CVV/i).fill("123", { timeout: 15_000 });
+      rzp.locator(`input[name="${name}"]`).or(rzp.getByPlaceholder(label)).first();
+    await type(field("card[number]", /card number/i), "5267318187975449");
+    await type(field("card[expiry]", /MM ?\/ ?YY|expiry/i), "1230");
+    await type(field("card[cvv]", /CVV/i), "123");
     await shot(page, "08-pay-3-card");
-    const popup = page.waitForEvent("popup", { timeout: 30_000 }).catch(() => null);
-    await rzp.getByRole("button", { name: /^(continue|pay)/i }).last().click();
+    const popup = page.waitForEvent("popup", { timeout: 45_000 }).catch(() => null);
+    await rzp.getByRole("button", { name: /^(continue|pay)/i }).last().click({ timeout: 15_000 });
     await page.waitForTimeout(2500);
+    await shot(page, "08-pay-3b-after-continue");
     const later = rzp.getByRole("button", { name: /maybe later|skip|without saving/i }).first();
-    if (await later.isVisible({ timeout: 4_000 }).catch(() => false)) await later.click();
+    if (await later.isVisible({ timeout: 4_000 }).catch(() => false)) await later.click({ timeout: 10_000 });
     const bank = await popup;
     if (bank) {
       await bank.waitForLoadState();
+      await bank.screenshot({ path: `${SHOTS}/desktop-08-pay-3c-bank.png` });
       await bank.getByRole("button", { name: /success/i }).click({ timeout: 30_000 });
     } else {
       await rzp.getByRole("button", { name: /success/i }).first().click({ timeout: 30_000 });
