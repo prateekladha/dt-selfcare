@@ -76,6 +76,9 @@ def test_adapter_service_tmf622_rate_limit_and_markets(world, monkeypatch):
     from core_api.settings import get_settings
 
     monkeypatch.setattr(get_settings(), "bss_max_rps", 2)
+    # the limiter is a fixed 1-second window: pin the clock so the requests can't straddle a second boundary
+    frozen = 1_900_000_000 + uuid.uuid4().int % 1_000_000
+    monkeypatch.setattr(app_mod, "_clock", lambda: frozen)
     app = app_mod.build("order-adapter-test", [app_mod.router])
     c = TestClient(app)
     first = c.post(BASE, json=product_order(f"ord-{uuid.uuid4().hex[:8]}", SUB, "DE-DATA-5GB", "DE"))
