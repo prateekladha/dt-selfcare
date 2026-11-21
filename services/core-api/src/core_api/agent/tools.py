@@ -190,6 +190,32 @@ def t_propose_addon(args: dict, ctx: ToolContext) -> dict:
             "status": "waiting for the customer's approval"}
 
 
+def t_propose_payment(args: dict, ctx: ToolContext) -> dict:
+    """PAYMENT (propose tier): prepares a payment card; the customer pays in the secure checkout.
+    purpose=bill -> the oldest unpaid bill; purpose=advance -> this month's unbilled amount so far."""
+    from ..db import bills
+    from ..services.bills import unbilled
+
+    if args["purpose"] == "bill":
+        with ctx.engine.connect() as cx:
+            b = cx.execute(select(bills).where(bills.c.subscriber_id == ctx.subscriber_id, bills.c.total > bills.c.amount_paid)
+                           .order_by(bills.c.cycle)).first()
+        if b is None:
+            return {"source": "adb:bills", "nothing_to_pay": True, "message": "All bills are paid."}
+        due = b.due_date if b.due_date.tzinfo else b.due_date.replace(tzinfo=UTC)
+        return {"source": f"adb:bills:{b.cycle}", "proposal": True, "payment": True, "purpose": "BILL", "bill_id": b.id,
+                "cycle": b.cycle, "amount": fmt_money(b.total - b.amount_paid, b.currency),
+                "due_date": due.date().isoformat(), "overdue": due < datetime.now(UTC),
+                "status": "waiting for the customer to pay in the secure checkout"}
+    sub = _sub(ctx)
+    cur = unbilled(ctx.state, ctx.subscriber_id, sub.plan_code, engine=ctx.engine)
+    if cur.total <= 0:
+        return {"source": "usage:current", "nothing_to_pay": True, "message": "Nothing has been used this month yet."}
+    return {"source": f"usage:{cur.cycle}", "proposal": True, "payment": True, "purpose": "ADVANCE", "bill_id": None,
+            "cycle": cur.cycle, "amount": fmt_money(cur.total, cur.currency),
+            "status": "waiting for the customer to pay in the secure checkout"}
+
+
 def t_propose_plan_change(args: dict, ctx: ToolContext) -> dict:
     """WRITE (propose tier): prepares a tariff change for the customer to approve."""
     from ..workflows.orders import OrderError, propose_plan_change
@@ -237,6 +263,11 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
          "Codes: DE-DATA-5GB, DE-DATA-20GB (Germany), PL-DATA-5GB (Poland).",
          {"type": "object", "properties": {"addon_code": {"type": "string", "enum": ["DE-DATA-5GB", "DE-DATA-20GB", "PL-DATA-5GB"]}},
           "required": ["addon_code"], "additionalProperties": False}, t_propose_addon, tier="propose"),
+    Tool("propose_payment", "Prepare a payment for the customer to complete in the secure checkout: purpose 'bill' pays the "
+         "oldest unpaid bill, 'advance' pays this month's usage so far. Use it when the customer wants to pay, when a bill is "
+         "overdue, or when a purchase was refused because of an overdue bill.",
+         {"type": "object", "properties": {"purpose": {"type": "string", "enum": ["bill", "advance"]}},
+          "required": ["purpose"], "additionalProperties": False}, t_propose_payment, tier="propose"),
     Tool("propose_plan_change", "Prepare a tariff change for the customer to approve (nothing changes until they approve). "
          "Germany: DE-S (Mobile S, 10 GB), DE-M (Mobile M, 30 GB), DE-FLEX (Mobile Flex, 3 GB, pay per use); "
          "Poland: PL-S (Mobile S, 15 GB), PL-FLEX (Mobile Flex, 5 GB). Only tariffs of the customer's market.",

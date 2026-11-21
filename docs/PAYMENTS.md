@@ -51,8 +51,10 @@ Configure in the Razorpay Dashboard → Webhooks:
 - **Events:** `payment.authorized`, `payment.captured`, `payment.failed`, `order.paid`
 
 ## Currency
-- **Orders are charged in the bill's own currency** (EUR/PLN). Razorpay accepts these on this account.
-- **The `payment-settlement` flag** can switch a country to INR settlement, for rails such as UPI that only settle INR. In that case the original amount, the charged amount and the FX rate are recorded on the payment.
+- **Bills and the ledger stay in the bill's own currency** (EUR/PLN).
+- **The demo gateway is charged in INR** (`payment-settlement` = `inr`). Razorpay treats any non-INR order as an international payment, and international payments can't be enabled on a test-mode account, so EUR orders would be declined ("International cards are not supported"). The payment records the bill amount, the charged INR amount and the FX rate, and the checkout shows the conversion to the customer.
+- **Test cards (domestic, work in test mode):** Visa `4100 2800 0000 1007`, Mastercard `5500 6700 0000 1002`; any future expiry, any CVV. UPI: `success@razorpay`.
+- **EU production:** `native` on an EU gateway (Adyen/Stripe) charging EUR/PLN directly, with no conversion.
 
 ## Tests
 `services/core-api/tests/test_api.py`:

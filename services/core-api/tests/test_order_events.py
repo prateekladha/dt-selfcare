@@ -264,3 +264,53 @@ def test_legacy_calls_run_on_the_customers_country_queue():
             return await env.client.execute_workflow(AddonPurchaseWorkflow.run, "o1", id=f"wf-{uuid.uuid4()}", task_queue="t")
     assert asyncio.run(run()) == "COMPLETED"
     assert seen and set(seen) == {"legacy-bss-PL"}
+
+
+def test_decline_then_buy_expiry_and_credit_control(world):
+    from datetime import UTC, datetime, timedelta
+
+    from core_api.db import bills
+    from core_api.workflows.orders import OrderError, expired, propose_addon, public, set_status
+    from sqlalchemy import insert
+
+    engine, _ = world
+    o = propose_addon(engine, SUB, "DE-DATA-5GB", "assistant")
+    set_status(engine, o["order_id"], "DECLINED", "Declined by the customer")
+    with engine.connect() as cx:
+        row = cx.execute(select(orders).where(orders.c.id == o["order_id"])).one()
+    assert not expired(row) and public(row)["status"] == "DECLINED"     # can still be bought today
+    with engine.begin() as cx:                                           # 25 h later: the offer expired
+        cx.execute(update(orders).where(orders.c.id == o["order_id"]).values(created_at=datetime.now(UTC) - timedelta(hours=25)))
+    with engine.connect() as cx:
+        row = cx.execute(select(orders).where(orders.c.id == o["order_id"])).one()
+    assert expired(row) and public(row)["status"] == "EXPIRED"
+    # an overdue bill blocks new purchases (credit control)
+    now = datetime.now(UTC)
+    with engine.begin() as cx:
+        cx.execute(insert(bills).values(id=f"{SUB}:2026-01", subscriber_id=SUB, cycle="2026-01", plan_code="DE-FLEX",
+                                        currency="EUR", subtotal=1000, vat=190, total=1190, amount_paid=0, status="ISSUED",
+                                        issued_at=now - timedelta(days=40), due_date=now - timedelta(days=26), payload="{}"))
+    with pytest.raises(OrderError) as e:
+        propose_addon(engine, SUB, "DE-DATA-5GB", "app")
+    assert e.value.status == 402 and "overdue" in e.value.message
+
+
+def test_assistant_payment_tool_prepares_the_oldest_unpaid_bill(world):
+    from datetime import UTC, datetime, timedelta
+
+    from core_api.agent.tools import ToolContext, t_propose_payment
+    from core_api.db import bills
+    from sqlalchemy import insert
+    from telco_common.usage_state import UsageState
+
+    engine, r = world
+    now = datetime.now(UTC)
+    with engine.begin() as cx:
+        for cyc, due in (("2026-08", now - timedelta(days=5)), ("2026-09", now + timedelta(days=9))):
+            cx.execute(insert(bills).values(id=f"{SUB}:{cyc}", subscriber_id=SUB, cycle=cyc, plan_code="DE-FLEX", currency="EUR",
+                                            subtotal=1000, vat=190, total=1190, amount_paid=0, status="ISSUED",
+                                            issued_at=due - timedelta(days=14), due_date=due, payload="{}"))
+    ctx = ToolContext(SUB, "DE", engine, UsageState(r, 4), None)
+    out = t_propose_payment({"purpose": "bill"}, ctx)
+    assert out["proposal"] and out["payment"] and out["bill_id"] == f"{SUB}:2026-08" and out["overdue"] is True
+    assert out["amount"].startswith("11.90") or "11.90" in out["amount"]

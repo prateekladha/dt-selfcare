@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import { ArrowLeftRight, CheckCircle2, Clock, Loader2, PackagePlus, XCircle } from "lucide-react";
+import { ArrowLeftRight, CheckCircle2, Clock, CreditCard, Loader2, PackagePlus, XCircle } from "lucide-react";
+import { PayButton } from "./PayButton";
 import { useRevalidator } from "react-router";
+import { toast } from "./Toast";
 import { Button } from "./ui";
 
 type Order = { order_id: string; status: string; detail?: string; workflow?: { stage: string } | null };
@@ -30,7 +32,10 @@ export function OrderCard({ orderId, title, extra, price, kind = "ADDON" }:
   async function act(op: "approve" | "decline") {
     setBusy(true);
     const r = await fetch(`/api/orders?id=${orderId}&op=${op}`, { method: "POST" });
-    if (r.ok) setOrder(await r.json());
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) setOrder(j);
+    else if (r.status === 410) setOrder((o) => ({ ...o, status: "EXPIRED" }));
+    else toast(j.detail ?? "That didn't work. Please try again.", "bad");
     setBusy(false);
   }
 
@@ -59,7 +64,13 @@ export function OrderCard({ orderId, title, extra, price, kind = "ADDON" }:
         )}
         {order.status === "COMPLETED" && <p className="flex items-center gap-2 text-[13.5px] font-medium text-[var(--good)]"><CheckCircle2 size={16} /> {order.detail}</p>}
         {order.status === "FAILED" && <p className="flex items-center gap-2 text-[13.5px] font-medium text-[var(--bad)]"><XCircle size={16} /> {order.detail}</p>}
-        {order.status === "DECLINED" && <p className="text-[13.5px] text-[var(--ink-3)]">{plan ? "Tariff unchanged." : "Not bought."}</p>}
+        {order.status === "DECLINED" && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <p className="text-[13.5px] text-[var(--ink-3)]">{plan ? "Tariff unchanged." : "Not bought."} Changed your mind? This offer is valid for 24 hours.</p>
+            <Button size="sm" variant="secondary" onClick={() => act("approve")} disabled={busy}>{plan ? "Change tariff now" : "Buy it now"}</Button>
+          </div>
+        )}
+        {order.status === "EXPIRED" && <p className="text-[13.5px] text-[var(--ink-3)]">This offer has expired. Ask again for a fresh one with today's price.</p>}
       </div>
     </div>
   );
@@ -68,13 +79,11 @@ export function OrderCard({ orderId, title, extra, price, kind = "ADDON" }:
 /** "Add data" from the app: proposes the country's add-on, then shows the approval card. */
 export function AddDataButton({ country }: { country: string }) {
   const [proposal, setProposal] = useState<null | { order_id: string; preview: { name: string; data_mb: number; price: number; currency: string } }>(null);
-  const [err, setErr] = useState("");
   async function propose() {
-    setErr("");
     const r = await fetch("/api/orders", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ addon_code: country === "PL" ? "PL-DATA-5GB" : "DE-DATA-5GB" }) });
     const j = await r.json();
-    if (r.ok) setProposal(j); else setErr(j.detail ?? "Couldn't prepare the add-on");
+    if (r.ok) setProposal(j); else toast(j.detail ?? "Couldn't prepare the add-on", "bad");
   }
   if (proposal) {
     const p = proposal.preview;
@@ -82,9 +91,24 @@ export function AddDataButton({ country }: { country: string }) {
     return <OrderCard orderId={proposal.order_id} title={p.name} extra={`+${(p.data_mb / 1000).toFixed(0)} GB`} price={`${price} + VAT`} />;
   }
   return (
-    <div>
-      <Button size="sm" variant="secondary" onClick={propose}><PackagePlus size={15} /> Add data</Button>
-      {err && <p className="mt-1 text-xs text-[var(--bad)]">{err}</p>}
+    <Button size="sm" variant="secondary" onClick={propose}><PackagePlus size={15} /> Add data</Button>
+  );
+}
+
+
+/** Payment prepared by the assistant: the customer pays in the secure checkout (paying IS the approval). */
+export function PaymentCard({ purpose, billId, cycleLabel, amount, overdue, name, contact, email }:
+  { purpose: "BILL" | "ADVANCE"; billId: string | null; cycleLabel: string; amount: string; overdue: boolean; name: string; contact?: string; email?: string }) {
+  return (
+    <div className="rounded-[var(--radius)] border border-[var(--line-strong)] bg-[var(--surface)] p-4">
+      <div className="flex items-start gap-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--brand-bg)] text-[var(--brand-ink)]"><CreditCard size={18} /></span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[15px] font-semibold">{purpose === "BILL" ? `Pay your ${cycleLabel} bill` : `Pay ${cycleLabel} usage in advance`}</p>
+          <p className="mt-0.5 text-[13.5px] text-[var(--ink-3)]">{amount} incl. VAT{overdue ? " · overdue" : ""} · paid securely in the checkout</p>
+        </div>
+      </div>
+      <div className="mt-4"><PayButton purpose={purpose} billId={billId} label={`Pay ${amount}`} name={name} contact={contact} email={email} /></div>
     </div>
   );
 }

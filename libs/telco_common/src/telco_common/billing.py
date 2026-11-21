@@ -239,6 +239,52 @@ def rate(subscriber_id: str, cycle: str, plan: Plan, counters: dict[str, int],
     )
 
 
+def rate_segments(subscriber_id: str, cycle: str, segments: list[tuple[Plan, int]],
+                  seg_counters: list[dict[str, int]], adjustments: list[BillLine] | None = None) -> Bill:
+    """Exact pro-rating when per-day usage is known: each tariff segment is rated on ITS OWN tariff with
+    its own pro-rated fee and allowances, on the usage of its own days (late CDRs included, by event day).
+    Add-ons count in the segment they were bought in."""
+    total_days = sum(d for _, d in segments)
+    lines: list[BillLine] = []
+    day = 1
+    many = len(segments) > 1
+    for i, ((p, days), counters) in enumerate(zip(segments, seg_counters, strict=True)):
+        def share(v: int | None, days: int = days) -> int | None:
+            return None if v is None else int((Decimal(v) * days / total_days).quantize(Decimal(1), ROUND_HALF_UP))
+        scaled = replace(p, monthly_fee=share(p.monthly_fee), data_mb=share(p.data_mb),
+                         voice_min=share(p.voice_min), sms=share(p.sms))
+        seg_bill = rate(subscriber_id, cycle, scaled, counters)
+        span = f"{_day_label(cycle, day)}–{_day_label(cycle, day + days - 1)}"
+        for ln in seg_bill.lines:
+            if ln.code == "PLAN_FEE":
+                ln = ln.model_copy(update={"code": f"PLAN_FEE:{i + 1}:{p.code}", "quantity": days, "unit": "days",
+                                           "label": f"{p.name} monthly fee, {days} of {total_days} days ({span})"})
+            elif many:
+                ln = ln.model_copy(update={"code": f"S{i + 1}:{ln.code}", "label": f"{ln.label} ({p.name}, {span})"})
+            lines.append(ln)
+        day += days
+    lines.extend(adjustments or [])
+    combined: dict[str, int] = {}
+    for c in seg_counters:
+        for k, v in c.items():
+            combined[k] = combined.get(k, 0) + v
+    eff, _ = prorated_plan(segments)
+    usage = rate(subscriber_id, cycle, eff, combined).usage   # cycle-level usage view, blended allowance
+    last = segments[-1][0]
+    cfg = COUNTRIES[last.country]
+    subtotal = sum(x.amount for x in lines)
+    vat = _money(Decimal(subtotal) * cfg.vat_rate)
+    return Bill(subscriber_id=subscriber_id, cycle=cycle, plan_code=last.code, country=last.country,
+                currency=cfg.currency, lines=lines, subtotal=subtotal, vat_rate=str(cfg.vat_rate), vat=vat,
+                total=subtotal + vat, usage=usage)
+
+
+def _day_label(cycle: str, day: int) -> str:
+    import calendar
+
+    return f"{day} {calendar.month_abbr[int(cycle.split('-')[1])]}"
+
+
 def data_usage_pct(plan: Plan, counters: dict[str, int]) -> float:
     plain, zoned, addons = split_counters(counters)
     used = plain.get(UsageType.DATA, 0) + zoned.get(UsageType.ROAMING_DATA, {}).get(ROAM_LIKE_AT_HOME_ZONE, 0)

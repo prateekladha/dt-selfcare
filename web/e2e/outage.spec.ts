@@ -33,17 +33,21 @@ test("@outage payments down: Pay is replaced by a clear notice; core-api down: l
   test.skip(test.info().project.name !== "desktop", "one run is enough");
   test.setTimeout(600_000);
   await signIn(page);
-  for (let i = 0; i < 6; i++) await page.reload();   // both BFF pods remember this customer's snapshot
+  // every BFF pod should have served (and remembered) this customer once: requests are spread over pods
+  const webPods = Number(kubectl("get deploy web -o jsonpath={.status.readyReplicas}").trim() || "2");
+  for (let i = 0; i < webPods * 5; i++) await page.reload();
   await expect(page.getByRole("button", { name: /Pay (now|in advance)/ }).first()).toBeVisible();
   await shot(page, "1-normal");
 
   // ---- payments-service down ----
   scale("payments-service", 0);
   kubectl("wait --for=delete pod -l app=payments-service --timeout=120s");
-  // a customer retrying Pay: failures across both BFF pods trip each pod's breaker
+  // Pay attempts during the outage. Each BFF pod has its own breaker (opens after >= 5 failures in 10 s),
+  // and requests are spread over all web pods, so send enough to trip every pod, as real traffic would.
+  const pods = Number(kubectl("get deploy web -o jsonpath={.status.readyReplicas}").trim() || "2");
   const codes: number[] = [];
   const origin = new URL(page.url()).origin;
-  for (let i = 0; i < 16; i++) {
+  for (let i = 0; i < Math.max(30, pods * 12); i++) {
     codes.push((await page.request.post("/api/pay", { data: { purpose: "ADVANCE" }, headers: { Origin: origin },
                                                       failOnStatusCode: false })).status());
   }

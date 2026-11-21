@@ -15,8 +15,8 @@ async function shot(page: Page, name: string) {
 
 // Each project uses its own demo line so the login brute-force limiter (10 / 15 min per number)
 // never trips across desktop + mobile + retries.
-const JOURNEY_USER = () => (test.info().project.name === "mobile" ? "Lena Fischer" : "Jonas Weber");
-const WRONG_PW_USER = () => (test.info().project.name === "mobile" ? "Mia Schulz" : "Paul Becker");
+const JOURNEY_USER = () => ({ mobile: "Lena Fischer", tablet: "Paul Becker" } as Record<string, string>)[test.info().project.name] ?? "Jonas Weber";
+const WRONG_PW_USER = () => ({ mobile: "Mia Schulz", tablet: "Mia Schulz" } as Record<string, string>)[test.info().project.name] ?? "Paul Becker";
 
 const NUMBERS: Record<string, string> = { "Jonas Weber": "+49 151 0000 0002", "Lena Fischer": "+49 151 0000 0001",
   "Mia Schulz": "+49 151 0000 0003", "Paul Becker": "+49 151 0000 0004" };
@@ -51,6 +51,8 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   await expect(page.getByText("This month so far", { exact: true })).toBeVisible();
   await expect(page.getByText("Mobile data", { exact: true })).toBeVisible();
   await expect(page.getByRole("img", { name: /Bill totals/ })).toBeVisible();
+  await expect(page.getByText(/^Daily usage · /)).toBeVisible();
+  await expect(page.getByRole("img", { name: /Daily data usage/ }).or(page.getByText(/No data used in/)).first()).toBeVisible({ timeout: 20_000 });
   await expect(page.getByText(/Why your .* bill/)).toBeVisible();
   // fail the journey if login silently fell back to a rate-limit / error state
   await expect(page.getByRole("alert")).toHaveCount(0);
@@ -152,7 +154,11 @@ test("payment @payment: Razorpay checkout opens for the right order with the cus
   const res = await created;
   expect(res.status(), "our payments-service created a gateway order").toBeLessThan(300);
   const order = await res.json();
-  expect(order.currency ?? order.gateway?.currency ?? "EUR").toBe("EUR");
+  expect(order.currency, "the bill/ledger currency is the customer's own").toBe("EUR");
+  // Demo settlement: Razorpay test mode can't take non-INR (international) orders, so the gateway is
+  // charged the INR equivalent at a recorded rate.
+  expect(order.charged_currency).toBe("INR");
+  expect(order.charged_amount).toBe(Math.round(order.amount * Number(order.fx_rate)));
 
   const rzp = page.frameLocator("iframe.razorpay-checkout-frame");
   await expect(rzp.locator("body")).toBeVisible({ timeout: 30_000 });

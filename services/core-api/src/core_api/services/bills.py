@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
-from telco_common.billing import Bill, BillLine, LineCategory, rate
+from telco_common.billing import Bill, BillLine, LineCategory, rate, rate_segments
 from telco_common.catalog import get_plan
 from telco_common.models import cycle_of
 from telco_common.usage_state import UsageState
@@ -39,6 +39,25 @@ def previous_cycle(cycle: str, n: int = 1) -> str:
 
 def row_to_bill(row) -> Bill:
     return Bill.model_validate_json(row.payload)
+
+
+def rate_cycle(state: UsageState, sub_id: str, cycle: str, plan_code: str, counters: dict[str, int],
+               seg, adjustments: list[BillLine] | None = None) -> Bill:
+    """One rating path for the bill run and the live unbilled amount.
+    - no tariff change in the cycle: whole cycle on the tariff;
+    - change + per-day usage known: each segment rated on its own tariff and its own days (exact);
+    - change but no per-day detail (cycles recorded before per-day counters): blended allowances."""
+    plan = get_plan(plan_code)
+    if not seg:
+        return rate(sub_id, cycle, plan, counters, adjustments)
+    ranges, day = [], 1
+    for _, days in seg:
+        ranges.append((day, day + days - 1))
+        day += days
+    split = state.split_by_days(sub_id, cycle, ranges)
+    if split is None:
+        return rate(sub_id, cycle, plan, counters, adjustments, segments=seg)
+    return rate_segments(sub_id, cycle, seg, split, adjustments)
 
 
 def close_cycle(engine: Engine, state: UsageState, cycle: str, settle_before: str | None = None,
@@ -76,7 +95,8 @@ def close_cycle(engine: Engine, state: UsageState, cycle: str, settle_before: st
                             label=f"Late usage from {datetime(y, m, 1).strftime('%B %Y')} (CDRs received after that bill)",
                             amount=delta))
                     late_counters = now_prev
-            bill = rate(sub_id, cycle, plan, counters, adjustments, segments=segments(engine, sub_id, cycle, plan_code))
+            bill = rate_cycle(state, sub_id, cycle, plan_code, counters, segments(engine, sub_id, cycle, plan_code),
+                              adjustments)
             advance = cx.execute(select(func.coalesce(func.sum(payments.c.amount), 0)).where(
                 payments.c.subscriber_id == sub_id, payments.c.purpose == "ADVANCE", payments.c.status == "PAID",
                 payments.c.created_at >= start, payments.c.created_at < end)).scalar_one()
@@ -133,7 +153,7 @@ def unbilled(state: UsageState, subscriber_id: str, plan_code: str, now: datetim
     cycle = cycle_of(now or datetime.now(UTC))
     if seg is _LOOKUP:
         seg = segments(engine or get_engine(), subscriber_id, cycle, plan_code)
-    return rate(subscriber_id, cycle, get_plan(plan_code), state.counters(subscriber_id, cycle), segments=seg)
+    return rate_cycle(state, subscriber_id, cycle, plan_code, state.counters(subscriber_id, cycle), seg)
 
 
 def cli() -> None:

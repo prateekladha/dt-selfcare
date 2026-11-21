@@ -3,6 +3,7 @@ import { Check, Loader2 } from "lucide-react";
 import { api, PRIVATE } from "~/lib/api.server";
 import { Card, Pill } from "~/components/ui";
 import { OrderCard } from "~/components/OrderCard";
+import { toast } from "~/components/Toast";
 import { money } from "~/lib/format";
 import type { Route } from "./+types/plan";
 
@@ -23,14 +24,13 @@ export default function ChangePlan({ loaderData }: Route.ComponentProps) {
   const { current, currency, plans } = loaderData;
   const [busy, setBusy] = useState<string | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
-  const [err, setErr] = useState("");
 
   async function choose(code: string) {
-    setBusy(code); setErr("");
+    setBusy(code);
     const r = await fetch("/api/orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ plan_code: code }) });
     const j = await r.json();
     setBusy(null);
-    if (r.ok) setProposal(j); else setErr(j.detail ?? "Couldn't prepare the tariff change");
+    if (r.ok) setProposal(j); else toast(j.detail ?? "Couldn't prepare the tariff change", "bad");
   }
 
   return (
@@ -45,7 +45,6 @@ export default function ChangePlan({ loaderData }: Route.ComponentProps) {
                    extra={`Data ${proposal.preview.old_data} → ${proposal.preview.data}`}
                    price={`${money(proposal.preview.monthly_fee, proposal.preview.currency)} / month + VAT (this month ${money(proposal.preview.this_month_fee, proposal.preview.currency)}: ${proposal.preview.days_old} days old tariff, ${proposal.preview.days_new} days new)`} />
       )}
-      {err && <p className="text-sm font-medium text-[var(--bad)]">{err}</p>}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {plans.map((p) => {

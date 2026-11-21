@@ -394,3 +394,16 @@ def test_home_read_model_cached_and_invalidated_by_events(env):
     after = client.get("/v1/me/home", headers=h)
     assert after.headers["x-home-cache"] == "miss" and after.json()["outstanding"]["bill_id"] is None
     assert client.get("/v1/me/bills/latest/explanation?ai=false", headers=h).json()["bill_id"] == f"{SUB}:2026-10"
+
+
+def test_daily_usage_endpoint_adds_up_to_totals(env):
+    client, _engine, state, _ = env
+    now = datetime.now(UTC)
+    add_usage(state, SUB, now, [(UsageType.DATA, None, 1_200 * MB), (UsageType.ROAMING_DATA, "Z2", 300 * MB)])
+    h = login(client)
+    j = client.get("/v1/me/usage/daily", headers=h).json()
+    assert j["current"] and j["through_day"] == now.day and len(j["days"]) == now.day
+    today = j["days"][-1]
+    assert today["data_mb"] >= 1_500 and today["roaming_mb"] >= 300
+    assert j["totals"]["data_mb"] == sum(d["data_mb"] for d in j["days"])
+    assert client.get("/v1/me/usage/daily?cycle=2999-01", headers=h).status_code == 422
