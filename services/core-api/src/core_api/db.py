@@ -176,6 +176,34 @@ agent_traces = Table(
     Column("created_at", DateTime(timezone=True), default=utcnow, nullable=False),
 )
 
+# ---- write actions: orders (system of record) + the legacy BSS emulator's own table ----
+orders = Table(
+    "orders", metadata,
+    Column("id", String(36), primary_key=True),               # also the Temporal workflow id (idempotent start)
+    Column("subscriber_id", String(32), nullable=False),
+    Column("kind", String(24), nullable=False),              # ADDON
+    Column("addon_code", String(32)),
+    Column("price", BigInteger, nullable=False),
+    Column("currency", String(3), nullable=False),
+    Column("status", String(16), nullable=False),            # PROPOSED APPROVED SUBMITTED COMPLETED FAILED DECLINED
+    Column("bss_order_id", String(40)),
+    Column("detail", String(500)),
+    Column("source", String(16), nullable=False),            # app | assistant
+    Column("created_at", DateTime(timezone=True), default=utcnow, nullable=False),
+    Column("updated_at", DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False),
+)
+Index("ix_orders_sub", orders.c.subscriber_id, orders.c.created_at)
+
+bss_orders = Table(  # owned by the simulated legacy BSS (stands in for a country's order system)
+    "bss_orders", metadata,
+    Column("id", String(40), primary_key=True),
+    Column("order_id", String(36), nullable=False, unique=True),
+    Column("status", String(16), nullable=False),            # SUBMITTED CONFIRMED REJECTED
+    Column("reason", String(200)),
+    Column("created_at", DateTime(timezone=True), default=utcnow, nullable=False),
+    Column("processed_at", DateTime(timezone=True)),
+)
+
 schema_migrations = Table(
     "schema_migrations", metadata,
     Column("id", String(64), primary_key=True),

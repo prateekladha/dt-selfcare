@@ -22,7 +22,7 @@ RESULT_CHARS = 3500  # L4 item-level budget per tool result (~900 tokens)
 
 @dataclass
 class BrokerOutcome:
-    decision: str        # EXECUTE | DENY
+    decision: str        # EXECUTE | PROPOSE | DENY
     label: str | None    # S# source label for citation
     result: dict
     reason: str = ""
@@ -60,6 +60,7 @@ class Broker:
         self.source_meta[label] = {"label": label, "tool": tool, "args": args,
                                    "source_ref": result.get("source", tool) if isinstance(result, dict) else tool,
                                    "body": text}
-        log.append({"tool": tool, "args": args, "decision": "EXECUTE", "label": label,
+        decision = "PROPOSE" if TOOLS[tool].tier == "propose" else "EXECUTE"
+        log.append({"tool": tool, "args": args, "decision": decision, "label": label,
                     "ms": int((time.monotonic() - t0) * 1000), "error": result.get("error") if isinstance(result, dict) else None})
-        return BrokerOutcome("EXECUTE", label, {"source_label": label, **result} if isinstance(result, dict) else {"source_label": label})
+        return BrokerOutcome(decision, label, {"source_label": label, **result} if isinstance(result, dict) else {"source_label": label})

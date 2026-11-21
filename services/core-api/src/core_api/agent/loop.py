@@ -39,6 +39,8 @@ HOW TO WORK
 - Every tool result has a "source_label" like S1. After each factual sentence cite the labels it uses, e.g. "... [S2]".
 - Use only numbers that appear in the tool results you cite; keep amounts exactly as written.
 - If the tools don't have the answer, say what is missing.
+- If the customer wants more data, you may prepare an add-on with propose_addon; then tell them to approve it
+  below. Never say it is bought or active: it only happens after their approval.
 - For greetings or small talk, reply briefly and offer what you can help with (bills, usage, plan, payments). No tools needed.
 
 STYLE
@@ -51,6 +53,7 @@ STEP_LABELS = {
     "get_current_usage": "Checking your usage this month", "search_knowledge": "Searching your records and the tariff rules",
     "get_cdr_evidence": "Re-reading your raw usage records for {cycle}", "get_payments": "Checking your payments",
     "get_alerts": "Checking your alerts", "simulate_usage": "Pricing that scenario on your plan",
+    "propose_addon": "Preparing an add-on for your approval",
 }
 
 
@@ -117,7 +120,10 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                         args = {}
                     yield {"type": "step", "tool": c["name"], "label": _label(c["name"], args)}
                     out = await asyncio.to_thread(broker.request, c["name"], c["arguments"] or "{}", ctx)
-                    yield {"type": "step_done", "tool": c["name"], "ok": out.decision == "EXECUTE" and "error" not in out.result}
+                    yield {"type": "step_done", "tool": c["name"], "ok": out.decision != "DENY" and "error" not in out.result}
+                    if out.decision == "PROPOSE" and out.result.get("proposal"):  # human-in-the-loop approval card
+                        yield {"type": "proposal", "order_id": out.result["order_id"], "add_on": out.result["add_on"],
+                               "extra_data": out.result["extra_data"], "price": out.result["price"]}
                     messages.append({"role": "tool", "tool_call_id": c["id"], "content": json.dumps(out.result, default=str)[:3800]})
                 continue
             answer = res.text

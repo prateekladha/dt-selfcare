@@ -19,7 +19,7 @@ from telco_common.logging import configure_logging
 
 from .db import create_schema, get_engine
 from .deps import get_usage_state, get_valkey
-from .routers import admin, assistant, auth, demo, events, me, payments, simulate, system
+from .routers import admin, assistant, auth, demo, events, me, orders, payments, simulate, system
 from .seed import seed_demo
 
 log = configure_logging("core-api")
@@ -39,7 +39,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="core-api", version="0.1.0", lifespan=lifespan)
 app.mount("/metrics", make_asgi_app())
-for r in (auth.router, me.router, payments.router, events.router, admin.router, simulate.router, system.router, demo.router, assistant.router):
+for r in (auth.router, me.router, payments.router, events.router, admin.router, simulate.router, system.router, demo.router, assistant.router, orders.router):
     app.include_router(r)
 
 

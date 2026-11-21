@@ -4,6 +4,7 @@ import { ExplanationSection } from "~/components/Explain";
 import { Suspense } from "react";
 import { Await } from "react-router";
 import { PayButton } from "~/components/PayButton";
+import { AddDataButton } from "~/components/OrderCard";
 import { TrendChart } from "~/components/TrendChart";
 import { Card, CardHeader, LinkButton, Pill } from "~/components/ui";
 import { api, PRIVATE } from "~/lib/api.server";
@@ -116,6 +117,7 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
                 : projPct > 100 ? `At this pace you'll need ~${mbToGb(d.projectedMb)} GB by month end. Consider a data add-on.`
                 : `${Math.round(pct)}% used · on track for ~${mbToGb(d.projectedMb)} GB this month`}
             </p>
+            <div className="mt-4"><AddDataButton country={home.subscriber.country} /></div>
             <dl className="mt-auto grid grid-cols-3 gap-2 pt-5 text-center">
               {[[Phone, `${u.voice_min}`, "min"], [MessageSquare, `${u.sms}`, "SMS"], [Plane, `${roamingMb}`, "MB roaming"]].map(([Icon, v, l]) => {
                 const I = Icon as typeof Phone;

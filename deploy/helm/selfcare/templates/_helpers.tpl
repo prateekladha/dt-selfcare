@@ -59,6 +59,10 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 - name: APP_LLM_GATEWAY_KEY
   valueFrom: { secretKeyRef: { name: selfcare-secrets, key: llm-gateway-key } }
 {{- end }}
+- { name: TEMPORAL_ADDRESS, value: "temporal:7233" }
+- { name: APP_COLLECTOR_URL, value: "http://usage-collector:8080" }
+- name: APP_SOURCE_TOKEN
+  valueFrom: { secretKeyRef: { name: selfcare-secrets, key: source-token } }
 - name: APP_DEEPSEEK_API_KEY
   valueFrom: { secretKeyRef: { name: selfcare-deepseek-api-key, key: value, optional: true } }
 - name: APP_MISTRAL_API_KEY

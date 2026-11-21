@@ -77,6 +77,10 @@ web:
   hpa: { min: 2, max: 6, cpu: 70 }
   resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { memory: 384Mi } }
 
+temporal:
+  enabled: true
+  image: temporalio/temporal:1.10.0
+
 llmGateway:
   enabled: true
   image: ghcr.io/berriai/litellm:v1.108.2
