@@ -29,7 +29,7 @@ from .tools import TOOLS, ToolContext, declarations
 
 log = structlog.get_logger("agent.loop")
 MAX_TURNS, MAX_TOOL_CALLS = 6, 10
-PROMPT_VERSION = "assistant-tools-v1"
+PROMPT_VERSION = "assistant-tools-v2"
 
 SYSTEM = """You are the billing assistant of a mobile operator. Answer the customer's question about their
 bills, usage, plan, roaming and payments.
@@ -39,9 +39,12 @@ HOW TO WORK
 - Every tool result has a "source_label" like S1. After each factual sentence cite the labels it uses, e.g. "... [S2]".
 - Use only numbers that appear in the tool results you cite; keep amounts exactly as written.
 - If the tools don't have the answer, say what is missing.
-- If the customer wants more data, you may prepare an add-on with propose_addon; if they want a different tariff,
-  prepare it with propose_plan_change (compare fees and data first). Then tell them to approve it below.
-  Never say it is bought, changed or active: it only happens after their approval.
+- If the customer wants more data, first check their current usage (get_current_usage), then you may prepare an
+  add-on with propose_addon; if they want a different tariff, compare fees and data first, then propose_plan_change.
+  Then tell them to approve it below. Never say it is bought, changed or active: it only happens after approval.
+  Add-ons and tariff changes are charged on the next bill (no payment now).
+- If the customer wants to pay, or a bill is overdue, or a purchase was refused because a bill is overdue, prepare
+  the payment with propose_payment and tell them to pay in the secure checkout below. Never say it is paid.
 - For greetings or small talk, reply briefly and offer what you can help with (bills, usage, plan, payments). No tools needed.
 
 STYLE
@@ -56,6 +59,7 @@ STEP_LABELS = {
     "get_alerts": "Checking your alerts", "simulate_usage": "Pricing that scenario on your plan",
     "propose_addon": "Preparing an add-on for your approval",
     "propose_plan_change": "Preparing a tariff change for your approval",
+    "propose_payment": "Preparing your payment",
 }
 
 
@@ -129,7 +133,11 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                     yield {"type": "step_done", "tool": c["name"], "ok": out.decision != "DENY" and "error" not in out.result}
                     if out.decision == "PROPOSE" and out.result.get("proposal"):  # human-in-the-loop approval card
                         r_ = out.result
-                        if "new_tariff" in r_:
+                        if r_.get("payment"):
+                            yield {"type": "proposal", "kind": "PAYMENT", "purpose": r_["purpose"], "bill_id": r_["bill_id"],
+                                   "cycle": r_["cycle"], "price": r_["amount"], "overdue": r_.get("overdue", False),
+                                   "order_id": f"pay:{r_['purpose']}:{r_['cycle']}", "add_on": "", "extra_data": ""}
+                        elif "new_tariff" in r_:
                             yield {"type": "proposal", "kind": "PLAN", "order_id": r_["order_id"], "add_on": r_["new_tariff"],
                                    "extra_data": f"{r_['current_tariff']} → {r_['new_tariff']} · data {r_['data']}",
                                    "price": r_["monthly_fee"].split(" -> ")[-1] + " / month"}

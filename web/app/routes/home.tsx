@@ -1,4 +1,4 @@
-import { ArrowRight, CalendarClock, CheckCircle2, Download, Gauge, MessageSquare, Phone, Plane, Receipt, Sparkles, Wallet } from "lucide-react";
+import { ArrowRight, BarChart3, CalendarClock, CheckCircle2, Download, Gauge, MessageSquare, Phone, Plane, Receipt, Sparkles, Wallet } from "lucide-react";
 import { Link } from "react-router";
 import { ExplanationSection } from "~/components/Explain";
 import { Suspense } from "react";
@@ -6,6 +6,7 @@ import { Await } from "react-router";
 import { PayButton } from "~/components/PayButton";
 import { AddDataButton } from "~/components/OrderCard";
 import { TrendChart } from "~/components/TrendChart";
+import { DailyUsageChart, type DailyUsage } from "~/components/DailyUsageChart";
 import { Card, CardHeader, LinkButton, Pill } from "~/components/ui";
 import { api, PRIVATE } from "~/lib/api.server";
 import { cycleLabel, dateLabel, mbToGb, money } from "~/lib/format";
@@ -21,11 +22,12 @@ export async function loader({ request }: Route.LoaderArgs) {
   const lang = new URL(request.url).searchParams.get("lang") ?? "en";
   // one call, not list-then-fetch; the LLM explanation streams in after the page renders (cached per bill)
   const explanation = api<ExplanationResponse>(request, `/v1/me/bills/latest/explanation?lang=${lang}`);
-  return { explanation, lang };
+  const daily = api<DailyUsage>(request, "/v1/me/usage/daily");   // streamed: never blocks the page
+  return { explanation, daily, lang };
 }
 
 export default function Overview({ loaderData }: Route.ComponentProps) {
-  const { explanation, lang } = loaderData;
+  const { explanation, daily, lang } = loaderData;
   const last = useSnapshot().home.last_bill?.cycle ?? null;
   const { home, d } = useSnapshot();
   const loc = home.subscriber.locale;
@@ -63,7 +65,7 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
         </Suspense>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
         {/* Amount due: the primary job of the page */}
         <Card className="flex flex-col">
           <CardHeader icon={<Wallet size={18} />} title="Amount due"
@@ -126,6 +128,17 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
           </div>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader icon={<BarChart3 size={18} />} title={`Daily usage · ${cycleLabel(u.cycle, loc)}`} subtitle="Every day of the month, from your network usage records" />
+        <div className="pb-4 pt-3">
+          <Suspense fallback={<div className="mx-6 h-[220px] animate-pulse rounded-lg bg-[var(--chip)]" />}>
+            <Await resolve={daily} errorElement={<p className="px-6 pb-4 text-sm text-[var(--ink-3)]">Daily usage isn't available right now.</p>}>
+              {(du) => <DailyUsageChart usage={du} monthLabel={cycleLabel(u.cycle, loc)} />}
+            </Await>
+          </Suspense>
+        </div>
+      </Card>
 
       <Card>
         <CardHeader title="Your bills over 12 months" subtitle="Tap a month to see its bill"

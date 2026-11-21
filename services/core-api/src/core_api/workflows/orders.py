@@ -31,13 +31,43 @@ def _event(cx, row) -> None:
 
 
 def public(row) -> dict:
+    status = "EXPIRED" if expired(row) else row.status
     return {"order_id": row.id, "kind": row.kind, "addon_code": row.addon_code, "offering": row.addon_code, "price": row.price,
-            "currency": row.currency, "status": row.status, "detail": row.detail, "source": row.source,
+            "currency": row.currency, "status": status, "detail": row.detail, "source": row.source,
             "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat()}
+
+
+OFFER_TTL_H = 24  # a proposal (and a declined one the customer may still accept) is valid for 24 h
+
+
+def overdue_bill(engine: Engine, subscriber_id: str):
+    """Credit control: an issued bill past its due date and not fully paid blocks new purchases."""
+    from datetime import UTC, datetime
+
+    from ..db import bills
+
+    with engine.connect() as cx:
+        return cx.execute(select(bills).where(bills.c.subscriber_id == subscriber_id, bills.c.status != "PAID",
+                                              bills.c.due_date < datetime.now(UTC), bills.c.total > bills.c.amount_paid)
+                          .order_by(bills.c.cycle)).first()
+
+
+def _credit_check(engine: Engine, subscriber_id: str) -> None:
+    b = overdue_bill(engine, subscriber_id)
+    if b is not None:
+        raise OrderError(402, f"Your {b.cycle} bill is overdue. Please pay it first; then you can buy add-ons or change tariff.")
+
+
+def expired(row) -> bool:
+    from datetime import UTC, datetime, timedelta
+
+    created = row.created_at if row.created_at.tzinfo else row.created_at.replace(tzinfo=UTC)
+    return row.status in ("PROPOSED", "DECLINED") and datetime.now(UTC) - created > timedelta(hours=OFFER_TTL_H)
 
 
 def propose_addon(engine: Engine, subscriber_id: str, addon_code: str, source: str) -> dict:
     """Creates a PROPOSED order with a preview. No side effect on the customer's plan until approved."""
+    _credit_check(engine, subscriber_id)
     with engine.connect() as cx:
         sub = cx.execute(select(subscribers).where(subscribers.c.id == subscriber_id)).one()
     plan = get_plan(sub.plan_code)
@@ -58,6 +88,7 @@ def propose_addon(engine: Engine, subscriber_id: str, addon_code: str, source: s
 
 def propose_plan_change(engine: Engine, subscriber_id: str, plan_code: str, source: str) -> dict:
     """PROPOSED tariff change with a side-by-side preview. Nothing changes until approved."""
+    _credit_check(engine, subscriber_id)
     with engine.connect() as cx:
         sub = cx.execute(select(subscribers).where(subscribers.c.id == subscriber_id)).one()
     cur_plan = get_plan(sub.plan_code)

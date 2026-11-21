@@ -1,4 +1,7 @@
-import { ArrowLeft, Download } from "lucide-react";
+import { ArrowLeft, BarChart3, Download } from "lucide-react";
+import { Suspense } from "react";
+import { Await } from "react-router";
+import { DailyUsageChart, type DailyUsage } from "~/components/DailyUsageChart";
 import { Link } from "react-router";
 import { DeltaPill, ExplanationSection } from "~/components/Explain";
 import { PayButton } from "~/components/PayButton";
@@ -25,11 +28,12 @@ export async function loader({ request, params }: Route.LoaderArgs) {
     cycle === "current" ? Promise.resolve(null) : api<BillDetail>(request, `/v1/me/bills/${cycle}`),
   ]);
   const narrative = api<ExplanationResponse>(request, `/v1/me/bills/${cycle}/explanation?lang=${lang}`);  // LLM, streamed
-  return { facts, narrative, bill, lang, cycle };
+  const daily = api<DailyUsage>(request, `/v1/me/usage/daily${cycle === "current" ? "" : `?cycle=${cycle}`}`);  // streamed
+  return { facts, narrative, daily, bill, lang, cycle };
 }
 
 export default function BillPage({ loaderData }: Route.ComponentProps) {
-  const { facts, narrative, bill, lang, cycle } = loaderData;
+  const { facts, narrative, daily, bill, lang, cycle } = loaderData;
   const { home } = useSnapshot();
   const loc = home.subscriber.locale;
   const isCurrent = cycle === "current";
@@ -52,15 +56,27 @@ export default function BillPage({ loaderData }: Route.ComponentProps) {
               <DeltaPill ex={ex} locale={loc} />
             </div>
           </div>
-          <div className="text-right">
+          {/* phones: amount + actions full width, left-aligned under the title; tablet/desktop: right column */}
+          <div className="w-full sm:w-auto sm:text-right">
             <p className="display tabular text-[44px] font-extrabold leading-none">{money(total, cur, loc)}</p>
             <p className="mt-1.5 text-[13px] text-[var(--ink-3)]">incl. {vatPct}% VAT</p>
-            <div className="mt-4 flex flex-wrap justify-end gap-2">
+            <div className="mt-4 flex flex-wrap gap-2 sm:justify-end">
               {bill && bill.outstanding > 0 && home.features.payments && <PayButton purpose="BILL" billId={bill.id} label={`Pay ${money(bill.outstanding, cur, loc)}`} name={home.subscriber.name} contact={`+${home.subscriber.id}`} email={home.subscriber.email} />}
               {isCurrent && home.features.payments && total > 0 && <PayButton purpose="ADVANCE" label="Pay in advance" name={home.subscriber.name} contact={`+${home.subscriber.id}`} email={home.subscriber.email} />}
               {bill && <LinkButton to={`/bills/${cycle}/pdf`} variant="secondary" download><Download size={16} /> PDF</LinkButton>}
             </div>
           </div>
+        </div>
+      </Card>
+
+      <Card>
+        <CardHeader icon={<BarChart3 size={18} />} title={`Daily usage · ${cycleLabel(isCurrent ? home.unbilled.cycle : cycle, loc)}`} subtitle="Every day of the month, from your network usage records" />
+        <div className="pb-4 pt-3">
+          <Suspense fallback={<div className="mx-6 h-[220px] animate-pulse rounded-lg bg-[var(--chip)]" />}>
+            <Await resolve={daily} errorElement={<p className="px-6 pb-4 text-sm text-[var(--ink-3)]">Daily usage isn't available right now.</p>}>
+              {(du) => <DailyUsageChart usage={du} monthLabel={cycleLabel(isCurrent ? home.unbilled.cycle : cycle, loc)} />}
+            </Await>
+          </Suspense>
         </div>
       </Card>
 
