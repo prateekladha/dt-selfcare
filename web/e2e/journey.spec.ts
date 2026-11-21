@@ -196,6 +196,16 @@ test("payment @payment: pay in advance in Razorpay test mode, settled exactly on
       }
       if (i === 5) await shot(page, "08-pay-3c-waiting");
     }
+    if (!clicked) {  // diagnostics: what is actually on screen (pages, frames, visible text, buttons)
+      for (const pg of page.context().pages()) {
+        console.log("PAGE", pg.url());
+        for (const fr of pg.frames()) {
+          const txt = await fr.locator("body").innerText({ timeout: 2000 }).catch(() => "");
+          const btns = await fr.locator("button, input[type=submit], a[role=button]").allInnerTexts().catch(() => []);
+          console.log("  FRAME", fr.url().slice(0, 120), "| text:", txt.replace(/\s+/g, " ").slice(0, 300), "| buttons:", btns.slice(0, 12).join(" / "));
+        }
+      }
+    }
     expect(clicked, "bank simulator Success button").toBe(true);
   }
   await page.waitForTimeout(3000);
