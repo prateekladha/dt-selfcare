@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import UTC, datetime
 
 import httpx
 
@@ -54,10 +55,16 @@ def main() -> None:
     pj = plans.json() if plans.status_code == 200 else {}
     target = next((x["code"] for x in pj.get("plans", []) if x["code"] != pj.get("current")), None)
     prop = c.post("/v1/me/orders/plan", headers=h, json={"plan_code": target}) if target else None
-    ok = prop is not None and prop.status_code == 201
-    if ok:  # leave the customer's tariff untouched: decline the proposal
+    # Credit control: an unpaid bill past its due date blocks orders (402) - both outcomes are correct
+    # behaviour, so assert the one this customer's account state calls for.
+    now = datetime.now(UTC).isoformat()
+    overdue = any(b["outstanding"] > 0 and b["due_date"] < now for b in c.get("/v1/me/bills", headers=h).json())
+    code = getattr(prop, "status_code", None)
+    ok = prop is not None and code == (402 if overdue else 201)
+    if code == 201:  # leave the customer's tariff untouched: decline the proposal
         c.post(f"/v1/me/orders/{prop.json()['order_id']}/decline", headers=h)
-    check("tariff change proposal (order-events)", ok, f"{getattr(prop, 'status_code', '-')} -> {target}")
+    check("tariff change proposal / credit control", ok,
+          f"{code} -> {target}" + (" (bill overdue: blocked)" if overdue else ""))
     tmf = httpx.get(f"{ADAPTER}/tmf-api/productOrderingManagement/v4/productOrder/DEB-NOTEXIST", timeout=10)
     check("order adapter (TMF622)", tmf.status_code == 404, str(tmf.status_code))
     sim = c.post("/v1/me/usage/simulate", data={"scenario": "us-trip-2-weeks"}, headers=h)

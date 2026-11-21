@@ -130,6 +130,14 @@ one trial request decides whether it closes. 4xx and 429 don't trip it.
 A circuit opens on observed failures, so the first few requests after an outage still fail (with a clear
 message) before the up-front degradation kicks in.
 
+## New deployments reach open tabs
+
+- **Version:** each web build has a hash (React Router's manifest version). The server sends it on every response as `X-App-Version` and serves it at `/version` (no-store).
+- **Detection:** an open tab compares it on every same-origin request, with a `/version` check every 60 s while visible and on focus.
+- **Action:** once the tab is outdated, the next click on any link or button does a full load of the new version (the link's target, or the same page for a button) instead of running old code. A toast confirms the update. A missing old code chunk also triggers a reload.
+- **Rolling deploys:** a tab never reloads towards a version it has already loaded, so it can't bounce between old and new pods during the rollout.
+- **Test:** `e2e/journey.spec.ts` ("new deployment") runs on every deploy.
+
 ## Bill day
 - The `bill-run` CronJob issues the bills (init container), then **`explain-batch`** runs: it warms every
   customer's home-screen cache and pre-generates the AI explanation at a fixed rate (`billDay.explainRps`).

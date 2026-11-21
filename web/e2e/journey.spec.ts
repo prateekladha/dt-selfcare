@@ -171,3 +171,20 @@ test("payment @payment: Razorpay checkout opens for the right order with the cus
   await expect(rzp.getByText(/Cards?/i).first()).toBeVisible({ timeout: 20_000 });
   await shot(page, "08-pay-2-methods");
 });
+
+// A tab left open across a deployment loads the new version on its next click. The new deployment
+// is simulated by answering the tab's version check with a different build hash.
+test("new deployment: an open tab loads the new version on the next click", async ({ page }) => {
+  test.skip(test.info().project.name !== "desktop", "one run is enough");
+  await signIn(page, "Jonas Weber");
+  await page.route("**/version", (r) => r.fulfill({ json: { version: "next-build" }, headers: { "Cache-Control": "no-store" } }));
+  const checked = page.waitForRequest((r) => r.url().endsWith("/version"));
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await checked;
+  await page.waitForTimeout(300);
+  const fullLoad = page.waitForEvent("load");  // a client-side navigation would not fire `load`
+  await page.getByRole("navigation", { name: "Main" }).first().getByRole("link", { name: "Bills" }).click();
+  await fullLoad;
+  await expect(page).toHaveURL(/\/bills$/);
+  await expect(page.getByText("You're on the latest version of the site.")).toBeVisible();
+});
