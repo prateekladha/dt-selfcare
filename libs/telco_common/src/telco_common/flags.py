@@ -21,6 +21,7 @@ DEFAULTS: dict[str, Any] = {
     "payment-settlement": {"currency": "native"},
     "usage-alert-thresholds": {"levels": [50, 80, 100]},
     "throttle-at-100": True,
+    "demo-accounts-panel": False,  # safe default: never expose account summaries pre-login
 }
 
 _initialised = False

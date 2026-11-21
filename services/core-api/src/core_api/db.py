@@ -21,6 +21,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    select,
 )
 from sqlalchemy.engine import Engine
 
@@ -147,11 +148,25 @@ schema_migrations = Table(
 )
 
 # Forward-only, idempotent migrations for tables that already exist (create_all never alters).
-MIGRATIONS: list[tuple[str, list[str]]] = [
+def _purge_backfill_notifications(cx) -> None:
+    """Notifications created for already-closed cycles during the history backfill (before the notifier
+    learned to skip closed cycles). Alert ids are '<subscriber>:<YYYY-MM>:<level>'."""
+    from sqlalchemy import delete
+
+    current = datetime.now(UTC).strftime("%Y-%m")
+    rows = cx.execute(select(notifications.c.id, notifications.c.alert_id)).all()
+    stale = [r.id for r in rows if r.alert_id.split(":")[1] < current]
+    if stale:
+        cx.execute(delete(notifications).where(notifications.c.id.in_(stale)))
+
+
+# Forward-only, idempotent migrations: SQL strings (Oracle-only DDL) or callables (portable data fixes).
+MIGRATIONS: list[tuple[str, list]] = [
     ("0002_payment_settlement_currency", [
         ("ALTER TABLE payments ADD (charged_amount NUMBER(19), charged_currency VARCHAR2(3 CHAR), "
         "fx_rate VARCHAR2(24 CHAR))"),
     ]),
+    ("0003_purge_backfill_notifications", [_purge_backfill_notifications]),
 ]
 
 
@@ -165,9 +180,11 @@ def create_schema(engine: Engine) -> None:
         for mid, statements in MIGRATIONS:
             if mid in done:
                 continue
-            if not fresh and engine.dialect.name == "oracle":
-                cols = {c["name"].lower() for c in inspect(cx).get_columns("payments")}
-                if "charged_amount" not in cols:
-                    for sql in statements:
-                        cx.exec_driver_sql(sql)
+            for step in statements:
+                if callable(step):
+                    step(cx)
+                elif not fresh and engine.dialect.name == "oracle":
+                    cols = {c["name"].lower() for c in inspect(cx).get_columns("payments")}
+                    if "charged_amount" not in cols:
+                        cx.exec_driver_sql(step)
             cx.execute(insert(schema_migrations).values(id=mid))

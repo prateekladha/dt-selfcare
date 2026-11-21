@@ -60,7 +60,7 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
                 {d.unread > 0 && <span className="absolute right-1.5 top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--brand)] px-1 text-[10px] font-bold text-white">{d.unread}</span>}
               </button>
               {menu === "bell" && (
-                <div className="absolute right-0 top-12 w-[360px] max-w-[calc(100vw-24px)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface)] shadow-[var(--shadow-lg)]">
+                <div className="fixed inset-x-3 top-[68px] z-50 overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--surface)] shadow-[var(--shadow-lg)] md:absolute md:inset-x-auto md:right-0 md:top-12 md:w-[380px]">
                   <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-bold">Notifications</p>
                   {home.notifications.length === 0 ? <p className="px-4 py-6 text-sm text-[var(--ink-3)]">You're all caught up.</p> : (
                     <ul className="max-h-[380px] divide-y divide-[var(--line)] overflow-auto">
@@ -80,7 +80,7 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
                 <span className="hidden text-sm font-semibold lg:inline">{home.subscriber.name.split(" ")[0]}</span>
               </button>
               {menu === "account" && (
-                <div className="absolute right-0 top-12 w-72 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-2 shadow-[var(--shadow-lg)]">
+                <div className="fixed inset-x-3 top-[68px] z-50 rounded-xl border md:absolute md:inset-x-auto md:right-0 md:top-12 md:w-72 border-[var(--line)] bg-[var(--surface)] p-2 shadow-[var(--shadow-lg)]">
                   <div className="flex items-center gap-3 px-3 py-3">
                     <Avatar name={home.subscriber.name} size={40} />
                     <div className="min-w-0"><p className="truncate font-bold">{home.subscriber.name}</p>
