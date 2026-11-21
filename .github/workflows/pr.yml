@@ -51,7 +51,7 @@ jobs:
           curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
           ./kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version 1.31.0 /tmp/rendered.yaml
       - uses: hashicorp/setup-terraform@v3
-        with: { terraform_version: "1.9.8" }
+        with: { terraform_version: "1.17.2" }   # same as local + the OCI backend state
       - name: terraform fmt + validate (no backend, no credentials)
         working-directory: deploy/terraform
         run: |
