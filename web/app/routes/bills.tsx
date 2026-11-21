@@ -16,7 +16,28 @@ export default function Bills() {
         <h1 className="display text-[34px] font-extrabold">Bills</h1>
         <p className="mt-1 text-[15px] text-[var(--ink-3)]">Your last {bills.length} bills. Open one to see the breakdown and why it changed.</p>
       </div>
-      <Card className="overflow-hidden">
+      {/* phones: stacked list */}
+      <Card className="overflow-hidden sm:hidden">
+        <ul className="divide-y divide-[var(--line)]">
+          {bills.map((b) => {
+            const overdue = b.outstanding > 0 && new Date(b.due_date) < new Date(home.as_of);
+            return (
+              <li key={b.cycle} className="flex items-center gap-3 px-4 py-3.5">
+                <Link to={`/bills/${b.cycle}`} className="min-w-0 flex-1">
+                  <p className="font-semibold">{cycleLabel(b.cycle, loc)}</p>
+                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <span className="tabular font-bold">{money(b.total, b.currency, loc)}</span>
+                    {b.outstanding > 0 ? <Pill tone={overdue ? "bad" : "warn"}>{overdue ? "Overdue" : `Due ${dateLabel(b.due_date, loc)}`}</Pill> : <Pill tone="good">Paid</Pill>}
+                  </div>
+                </Link>
+                <a href={`/bills/${b.cycle}/pdf`} download aria-label={`Download ${cycleLabel(b.cycle, loc)} PDF`} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-[var(--ink-3)] hover:bg-[var(--chip)]"><Download size={18} /></a>
+              </li>
+            );
+          })}
+        </ul>
+      </Card>
+      {/* wider screens: table */}
+      <Card className="hidden overflow-hidden sm:block">
         <table className="w-full text-left">
           <thead className="border-b border-[var(--line)] bg-[var(--surface-2)] text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)]">
             <tr><th className="px-6 py-3">Month</th><th className="hidden px-6 py-3 sm:table-cell">Issued</th><th className="px-6 py-3 text-right">Amount</th><th className="px-6 py-3">Status</th><th className="w-12 px-4 py-3"><span className="sr-only">Download</span></th></tr>
