@@ -120,23 +120,26 @@ test("payment: pay in advance with UPI in Razorpay test mode, settled exactly on
   await page.waitForTimeout(1500);
   await shot(page, "08-pay-1-checkout");
 
-  const contact = rzp.locator('input[name="contact"], input[type="tel"]').first();
-  if (await contact.isVisible().catch(() => false)) {
-    await contact.fill("9999999999");
-    const email = rzp.locator('input[name="email"], input[type="email"]').first();
-    if (await email.isVisible().catch(() => false)) await email.fill("reviewer@example.com");
-    await rzp.getByRole("button", { name: /continue|proceed/i }).first().click();
+  // Razorpay asks for a contact number first (test mode accepts any valid Indian number).
+  const mobile = rzp.getByPlaceholder(/mobile number/i);
+  if (await mobile.isVisible({ timeout: 8_000 }).catch(() => false)) {
+    await mobile.fill("9999999999");
+    await rzp.getByRole("button", { name: /^continue$/i }).last().click();
+    await page.waitForTimeout(1500);
   }
-  await rzp.getByText(/^UPI/).first().click({ timeout: 20_000 });
-  await page.waitForTimeout(800);
-  const vpa = rzp.locator('input[name="vpa"], input[placeholder*="@"], input[placeholder*="UPI" i]').first();
+  await shot(page, "08-pay-2-methods");
+  await rzp.getByText(/^UPI/i).first().click({ timeout: 20_000 });
+  await page.waitForTimeout(1500);
+  await shot(page, "08-pay-3-upi");
+  const vpa = rzp.locator('input[name="vpa"]').or(rzp.getByPlaceholder(/@|upi id/i)).first();
   await vpa.fill("success@razorpay", { timeout: 20_000 });
-  await shot(page, "08-pay-2-upi");
-  await rzp.getByRole("button", { name: /verify|pay/i }).last().click();
+  await rzp.getByRole("button", { name: /verify|pay now|^pay/i }).last().click();
+  await page.waitForTimeout(3000);
+  await shot(page, "08-pay-4-submitted");
 
   // Our app confirms server-side (signature + capture check) and shows the result.
   await expect(page.getByText(/Payment received|being confirmed/)).toBeVisible({ timeout: 90_000 });
-  await shot(page, "08-pay-3-done");
+  await shot(page, "08-pay-5-done");
   const sys = await (await page.request.get("/system.data")).text();
   expect(sys).toContain("PAID");
 });
