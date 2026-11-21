@@ -14,7 +14,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from sqlalchemy import insert, select, update
 from sqlalchemy.engine import Engine
 
-from ..db import bills, outbox, payments, utcnow
+from ..db import outbox, payments, utcnow
 from .gateway import PaymentGateway
 
 
@@ -84,11 +84,7 @@ def mark_paid(engine: Engine, order_id: str, gateway_payment_id: str) -> tuple[b
                                  next_check_at=None, updated_at=utcnow()))
         if res.rowcount == 0:
             return False, _public(row)  # already settled by the other path
-        if row.bill_id:
-            bill = cx.execute(select(bills).where(bills.c.id == row.bill_id)).one()
-            paid = bill.amount_paid + row.amount
-            cx.execute(update(bills).where(bills.c.id == row.bill_id).values(
-                amount_paid=paid, status="PAID" if paid >= bill.total else "ISSUED"))
+        # Billing is a different service: it learns about the payment from PAYMENT_SUCCEEDED (outbox).
         cx.execute(insert(outbox).values(topic="payment-events", event_key=row.subscriber_id, payload=json.dumps({
             "type": "PAYMENT_SUCCEEDED", "payment_id": row.id, "subscriber_id": row.subscriber_id,
             "amount": row.amount, "currency": row.currency, "purpose": row.purpose, "bill_id": row.bill_id,

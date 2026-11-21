@@ -129,7 +129,12 @@ def bill_explanation(cycle: str, response: Response, lang: str = Query("en", pat
     if not flag_bool("ai-explanations", p.country, p.subscriber_id):
         return out | {"llm": None, "status": "UNAVAILABLE", "reason": "switched off"}
     try:
-        res = explain_bill(build_llm(p.country, p.subscriber_id), get_valkey(), bill,
+        import hashlib
+
+        llm = build_llm(p.country, p.subscriber_id)
+        llm.meta = {"trace_name": "bill-explanation", "trace_user_id": hashlib.sha256(p.subscriber_id.encode()).hexdigest()[:16],
+                    "cycle": bill.cycle}
+        res = explain_bill(llm, get_valkey(), bill,
                            row_to_bill(prev_row) if prev_row else None, lang)
     except RuntimeError as e:
         return out | {"llm": None, "status": "UNAVAILABLE", "reason": str(e)}

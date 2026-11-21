@@ -58,6 +58,10 @@ async def _events(p: Principal, body: AskIn):
     except RuntimeError as e:
         raise HTTPException(503, str(e)) from e
     sid = body.session_id or uuid.uuid4().hex[:16]
+    import hashlib
+
+    llm.meta = {"trace_name": "assistant", "session_id": sid,
+                "trace_user_id": hashlib.sha256(p.subscriber_id.encode()).hexdigest()[:16]}  # pseudonymous
     r = get_valkey()
     history = load_history(r, p.subscriber_id, sid)
     ctx = ToolContext(p.subscriber_id, p.country, get_engine(), get_usage_state(), get_embedder(), llm)

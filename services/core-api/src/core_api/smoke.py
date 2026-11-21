@@ -11,6 +11,8 @@ import sys
 import httpx
 
 API = os.environ.get("SMOKE_API", "http://core-api:8080")
+PAYMENTS = os.environ.get("SMOKE_PAYMENTS", "http://payments-service:8080")
+ASSISTANT = os.environ.get("SMOKE_ASSISTANT", "http://assistant-service:8080")
 WEB = os.environ.get("SMOKE_WEB", "http://web")
 SUB = os.environ.get("SMOKE_SUBSCRIBER", "4915100000002")
 
@@ -44,7 +46,7 @@ def main() -> None:
     aj = ai.json() if ai.status_code == 200 else {}
     check("LLM explanation (verified, cited)", aj.get("status") in ("VERIFIED", "REPAIRED") and bool((aj.get("llm") or {}).get("summary")),
           aj.get("status", ""))
-    ask = c.post("/v1/me/assistant/ask", headers=h, json={"question": "Have I paid my latest bill?"}, timeout=120)
+    ask = httpx.post(f"{ASSISTANT}/v1/me/assistant/ask", headers=h, json={"question": "Have I paid my latest bill?"}, timeout=120)
     check("assistant (tools via broker)", ask.status_code == 200 and ask.json().get("status") in ("VERIFIED", "REPAIRED"),
           f"{ask.json().get('status')} · tools {ask.json().get('trace', {}).get('totals', {}).get('tool_calls')}")
     sim = c.post("/v1/me/usage/simulate", data={"scenario": "us-trip-2-weeks"}, headers=h)
@@ -54,8 +56,8 @@ def main() -> None:
     check("upload usage file", up.status_code == 200)
     other = c.get("/v1/me/bills/2026-10", headers={"Authorization": "Bearer nope"})
     check("auth enforced", other.status_code == 401)
-    pay = c.post("/v1/me/payments", headers=h | {"Idempotency-Key": "smoke-test-0001"},
-                 json={"purpose": "BILL", "bill_id": hj.get("outstanding", {}).get("bill_id")})
+    pay = httpx.post(f"{PAYMENTS}/v1/me/payments", headers=h | {"Idempotency-Key": "smoke-test-0001"}, timeout=30,
+                    json={"purpose": "BILL", "bill_id": hj.get("outstanding", {}).get("bill_id")})
     check("payment order (Razorpay)", pay.status_code in (200, 201), f"{pay.status_code} {pay.text[:80]}")
     w = httpx.get(f"{WEB}/login", timeout=15)
     check("web SSR login page", w.status_code == 200 and "Sign in" in w.text and "Mobile number" in w.text)

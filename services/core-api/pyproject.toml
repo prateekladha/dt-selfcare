@@ -22,6 +22,7 @@ dependencies = [
   "numpy>=2.0",
   "jsonschema>=4.23",
   "temporalio==1.35.0",
+  "langfuse==5.1.0",
 ]
 
 [tool.uv.sources]
@@ -34,6 +35,10 @@ bill-run = "core_api.services.bills:cli"
 db-init = "core_api.dbinit:main"
 smoke-test = "core_api.smoke:main"
 workflow-worker = "core_api.workflows.worker:main"
+payments-service = "core_api.apps.payments:run"
+assistant-service = "core_api.apps.assistant:run"
+prompt-seed = "core_api.agent.prompts:seed_cli"
+run-evals = "core_api.evals:main"
 
 [build-system]
 requires = ["hatchling"]

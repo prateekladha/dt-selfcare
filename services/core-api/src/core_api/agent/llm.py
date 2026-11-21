@@ -105,6 +105,7 @@ class LLM:
                 provider == "gateway" and not settings.llm_gateway_url):
             raise RuntimeError(f"LLM provider {provider!r} is not configured")
         self.url, self.key, self.model = cfg
+        self.meta: dict = {}  # trace metadata forwarded to the gateway -> Langfuse (trace name, session, user hash)
 
     def _spend_key(self, stage: str) -> str:
         return f"spend:{stage}:{datetime.now(UTC):%Y%m%d}"
@@ -123,6 +124,8 @@ class LLM:
             body["tools"] = tools
         if stream:
             body["stream_options"] = {"include_usage": True}
+        if self.provider == "gateway" and self.meta:
+            body["metadata"] = {**self.meta, "generation_name": stage, "tags": [stage]}
         return body
 
     def _account(self, stage: str, u: dict, dt: float, text: str, tool_calls: list | None) -> LLMResult:
