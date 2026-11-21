@@ -260,7 +260,7 @@ def test_demo_panel_is_computed_from_real_bills_and_off_by_default(env, monkeypa
     issue(engine, state, "2026-09")
     issue(engine, state, "2026-10")
     jonas = next(a for a in client.get("/v1/demo/accounts").json() if a["subscriber_id"] == SUB)
-    assert jonas["headline"].startswith("October bill +") and "roaming data, zone z2" in jonas["headline"]
+    assert jonas["headline"].startswith("October bill +") and "mainly roaming data in zone Z2" in jonas["headline"]
 
 
 def test_late_cdrs_after_bill_issue_become_an_adjustment_on_the_next_bill(env):

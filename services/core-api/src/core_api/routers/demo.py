@@ -20,6 +20,11 @@ from ..services.bills import list_bills, row_to_bill
 router = APIRouter(prefix="/v1/demo", tags=["demo"])
 
 
+def _in_sentence(label: str) -> str:
+    """'Roaming data, zone Z2' -> 'roaming data in zone Z2' (only the first letter is lowered)."""
+    return (label[:1].lower() + label[1:]).replace(", zone ", " in zone ")
+
+
 def _summary(s) -> dict:
     plan = get_plan(s.plan_code)
     rows = list_bills(get_engine(), s.subscriber_id, 2)
@@ -32,9 +37,9 @@ def _summary(s) -> dict:
         ex = explain(cur, prev)
         month = datetime(int(cur.cycle[:4]), int(cur.cycle[5:]), 1).strftime("%B")
         if ex.direction == "UP" and ex.drivers:
-            headline = f"{month} bill +{fmt_money(ex.delta_total or 0, cur.currency)}: {ex.drivers[0].label.lower()}"
+            headline = f"{month} bill +{fmt_money(ex.delta_total or 0, cur.currency)}, mainly {_in_sentence(ex.drivers[0].label)}"
         elif ex.direction == "DOWN" and ex.drivers:
-            headline = f"{month} bill −{fmt_money(abs(ex.delta_total or 0), cur.currency)}: {ex.drivers[0].label.lower()}"
+            headline = f"{month} bill −{fmt_money(abs(ex.delta_total or 0), cur.currency)}, mainly {_in_sentence(ex.drivers[0].label)}"
         else:
             extra = sum(x.amount for x in cur.lines if x.category != "PLAN")
             headline = (f"{month} bill {fmt_money(cur.total, cur.currency)}"
