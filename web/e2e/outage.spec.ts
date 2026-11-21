@@ -53,7 +53,7 @@ test("@outage payments down: Pay is replaced by a clear notice; core-api down: l
   }
   expect(codes.every((c) => c >= 500), `pay attempts during outage: ${codes.join(",")}`).toBe(true);
   await page.reload();
-  await expect(page.getByText("Payments are briefly unavailable")).toBeVisible();
+  await expect(page.getByText("Payments are briefly unavailable").first()).toBeVisible();   // one notice per Pay button
   await expect(page.getByRole("button", { name: /Pay (now|in advance)/ })).toHaveCount(0);
   await shot(page, "2-payments-down");
 
