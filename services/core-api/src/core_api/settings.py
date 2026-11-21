@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     llm_gateway_url: str = ""
     llm_gateway_key: str = ""
     llm_model_alias: str = "billing-llm"
+    llm_title_alias: str = "title-llm"  # nano model for chat titles (falls back inside the gateway)
     llm_max_concurrency: int = 32  # per pod
     ai_daily_limit_per_subscriber: int = 20
 

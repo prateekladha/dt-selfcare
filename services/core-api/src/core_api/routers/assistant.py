@@ -11,7 +11,7 @@ from telco_common.flags import flag_bool
 
 from ..agent.embed import get_embedder
 from ..agent.factory import build_agent, build_llm
-from ..agent.loop import load_history, run_stream, save_turn
+from ..agent.loop import run_stream
 from ..agent.tools import ToolContext
 from ..db import agent_traces, get_engine
 from ..deps import RateLimiter, get_usage_state, get_valkey
@@ -50,26 +50,36 @@ def _guard(p: Principal) -> None:
 
 
 async def _events(p: Principal, body: AskIn):
-    """Async event stream; conversation memory per session (last 6 turns, 24 h) in Valkey."""
-    import uuid
+    """Async event stream with durable chat history (ADB): context = last turns of the session;
+    the first turn of a session gets a title from the nano model."""
+    import asyncio
+
+    from ..agent import history as hist
 
     try:
         llm = build_llm(p.country, p.subscriber_id)
     except RuntimeError as e:
         raise HTTPException(503, str(e)) from e
-    sid = body.session_id or uuid.uuid4().hex[:16]
+    engine = get_engine()
+    sid, is_new = await asyncio.to_thread(hist.ensure_session, engine, p.subscriber_id, body.session_id)
     import hashlib
 
     llm.meta = {"trace_name": "assistant", "session_id": sid,
                 "trace_user_id": hashlib.sha256(p.subscriber_id.encode()).hexdigest()[:16]}  # pseudonymous
-    r = get_valkey()
-    history = load_history(r, p.subscriber_id, sid)
-    ctx = ToolContext(p.subscriber_id, p.country, get_engine(), get_usage_state(), get_embedder(), llm)
+    history = await asyncio.to_thread(hist.recent_turns, engine, sid)
+    ctx = ToolContext(p.subscriber_id, p.country, engine, get_usage_state(), get_embedder(), llm)
     yield {"type": "session", "session_id": sid, "turns": len(history)}
-    async for ev in run_stream(body.question, ctx, llm, get_engine(), body.lang, history):
+    async for ev in run_stream(body.question, ctx, llm, engine, body.lang, history):
         if ev["type"] == "done" and ev.get("answer"):
-            save_turn(r, p.subscriber_id, sid, body.question, ev["answer"])
+            await asyncio.to_thread(hist.append_turn, engine, sid, body.question, ev["answer"], ev["status"],
+                                    ev.get("citations", []))
             ev["session_id"] = sid
+            yield ev
+            if is_new:
+                title, source = await hist.make_title(llm, body.question, ev["answer"])
+                await asyncio.to_thread(hist.set_title, engine, sid, title, source)
+                yield {"type": "title", "session_id": sid, "title": title}
+            continue
         yield ev
 
 
@@ -106,3 +116,30 @@ def traces(p: Principal = Depends(current_principal), limit: int = 10) -> list[d
                           .order_by(agent_traces.c.created_at.desc()).limit(min(limit, 50))).all()
     return [{"id": r.id, "question": r.question, "status": r.status, "cost_usd": r.cost_usd,
              "created_at": r.created_at.isoformat(), "trace": json.loads(r.trace)} for r in rows]
+
+
+
+@router.get("/sessions")
+def sessions(p: Principal = Depends(current_principal)) -> list[dict]:
+    from ..agent.history import list_sessions
+
+    return list_sessions(get_engine(), p.subscriber_id)
+
+
+@router.get("/sessions/{session_id}")
+def session(session_id: str, p: Principal = Depends(current_principal)) -> dict:
+    from ..agent.history import get_session
+
+    s = get_session(get_engine(), p.subscriber_id, session_id)
+    if s is None:
+        raise HTTPException(404, "chat not found")
+    return s
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+def delete_chat(session_id: str, p: Principal = Depends(current_principal)) -> Response:
+    from ..agent.history import delete_session
+
+    if not delete_session(get_engine(), p.subscriber_id, session_id):
+        raise HTTPException(404, "chat not found")
+    return Response(status_code=204)

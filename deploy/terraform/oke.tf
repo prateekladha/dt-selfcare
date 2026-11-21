@@ -58,7 +58,7 @@ resource "oci_containerengine_node_pool" "a1" {
   node_source_details {
     source_type             = "IMAGE"
     image_id                = local.node_image_id
-    boot_volume_size_in_gbs = 50
+    boot_volume_size_in_gbs = 100 # image layers (LLM gateway, embedding model) need headroom
   }
 
   node_config_details {

@@ -21,4 +21,5 @@ export default [
   route("api/ask", "routes/api.ask.ts"),
   route("api/ask/stream", "routes/api.ask-stream.ts"),
   route("api/orders", "routes/api.orders.ts"),
+  route("api/chats", "routes/api.chats.ts"),
 ] satisfies RouteConfig;
