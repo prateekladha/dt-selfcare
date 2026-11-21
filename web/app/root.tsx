@@ -1,4 +1,5 @@
 import { Toaster } from "~/components/Toast";
+import { VersionWatcher } from "~/components/VersionWatcher";
 import {
   isRouteErrorResponse,
   Links,
@@ -45,7 +46,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  return (<><Outlet /><Toaster /></>);
+  return (<><Outlet /><Toaster /><VersionWatcher /></>);
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {

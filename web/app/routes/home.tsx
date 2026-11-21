@@ -8,7 +8,7 @@ import { AddDataButton } from "~/components/OrderCard";
 import { TrendChart } from "~/components/TrendChart";
 import { DailyUsageChart, type DailyUsage } from "~/components/DailyUsageChart";
 import { Card, CardHeader, LinkButton, Pill } from "~/components/ui";
-import { api, PRIVATE } from "~/lib/api.server";
+import { api, streamed, PRIVATE } from "~/lib/api.server";
 import { cycleLabel, dateLabel, mbToGb, money } from "~/lib/format";
 import type { ExplanationResponse } from "~/lib/types";
 import { useSnapshot } from "./_app";
@@ -21,8 +21,8 @@ export const headers = () => PRIVATE;
 export async function loader({ request }: Route.LoaderArgs) {
   const lang = new URL(request.url).searchParams.get("lang") ?? "en";
   // one call, not list-then-fetch; the LLM explanation streams in after the page renders (cached per bill)
-  const explanation = api<ExplanationResponse>(request, `/v1/me/bills/latest/explanation?lang=${lang}`);
-  const daily = api<DailyUsage>(request, "/v1/me/usage/daily");   // streamed: never blocks the page
+  const explanation = streamed(api<ExplanationResponse>(request, `/v1/me/bills/latest/explanation?lang=${lang}`));
+  const daily = streamed(api<DailyUsage>(request, "/v1/me/usage/daily"));   // streamed: never blocks the page
   return { explanation, daily, lang };
 }
 
