@@ -20,7 +20,12 @@ flowchart LR
   A -->|prompts| LF
   C -->|approve order| T[Temporal]
   T --> WW[workflow-worker]
-  WW --> BSS[legacy BSS emulator]
+  WW -->|TMF622 ProductOrder, timeouts + breaker| AD[order-adapter]
+  AD -->|DE: REST / PL: SOAP, per-country rate limit| BSS[legacy order systems]
+  AD -->|bss-events| ST
+  ST -->|bss-events -> signal| WW
+  C -->|status change + outbox, same tx| ST
+  ST -->|order-events| N
   WW -->|PLAN_CHANGED| COL[usage-collector]
 ```
 
@@ -32,7 +37,8 @@ flowchart LR
 | **payments-service** | checkouts | `payments` | Razorpay status API; emits `PAYMENT_SUCCEEDED` (transactional outbox) |
 | **assistant-service** | concurrent LLM streams (SSE) | `context_docs`, `agent_traces` | LLM gateway; read-only tools |
 | notifier | alerts and events | — | streams; Valkey pub/sub |
-| workflow-worker | workflow activities | — | Temporal; usage-collector |
+| workflow-worker | workflow activities | — | Temporal; order-adapter (HTTP); consumes `bss-events` |
+| **order-adapter** | order submissions | legacy emulator state (`bss_orders`) | TMF622 API; publishes `bss-events` |
 | llm-gateway | LLM request rate | provider keys | DeepSeek, Mistral, Langfuse |
 
 - **Payments → billing is event-driven.** payments-service never writes billing tables.
@@ -47,6 +53,45 @@ flowchart LR
 - **Keys:** provider keys exist **only** in the gateway, synced from OCI Vault. Services hold a gateway key.
 - **Tracing:** every call is sent to **Langfuse** (`success_callback`/`failure_callback`) with metadata: trace name, session id, pseudonymous user hash, stage.
 - **Client behaviour:** the service-side client is **async** (`httpx.AsyncClient`), limits concurrency per pod (`llm_max_concurrency`) and retries the gateway with jittered backoff.
+
+## Orders: events, adapters, bill-day spikes
+- **`order-events` (Kafka/OCI Streaming).** Every order status change (PROPOSED → APPROVED → SUBMITTED →
+  COMPLETED/FAILED, DECLINED) is written together with an `ORDER_STATUS_CHANGED` outbox row **in the same
+  DB transaction** and relayed to the stream. The `order-projections` consumer updates the
+  home-screen cache, the assistant's context and, on terminal states, the customer notification
+  (idempotent: `alert_id = order:<id>:<status>`). Workflows never write notifications themselves.
+- **`bss-events`.** The legacy result (TMF622 state) is published by the order-adapter. The worker's
+  `order-workflows` consumer turns it into a workflow signal. Measured live: 0.7 s from legacy result to
+  signal. If an event is lost, the workflow asks the adapter for the state every 45 s.
+- **order-adapter: Temporal never calls a legacy system.** Activities call one internal API (TMF622
+  ProductOrder). It picks the country adapter (DE REST, PL SOAP) and enforces each legacy system's capacity
+  across all pods (Valkey 1-second window, `bss_max_rps`). Over capacity it answers **429 + Retry-After**,
+  and the activity backs off (up to 5 min between tries, for up to 12 h). A bill-day spike becomes a
+  durable queue in Temporal, not an outage of the legacy system. Temporal also caps the task queue's
+  activity rate across workers.
+- **Tariff change** (`PlanChangeWorkflow`) shares the same activities and adapters (`action: modify`).
+  The switch applies from today; this month is billed on the new tariff (pro-rating is out of scope).
+  Available from the `/plan` page and from the assistant (`propose_plan_change`, approval card).
+
+## Timeouts and circuit breakers
+Every service-to-service call has a **connect timeout** (1 s) and a **read budget**, plus a **circuit breaker**:
+after 5 consecutive failures (timeout, connection error, 5xx) the circuit opens and fails fast; after a cool-down
+one trial request decides whether it closes. 4xx and 429 don't trip it.
+
+| Caller → callee | Connect / read | Breaker |
+|---|---|---|
+| web BFF → core-api, payments, assistant | fetch timeout 5 s (30 s explanation, 120 s assistant stream) | 5 fails → open 20 s → 503 page message |
+| workflow activities → order-adapter | 1 s / 5 s | 5 fails → open 30 s → Temporal retries |
+| workflow activities → usage-collector | 1 s / 10 s | Temporal retry policy |
+| services → LLM gateway | per stage, with retries/backoff | gateway cooldown + fallback |
+
+## Bill day
+- The `bill-run` CronJob issues the bills (init container), then **`explain-batch`** runs: it warms every
+  customer's home-screen cache and pre-generates the AI explanation at a fixed rate (`billDay.explainRps`).
+  Customers opening the app get both from cache: no DB stampede, no LLM stampede.
+- Read path measured live (one 1-OCPU node, 32 concurrent): **246 rps, 0 errors, p50 88 ms, p95 380 ms,
+  cache hit 99.9%** (`deploy/loadtest/read-path-job.yaml`).
+- Edge: Traefik rate limit per client IP (40 rps, burst 120); verified with a 400-request burst: 176 × 200, 224 × 429.
 
 ## Durable write actions (Temporal)
 - **Broker tiers:** `read` tools execute; the **`propose`** tier (`propose_addon`) only creates a PROPOSED order with a preview. The customer approves in the UI (approval card in chat, or "Add data").
