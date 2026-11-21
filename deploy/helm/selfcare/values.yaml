@@ -93,7 +93,7 @@ web:
 
 temporal:
   enabled: true
-  image: temporalio/temporal:1.10.0
+  image: docker.io/temporalio/temporal:1.10.0
 
 llmGateway:
   enabled: true
