@@ -77,6 +77,19 @@ flowchart LR
   The switch applies from today; this month is billed on the new tariff (pro-rating is out of scope).
   Available from the `/plan` page and from the assistant (`propose_plan_change`, approval card).
 
+### Tariff change pro-rating
+- Every switch is recorded in `plan_changes` (keyed by order id, written in the same transaction as the
+  switch, so a retried activity adds nothing).
+- For each cycle the history gives day segments; **the change day is billed on the new tariff**. A switch
+  on 21 Nov in a 30-day cycle gives *Mobile Flex monthly fee, 20 of 30 days* + *Mobile M monthly fee, 10 of
+  30 days*. Several switches in one cycle give several lines.
+- **Allowances** (data, minutes, SMS) are pro-rated the same way; unlimited if either tariff is unlimited.
+- **Usage is priced at the tariff in force at cycle end.** Usage counters are cycle totals, not split by
+  date, so overage and roaming rates come from the current tariff (stated on the bill lines).
+- The approval card shows this month's pro-rated fee before the customer approves; the live unbilled
+  amount and the bill run both use the same segments (cached in the home read model, invalidated by
+  `order-events`).
+
 ## Timeouts and circuit breakers
 Every service-to-service call has a **connect timeout** (1 s) and a **read budget**, plus a **circuit breaker**:
 after 5 consecutive failures (timeout, connection error, 5xx) the circuit opens and fails fast; after a cool-down
