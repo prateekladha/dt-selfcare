@@ -77,6 +77,15 @@ web:
   hpa: { min: 2, max: 6, cpu: 70 }
   resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { memory: 384Mi } }
 
+llmGateway:
+  enabled: true
+  image: ghcr.io/berriai/litellm:v1.108.2
+  primaryRpm: 300
+  primaryTpm: 600000
+  fallbackRpm: 120
+  langfuse: false          # set true once Langfuse keys are in Vault
+  langfuseHost: https://cloud.langfuse.com
+
 flags:
   ai-explanations:
     state: ENABLED

@@ -19,5 +19,8 @@ def build_agent(country: str | None, subscriber_id: str) -> BillingAgent:
 
 
 def build_llm(country: str | None, subscriber_id: str) -> LLM:
+    s = get_settings()
+    if s.llm_gateway_url:  # production path: everything goes through the LLM gateway (routing, fallback, keys)
+        return LLM(s, get_valkey(), "gateway")
     provider = flag_str("ai-provider", country, subscriber_id)
-    return LLM(get_settings(), get_valkey(), "deepseek" if provider == "template" else provider)
+    return LLM(s, get_valkey(), "deepseek" if provider == "template" else provider)

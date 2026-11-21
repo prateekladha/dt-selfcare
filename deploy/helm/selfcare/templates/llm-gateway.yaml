@@ -1,0 +1,97 @@
+{{- /* LLM gateway (LiteLLM, OpenAI-compatible). The ONLY component holding provider keys.
+       Services call model aliases; the gateway does routing, fallback (DeepSeek -> Mistral EU), retries,
+       cooldown of failing deployments, per-deployment rate limits, and ships traces to Langfuse. */}}
+{{- if .Values.llmGateway.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-gateway-config
+  labels:
+    {{- include "selfcare.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    model_list:
+      - model_name: billing-llm                 # primary
+        litellm_params:
+          model: deepseek/deepseek-chat
+          api_key: os.environ/DEEPSEEK_API_KEY
+          rpm: {{ .Values.llmGateway.primaryRpm }}
+          tpm: {{ .Values.llmGateway.primaryTpm }}
+      - model_name: billing-llm-fallback        # EU-hosted fallback
+        litellm_params:
+          model: mistral/mistral-small-latest
+          api_key: os.environ/MISTRAL_API_KEY
+          rpm: {{ .Values.llmGateway.fallbackRpm }}
+    router_settings:
+      num_retries: 2
+      retry_after: 1
+      timeout: 30
+      allowed_fails: 3          # failures before a deployment is cooled down
+      cooldown_time: 30
+      fallbacks: [{"billing-llm": ["billing-llm-fallback"]}]
+    litellm_settings:
+      drop_params: true
+      {{- if .Values.llmGateway.langfuse }}
+      success_callback: ["langfuse"]
+      failure_callback: ["langfuse"]
+      {{- end }}
+    general_settings:
+      master_key: os.environ/LITELLM_MASTER_KEY
+---
+apiVersion: v1
+kind: Service
+metadata: { name: llm-gateway }
+spec:
+  selector: { app: llm-gateway }
+  ports: [{ name: http, port: 4000, targetPort: 4000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-gateway
+  labels:
+    app: llm-gateway
+    {{- include "selfcare.labels" . | nindent 4 }}
+spec:
+  selector: { matchLabels: { app: llm-gateway } }
+  template:
+    metadata:
+      labels: { app: llm-gateway }
+      annotations: { checksum/config: {{ toJson .Values.llmGateway | sha256sum }} }
+    spec:
+      enableServiceLinks: false
+      securityContext: { seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: litellm
+          image: {{ .Values.llmGateway.image }}
+          args: ["--config", "/etc/litellm/config.yaml", "--port", "4000", "--num_workers", "2"]
+          ports: [{ containerPort: 4000 }]
+          env:
+            - name: LITELLM_MASTER_KEY
+              valueFrom: { secretKeyRef: { name: selfcare-secrets, key: llm-gateway-key } }
+            - name: DEEPSEEK_API_KEY
+              valueFrom: { secretKeyRef: { name: selfcare-deepseek-api-key, key: value, optional: true } }
+            - name: MISTRAL_API_KEY
+              valueFrom: { secretKeyRef: { name: selfcare-mistral-api-key, key: value, optional: true } }
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom: { secretKeyRef: { name: selfcare-langfuse-public-key, key: value, optional: true } }
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: selfcare-langfuse-secret-key, key: value, optional: true } }
+            - { name: LANGFUSE_HOST, value: {{ .Values.llmGateway.langfuseHost | quote }} }
+          readinessProbe: { httpGet: { path: /health/readiness, port: 4000 }, periodSeconds: 10, timeoutSeconds: 5 }
+          livenessProbe: { httpGet: { path: /health/liveliness, port: 4000 }, periodSeconds: 20, timeoutSeconds: 5, failureThreshold: 5 }
+          startupProbe: { httpGet: { path: /health/liveliness, port: 4000 }, periodSeconds: 5, failureThreshold: 60 }
+          resources: { requests: { cpu: 100m, memory: 384Mi }, limits: { memory: 1Gi } }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
+          volumeMounts: [{ name: config, mountPath: /etc/litellm }]
+      volumes: [{ name: config, configMap: { name: llm-gateway-config } }]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: llm-gateway }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: llm-gateway }
+  minReplicas: 1
+  maxReplicas: 4
+  metrics: [{ type: Resource, resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } } }]
+{{- end }}
