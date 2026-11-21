@@ -26,7 +26,6 @@ const NAV = [
   { to: "/bills", label: "Bills", icon: Receipt },
   { to: "/insights", label: "Try your usage", icon: FlaskConical },
   { to: "/assistant", label: "Assistant", icon: MessageSquareText },
-  { to: "/system", label: "System", icon: Server },
 ];
 
 export default function AppLayout({ loaderData }: Route.ComponentProps) {
@@ -88,6 +87,8 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
                       <p className="text-[13px] text-[var(--ink-3)]">{phoneLabel(home.subscriber.id)} {FLAGS[home.subscriber.country]}</p>
                       <p className="text-[13px] text-[var(--ink-3)]">{home.plan.name}</p></div>
                   </div>
+                  <NavLink to="/system" onClick={() => setMenu("none")}
+                           className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-sm font-semibold text-[var(--ink-2)] hover:bg-[var(--chip)]"><Server size={16} /> System status</NavLink>
                   <Form method="post" action="/logout">
                     <button className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-sm font-semibold text-[var(--ink-2)] hover:bg-[var(--chip)]"><LogOut size={16} /> Sign out</button>
                   </Form>
@@ -98,7 +99,7 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         </div>
       </header>
       <main className="mx-auto max-w-[1200px] px-5 py-8" onClick={() => menu !== "none" && setMenu("none")}><Outlet /></main>
-      <nav className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-5 border-t border-[var(--line)] bg-[var(--surface)] md:hidden" aria-label="Main">
+      <nav className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 border-t border-[var(--line)] bg-[var(--surface)] md:hidden" aria-label="Main">
         {NAV.map(({ to, label, icon: Icon, end }) => (
           <NavLink key={to} to={to} end={end} className={({ isActive }) => `flex flex-col items-center gap-1 py-2.5 text-[11px] font-semibold ${isActive ? "text-[var(--brand)]" : "text-[var(--ink-3)]"}`}>
             <Icon size={20} />{label.replace("Try your usage", "Try usage")}

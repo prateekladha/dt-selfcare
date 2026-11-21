@@ -1,6 +1,6 @@
 import { ArrowLeft, Download } from "lucide-react";
 import { Link } from "react-router";
-import { DeltaPill, Narrative, TopDrivers, WhatChanged } from "~/components/Explain";
+import { DeltaPill, ExplanationSection } from "~/components/Explain";
 import { PayButton } from "~/components/PayButton";
 import { Card, CardHeader, LinkButton, Pill } from "~/components/ui";
 import { api, PRIVATE } from "~/lib/api.server";
@@ -24,7 +24,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
     api<ExplanationResponse>(request, `/v1/me/bills/${cycle}/explanation?ai=false`),
     cycle === "current" ? Promise.resolve(null) : api<BillDetail>(request, `/v1/me/bills/${cycle}`),
   ]);
-  const narrative = api<ExplanationResponse>(request, `/v1/me/bills/${cycle}/explanation?lang=${lang}`);
+  const narrative = api<ExplanationResponse>(request, `/v1/me/bills/${cycle}/explanation?lang=${lang}`);  // LLM, streamed
   return { facts, narrative, bill, lang, cycle };
 }
 
@@ -65,11 +65,7 @@ export default function BillPage({ loaderData }: Route.ComponentProps) {
       </Card>
 
       <div className="grid gap-6 lg:grid-cols-5">
-        <div className="space-y-6 lg:col-span-3">
-          <Narrative narrative={narrative} lang={lang} basePath={`/bills/${cycle}`} title={isCurrent ? "This month in plain words" : "This bill in plain words"} cycle={cycle} />
-          <WhatChanged ex={ex} locale={loc} title={isCurrent ? "So far vs your last bill" : "What changed"} />
-        </div>
-        <div className="space-y-6 lg:col-span-2">
+        <div className="lg:col-span-2">
           <Card>
             <CardHeader title="Breakdown" subtitle="Before VAT unless stated" />
             <div className="px-6 pb-6 pt-3">
@@ -95,7 +91,10 @@ export default function BillPage({ loaderData }: Route.ComponentProps) {
               </div>
             </div>
           </Card>
-          <TopDrivers ex={ex} locale={loc} />
+        </div>
+        <div className="lg:col-span-3">
+          <ExplanationSection data={narrative} lang={lang} basePath={`/bills/${cycle}`} cycle={cycle}
+                              heading={isCurrent ? "This month so far, explained" : "Why this bill looks like this"} />
         </div>
       </div>
     </div>

@@ -98,7 +98,7 @@ export default function System({ loaderData }: Route.ComponentProps) {
             <Arrow /><Node icon={Globe} title="web (SSR)" sub="React Router · Traefik TLS" />
             <Arrow /><Node icon={Server} title="core-api" sub="billing · payments · insights" stat={`pod ${o.runtime.pod.slice(-5)}`} tone="brand" />
             <Arrow /><Node icon={Database} title="Autonomous DB" sub={o.database.engine?.replace(" (Always Free)", "") ?? "Oracle"} stat={`${n(t.bills)} bills · ${n(t.payments)} payments`} tone="store" />
-            <Arrow /><Node icon={BrainCircuit} title="LLM" sub={o.ai.providers_configured.join(", ") || "template only"} stat={`${n(t.explanations)} cached answers`} />
+            <Arrow /><Node icon={BrainCircuit} title="LLM" sub={o.ai.providers_configured.length ? "configured" : "not configured"} stat={`${n(t.agent_traces)} agent runs`} />
             <Arrow /><Node icon={CreditCard} title="Razorpay" sub={o.payments.gateway} stat="webhook + server check" />
           </div>
           <div className="flex items-center gap-2 text-xs text-[var(--ink-3)]"><FileArchive size={14} /> Every usage message is also copied by <b className="text-[var(--ink-2)]">raw-archiver</b> to Object Storage (audit, disputes, reconciliation). Secrets come from OCI Vault through External Secrets; flags from flagd.</div>
@@ -157,13 +157,13 @@ export default function System({ loaderData }: Route.ComponentProps) {
         </Card>
         <Card>
           <CardHeader icon={<Flag size={18} />} title="Feature flags" subtitle="flagd · evaluated for you (country + subscriber)" />
-          <div className="px-6 pb-5 pt-2"><KV rows={Object.entries(o.flags).map(([k, v]) => [k, flagValue(v)])} /></div>
+          <div className="px-6 pb-5 pt-2"><KV rows={Object.entries(o.flags).filter(([k]) => k !== "ai-provider").map(([k, v]) => [k, flagValue(v)])} /></div>
         </Card>
         <Card>
           <CardHeader icon={<ShieldCheck size={18} />} title="Resilience & integrations" />
           <div className="px-6 pb-5 pt-2"><KV rows={[
             ...Object.entries(o.breakers).map(([k, v]) => [`breaker: ${k}`, <Pill key={k} tone={v === "open" ? "bad" : "good"}>{v}</Pill>] as [string, React.ReactNode]),
-            ["LLM providers", o.ai.providers_configured.join(", ") || "none"], ["AI cache", Object.entries(o.database.ai_cache_by_provider ?? {}).map(([k, v]) => `${k.split(":")[0]} ${v}`).join(", ") || "empty"],
+            ["LLM", o.ai.providers_configured.length ? "configured" : "not configured"],
             ["AI budget / user / day", n(o.ai.daily_limit_per_subscriber)], ["Payments", Object.entries(o.database.payments_by_status ?? {}).map(([k, v]) => `${k} ${v}`).join(", ") || "none"]]} /></div>
         </Card>
       </div>

@@ -79,15 +79,15 @@ export function AgentTraceView({ trace }: { trace: T }) {
 
       {!!trace.stages?.length && (
         <div>
-          <p className="mb-1 text-xs font-bold text-[var(--ink-2)]">L3 / L4 stages: model routing, prompt cache, spend</p>
+          <p className="mb-1 text-xs font-bold text-[var(--ink-2)]">LLM calls: prompt cache and spend per stage</p>
           <table className="w-full text-[12px]">
             <thead className="text-left text-[10px] uppercase tracking-wide text-[var(--ink-3)]">
-              <tr><th className="py-1">Stage</th><th className="py-1">Model</th><th className="py-1 text-right">In (cache hit)</th><th className="py-1 text-right">Out</th><th className="py-1 text-right">Cost</th><th className="py-1 text-right">Time</th></tr>
+              <tr><th className="py-1">Stage</th><th className="py-1 text-right">In (cache hit)</th><th className="py-1 text-right">Out</th><th className="py-1 text-right">Cost</th><th className="py-1 text-right">Time</th></tr>
             </thead>
             <tbody className="tabular divide-y divide-[var(--line)]">
               {trace.stages.map((s, i) => (
                 <tr key={i}>
-                  <td className="py-1">{s.stage}</td><td className="py-1">{s.model}</td>
+                  <td className="py-1">{s.stage}</td>
                   <td className="py-1 text-right">{s.prompt_tokens} ({s.cache_hit_tokens})</td><td className="py-1 text-right">{s.completion_tokens}</td>
                   <td className="py-1 text-right">{usd(s.cost_usd)}</td><td className="py-1 text-right">{s.seconds.toFixed(1)}s</td>
                 </tr>

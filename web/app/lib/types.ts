@@ -22,9 +22,13 @@ export type AgentTrace = {
   stages?: { stage: string; model: string; prompt_tokens: number; completion_tokens: number; cache_hit_tokens: number; cache_miss_tokens: number; cost_usd: number; seconds: number }[];
   totals?: { cost_usd: number; prompt_tokens: number; completion_tokens: number; cache_hit_tokens: number; cache_hit_ratio: number | null; llm_calls: number };
 };
-export type ExplanationResponse = { explanation: Explanation; narrative: string; provider: string; partial: boolean; status?: string;
-  citations?: Citation[]; trace?: AgentTrace; bill_id?: string | null };
-export type AgentAnswer = { status: string; answer: string; citations: Citation[]; provider: string; trace: AgentTrace };
+export type LlmItem = { title: string; impact?: string; amount?: string; why: string; sources?: string[] };
+export type LlmExplanation = { summary: string; drivers: LlmItem[]; top_usage: LlmItem[]; tip?: string | null; tip_sources?: string[] };
+export type SourceDoc = { label: string; body: string };
+export type ExplanationResponse = { explanation: Explanation; partial: boolean; status?: string; reason?: string;
+  llm?: LlmExplanation | null; sources?: SourceDoc[]; trace?: AgentTrace; bill_id?: string | null };
+export type ToolSource = { label: string; tool: string; args: Record<string, unknown>; source_ref: string; body: string };
+export type AgentAnswer = { status: string; answer: string; citations: ToolSource[]; trace: AgentTrace };
 export type Evidence = {
   subscriber_id: string; cycle: string; partition: number; source: string; objects_scanned: number; cdr_count: number;
   first_event: string | null; last_event: string | null; all_match: boolean; note: string | null; bill_id: string | null;
