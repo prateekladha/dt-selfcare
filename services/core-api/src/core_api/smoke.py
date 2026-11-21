@@ -40,9 +40,13 @@ def main() -> None:
     e = ex.get("explanation", {})
     check("why bill changed", e.get("direction") in ("UP", "DOWN", "SAME") and bool(e.get("facts")), e.get("direction", ""))
     check("top usage drivers", isinstance(e.get("top_usage_drivers"), list))
-    ai = c.get(f"/v1/me/bills/{last}/explanation?lang=de", headers=h)
-    check("AI narrative (or safe fallback)", ai.status_code == 200 and bool(ai.json().get("narrative")),
-          ai.json().get("provider", ""))
+    ai = c.get(f"/v1/me/bills/{last}/explanation?lang=de", headers=h, timeout=90)
+    aj = ai.json() if ai.status_code == 200 else {}
+    check("LLM explanation (verified, cited)", aj.get("status") in ("VERIFIED", "REPAIRED") and bool((aj.get("llm") or {}).get("summary")),
+          aj.get("status", ""))
+    ask = c.post("/v1/me/assistant/ask", headers=h, json={"question": "Have I paid my latest bill?"}, timeout=120)
+    check("assistant (tools via broker)", ask.status_code == 200 and ask.json().get("status") in ("VERIFIED", "REPAIRED"),
+          f"{ask.json().get('status')} · tools {ask.json().get('trace', {}).get('totals', {}).get('tool_calls')}")
     sim = c.post("/v1/me/usage/simulate", data={"scenario": "us-trip-2-weeks"}, headers=h)
     check("select usage scenario", sim.status_code == 200 and sim.json()["bill"]["total"] > 0)
     up = c.post("/v1/me/usage/simulate", headers=h, files={"file": (
@@ -54,7 +58,7 @@ def main() -> None:
                  json={"purpose": "BILL", "bill_id": hj.get("outstanding", {}).get("bill_id")})
     check("payment order (Razorpay)", pay.status_code in (200, 201), f"{pay.status_code} {pay.text[:80]}")
     w = httpx.get(f"{WEB}/login", timeout=15)
-    check("web SSR login page", w.status_code == 200 and "Sign in" in w.text and "Demo accounts" in w.text)
+    check("web SSR login page", w.status_code == 200 and "Sign in" in w.text and "Mobile number" in w.text)
 
     width = max(len(n) for n, *_ in results)
     for name, ok, info in results:
