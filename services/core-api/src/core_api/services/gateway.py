@@ -80,4 +80,10 @@ class Razorpay:
         for p in items:
             if p.get("status") == "captured":
                 return True, p["id"]
+        for p in items:  # accounts with manual capture: capture the authorised payment ourselves
+            if p.get("status") == "authorized":
+                cap = self._call("POST", f"/payments/{p['id']}/capture",
+                                 json={"amount": p["amount"], "currency": p["currency"]})
+                if cap.get("status") == "captured":
+                    return True, p["id"]
         return False, None

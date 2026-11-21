@@ -222,3 +222,21 @@ def test_system_overview_shows_every_layer_and_only_my_data(env, monkeypatch):
     assert body["you"]["valkey_usage_hash"]["DATA"] == str(500 * MB)
     assert all(b["id"].startswith(SUB) for b in body["you"]["db_bills"])
     assert "ai-provider" in body["flags"]
+
+
+def test_razorpay_adapter_captures_authorised_payment():
+    import httpx as _httpx
+    from core_api.services.gateway import Razorpay
+    calls = []
+
+    def handler(req):
+        calls.append((req.method, req.url.path))
+        if req.url.path.endswith("/payments") and req.method == "GET":
+            return _httpx.Response(200, json={"items": [{"id": "pay_1", "status": "authorized", "amount": 100, "currency": "INR"}]})
+        if req.url.path.endswith("/capture"):
+            return _httpx.Response(200, json={"id": "pay_1", "status": "captured"})
+        return _httpx.Response(404)
+
+    gw = Razorpay("rzp_test_x", "s", "w", http=_httpx.Client(transport=_httpx.MockTransport(handler)))
+    assert gw.is_order_paid("order_1") == (True, "pay_1")
+    assert ("POST", "/v1/payments/pay_1/capture") in calls
