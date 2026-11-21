@@ -38,10 +38,11 @@ spec:
   template:
     metadata: { labels: { app: valkey } }
     spec:
+      enableServiceLinks: false
       securityContext: { runAsNonRoot: true, runAsUser: 999, fsGroup: 999, seccompProfile: { type: RuntimeDefault } }
       containers:
         - name: valkey
-          image: valkey/valkey:8.1-alpine
+          image: docker.io/valkey/valkey:8.1-alpine
           args: ["/etc/valkey/valkey.conf"]
           ports: [{ containerPort: 6379 }]
           resources: { requests: { cpu: 100m, memory: 512Mi }, limits: { memory: 1536Mi } }

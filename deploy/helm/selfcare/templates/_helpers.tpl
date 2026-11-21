@@ -28,6 +28,8 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
   valueFrom: { secretKeyRef: { name: selfcare-secrets, key: stream-password } }
 - name: FLAGD_HOST
   value: flagd
+- name: FLAGD_PORT
+  value: "8013"
 - name: APP_DB_DSN
   valueFrom: { secretKeyRef: { name: selfcare-secrets, key: db-dsn } }
 - name: APP_DB_PASSWORD
@@ -57,6 +59,7 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{- end }}
 
 {{- define "selfcare.podSecurity" -}}
+enableServiceLinks: false   # no docker-link env vars (e.g. FLAGD_PORT=tcp://...) leaking into config
 securityContext:
   runAsNonRoot: true
   seccompProfile: { type: RuntimeDefault }

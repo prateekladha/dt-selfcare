@@ -9,4 +9,4 @@ oci:
 stream:
   bootstrap: cell-1.streaming.ap-mumbai-1.oci.oraclecloud.com:9092
   partitions: 4
-domain: ""
+domain: 130.210.124.37.sslip.io

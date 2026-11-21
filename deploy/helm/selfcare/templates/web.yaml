@@ -12,7 +12,13 @@ spec:
   template:
     metadata: { labels: { app: web } }
     spec:
-      {{- include "selfcare.podSecurity" . | nindent 6 }}
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000   # image user "node" is non-numeric; runAsNonRoot needs a UID
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      imagePullSecrets: [{ name: ocir-pull }]
       containers:
         - name: web
           image: {{ include "selfcare.image" (dict "root" . "name" "web") }}

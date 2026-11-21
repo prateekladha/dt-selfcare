@@ -29,6 +29,7 @@ spec:
       labels: { app: flagd }
       annotations: { checksum/flags: {{ toJson .Values.flags | sha256sum }} }
     spec:
+      enableServiceLinks: false
       securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
       containers:
         - name: flagd

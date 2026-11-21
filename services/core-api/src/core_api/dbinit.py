@@ -24,7 +24,11 @@ def main() -> None:
             cur.execute(f'CREATE USER {user} IDENTIFIED BY "{pw_sql}" QUOTA 5G ON DATA')
             print(f"created user {user}")
         else:
-            cur.execute(f'ALTER USER {user} IDENTIFIED BY "{pw_sql}"')  # keeps Vault the source of truth
+            try:  # keep Vault the source of truth (rotation); same password again is a no-op
+                cur.execute(f'ALTER USER {user} IDENTIFIED BY "{pw_sql}"')
+            except oracledb.DatabaseError as e:
+                if "ORA-28007" not in str(e):
+                    raise
         cur.execute(f"GRANT CREATE SESSION, CREATE TABLE, CREATE SEQUENCE, CREATE VIEW TO {user}")
         print("db-init done")
 

@@ -8,7 +8,7 @@ cd "$(dirname "$0")/../terraform"
 CLUSTER=$(terraform output -raw cluster_id)
 CI_USER=$(terraform output -raw ci_user_ocid)
 REGION=$(grep -E '^region' terraform.tfvars | cut -d'"' -f2)
-oci ce cluster create-kubeconfig --cluster-id "$CLUSTER" --region "$REGION" --file "$HOME/.kube/config" \
+kubectl config get-contexts dt-selfcare >/dev/null 2>&1 || oci ce cluster create-kubeconfig --cluster-id "$CLUSTER" --region "$REGION" --file "$HOME/.kube/config" \
   --token-version 2.0.0 --kube-endpoint PUBLIC_ENDPOINT --overwrite >/dev/null
 kubectl config rename-context "$(kubectl config current-context)" dt-selfcare >/dev/null 2>&1 || true
 kubectl config use-context dt-selfcare >/dev/null
@@ -25,10 +25,11 @@ helm upgrade --install cert-manager jetstack/cert-manager -n cert-manager --crea
   --set crds.enabled=true --set resources.requests.cpu=10m --set resources.requests.memory=64Mi --wait
 helm upgrade --install metrics-server metrics-server/metrics-server -n kube-system --wait
 helm upgrade --install traefik traefik/traefik -n traefik --create-namespace --wait \
-  --set 'service.annotations.service\.beta\.kubernetes\.io/oci-load-balancer-shape=flexible' \
-  --set 'service.annotations.service\.beta\.kubernetes\.io/oci-load-balancer-shape-flex-min=10' \
-  --set 'service.annotations.service\.beta\.kubernetes\.io/oci-load-balancer-shape-flex-max=10' \
-  --set 'ports.web.redirections.entryPoint.to=websecure' --set 'ports.web.redirections.entryPoint.scheme=https' \
+  --set-string 'service.annotations.service\.beta\.kubernetes\.io/oci-load-balancer-shape=flexible' \
+  --set-string 'service.annotations.service\.beta\.kubernetes\.io/oci-load-balancer-shape-flex-min=10' \
+  --set-string 'service.annotations.service\.beta\.kubernetes\.io/oci-load-balancer-shape-flex-max=10' \
+  --set 'ports.web.http.redirections.entryPoint.to=websecure' --set 'ports.web.http.redirections.entryPoint.scheme=https' \
+  --set 'ports.web.allowACMEByPass=true' \
   --set resources.requests.cpu=50m --set resources.requests.memory=64Mi
 
 kubectl create namespace selfcare --dry-run=client -o yaml | kubectl apply -f -
