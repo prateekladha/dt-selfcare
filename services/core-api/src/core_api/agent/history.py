@@ -80,10 +80,12 @@ async def make_title(llm, question: str, answer: str) -> tuple[str, str]:
     """Nano model via the gateway (`title-llm`, falls back inside the gateway); question as last resort."""
     try:
         res = await llm.achat("title", [
-            {"role": "system", "content": "Write a 3-6 word title for this billing chat. No quotes, no punctuation at the end."},
+            {"role": "system", "content": "Write a 3-6 word title for this billing chat, in plain words separated by "
+                                          "spaces (e.g. 'October roaming bill increase'). No quotes, no punctuation at the end."},
             {"role": "user", "content": f"Question: {question[:300]}\nAnswer: {_CITE.sub('', answer)[:300]}"}],
             model=llm.title_model)
-        title = res.text.strip().strip('"').strip("'").rstrip(".")[:60]
+        title = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", res.text.strip().strip('"').strip("'").rstrip("."))  # CamelCase -> words
+        title = re.sub(r"\s+", " ", title)[:60]
         if 2 <= len(title):
             return title, res.model
     except Exception:  # noqa: BLE001, S110 - title is cosmetic; never fail the turn for it

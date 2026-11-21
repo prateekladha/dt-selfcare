@@ -190,3 +190,12 @@ def test_chat_history_titles_retention_and_ownership(world):
         hist.append_turn(engine, s2, "q", "a", "CONVERSATIONAL", [])
     assert len(hist.list_sessions(engine, SUB)) <= hist.MAX_SESSIONS  # retention
     assert hist.delete_session(engine, SUB, s2) and hist.get_session(engine, SUB, s2) is None
+
+
+def test_title_camelcase_is_split(world):
+    import asyncio as _a
+
+    from core_api.agent import history as hist
+    _engine, r, _state = world
+    llm = scripted_llm(r, [("text", "RoamingCostSurprise")])
+    assert _a.run(hist.make_title(llm, "Why did my bill go up?", "x"))[0] == "Roaming Cost Surprise"

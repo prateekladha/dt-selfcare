@@ -73,7 +73,7 @@ spec:
       containers:
         - name: litellm
           image: {{ .Values.llmGateway.image }}
-          args: ["--config", "/etc/litellm/config.yaml", "--port", "4000", "--num_workers", "1"]   # scale with pods (HPA), not workers
+          args: ["--config", "/etc/litellm/config.yaml", "--port", "4000"]   # single process; scale with pods (HPA). --num_workers never binds the port in this image
           ports: [{ containerPort: 4000 }]
           env:
             - name: LITELLM_MASTER_KEY
@@ -100,7 +100,14 @@ kind: HorizontalPodAutoscaler
 metadata: { name: llm-gateway }
 spec:
   scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: llm-gateway }
-  minReplicas: 1
+  minReplicas: 2   # every AI feature depends on it: no single point of failure
   maxReplicas: 4
   metrics: [{ type: Resource, resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } } }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: llm-gateway }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: llm-gateway } }
 {{- end }}
