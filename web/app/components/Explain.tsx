@@ -38,9 +38,9 @@ function ItemRow({ item, value, tone, cites, onCite }: { item: LlmItem; value?: 
   const color = tone === "up" ? "text-[var(--bad)]" : tone === "down" ? "text-[var(--good)]" : "text-[var(--ink)]";
   return (
     <li className="py-3.5 first:pt-0 last:pb-0">
-      <div className="flex items-baseline justify-between gap-4">
-        <p className="text-[15px] font-semibold text-[var(--ink)]">{item.title}</p>
-        {value && <p className={`tabular shrink-0 text-[15px] font-bold ${color}`}>{value}</p>}
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <p className="min-w-0 flex-1 text-[15px] font-semibold text-[var(--ink)]">{item.title}</p>
+        {value && <p className={`tabular max-w-full text-right text-[15px] font-bold ${color}`}>{value}</p>}
       </div>
       <p className="mt-1 text-[14px] leading-relaxed text-[var(--ink-2)]">
         <Inline text={item.why} cites={cites} /><ItemCites item={item} cites={cites} onCite={onCite} />
@@ -105,7 +105,11 @@ function Body({ r, cycle }: { r: ExplanationResponse; cycle?: string }) {
   const up = (v?: string) => (v ?? "").trim().startsWith("+");
   const down = (v?: string) => /^[−-]/.test((v ?? "").trim());
 
-  // render once to assign citation numbers in reading order
+  // assign citation numbers in reading order first, so the sources list matches the superscripts
+  cites.scan(llm.summary);
+  llm.drivers.forEach((d) => cites.scan(d.why, d.sources ?? []));
+  llm.top_usage.forEach((d) => cites.scan(d.why, d.sources ?? []));
+  cites.scan(llm.tip, llm.tip_sources ?? []);
   const summary = <Inline text={llm.summary} cites={cites} />;
   const drivers = llm.drivers.map((d, i) => <ItemRow key={i} item={d} value={d.impact} tone={up(d.impact) ? "up" : down(d.impact) ? "down" : "neutral"} cites={cites} onCite={onCite} />);
   const usage = llm.top_usage.map((d, i) => <ItemRow key={i} item={d} value={d.amount} tone="neutral" cites={cites} onCite={onCite} />);

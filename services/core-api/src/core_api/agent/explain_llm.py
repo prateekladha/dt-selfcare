@@ -22,14 +22,14 @@ from .agent import numbers_in
 from .llm import LLM, BudgetExceeded
 from .spine import global_docs
 
-PROMPT_VERSION = "explain-json-v1"
+PROMPT_VERSION = "explain-json-v2"
 LANGS = {"en": "English", "de": "German", "pl": "Polish"}
 
 SYSTEM = """You explain a mobile phone bill to the customer using ONLY the numbered sources.
 Return JSON exactly in this shape:
 {"summary": "<2-3 sentences: did the bill go up or down, by how much, and the main reason>",
- "drivers": [{"title": "<what changed>", "impact": "<amount change as written in the sources>", "why": "<one sentence>", "sources": ["S1"]}],
- "top_usage": [{"title": "<charge beyond the plan fee>", "amount": "<as written>", "why": "<one sentence>", "sources": ["S2"]}],
+ "drivers": [{"title": "<what changed, 2-5 words>", "impact": "<signed amount only, e.g. +7.40 EUR>", "why": "<one sentence>", "sources": ["S1"]}],
+ "top_usage": [{"title": "<charge beyond the plan fee, 2-5 words>", "amount": "<amount only, e.g. 7.40 EUR>", "why": "<one sentence>", "sources": ["S2"]}],
  "tip": "<one practical tip or null>", "tip_sources": ["S#"]}
 RULES: numbers and amounts must be copied exactly from the sources you list for that item; list the
 largest changes first (max 4 drivers, max 3 top_usage); if nothing changed, drivers is []; if there are

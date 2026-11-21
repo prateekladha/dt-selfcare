@@ -68,7 +68,7 @@ export default function System({ loaderData }: Route.ComponentProps) {
   const t = o.database.tables ?? {};
 
   return (
-    <div className="space-y-6">
+    <div className="min-w-0 space-y-6 overflow-x-hidden">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="display text-[34px] font-extrabold">System</h1>
@@ -170,7 +170,7 @@ export default function System({ loaderData }: Route.ComponentProps) {
 
       <Card>
         <CardHeader title="Your data, layer by layer" subtitle={`Subscriber ${o.you.subscriber}: the same facts as they exist in each store`} />
-        <div className="grid gap-4 p-6 pt-4 lg:grid-cols-3">
+        <div className="grid gap-4 p-6 pt-4 lg:grid-cols-3 [&>*]:min-w-0">
           <div className="rounded-lg border border-[var(--line)] p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)]">1 · Stream</p>
             <KV rows={[["Your partition", `P${o.you.partition} (crc32 % ${parts.length || 4})`], ["Applied offset", n(o.you.applied_offset_of_your_partition)], ["Profile (CRM sync)", o.you.valkey_profile.plan_code ?? "?"]]} />
@@ -178,7 +178,8 @@ export default function System({ loaderData }: Route.ComponentProps) {
             <ul className="mt-1 space-y-1 text-xs">{o.you.recent_alert_events.length ? o.you.recent_alert_events.map((a) => <li key={a.id} className="tabular flex justify-between"><span>{a.cycle} · {a.level}%</span><span className="text-[var(--ink-3)]">at {a.pct}% · {a.id}</span></li>) : <li className="text-[var(--ink-3)]">none</li>}</ul>
           </div>
           <div className="rounded-lg border border-[var(--line)] p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)]">2 · Valkey <code className="ml-1 normal-case">{o.you.valkey_usage_key}</code></p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)]">2 · Valkey</p>
+            <code className="mt-1 block break-all text-[11px] text-[var(--ink-2)]">{o.you.valkey_usage_key}</code>
             <KV rows={Object.entries(o.you.valkey_usage_hash).sort().map(([k, v]) => [k, k.startsWith("alert:") ? `at offset ${v}` : Number(v).toLocaleString("en-GB")])} />
           </div>
           <div className="rounded-lg border border-[var(--line)] p-4">
