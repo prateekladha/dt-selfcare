@@ -65,7 +65,8 @@ workloads:
     port: 8080
     replicas: 2
     hpa: { min: 2, max: 8, cpu: 70 }
-    resources: { requests: { cpu: 25m, memory: 384Mi }, limits: { memory: 1Gi } }
+    # request = measured per-pod CPU at normal load: with 25m the HPA saw "70% busy" at idle and sat at max
+    resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 1Gi } }
   payments-service:   # checkout, confirmation, webhook, reconciler; owns `payments`
     image: core-api
     command: ["payments-service"]
@@ -79,7 +80,7 @@ workloads:
     port: 8080
     replicas: 1
     hpa: { min: 1, max: 6, cpu: 65 }
-    resources: { requests: { cpu: 25m, memory: 384Mi }, limits: { memory: 1Gi } }
+    resources: { requests: { cpu: 75m, memory: 384Mi }, limits: { memory: 1Gi } }
   order-adapter:   # TMF622 ProductOrder API in front of the legacy order systems (country adapters, per-country rate limit)
     image: core-api
     command: ["order-adapter"]
