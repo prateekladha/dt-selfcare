@@ -75,6 +75,22 @@ resource "oci_streaming_stream" "payments" {
   stream_pool_id     = oci_streaming_stream_pool.main.id
 }
 
+# Order lifecycle events (transactional outbox -> projections: notifications, home cache, assistant context)
+resource "oci_streaming_stream" "orders" {
+  name               = "order-events"
+  partitions         = 1
+  retention_in_hours = 48
+  stream_pool_id     = oci_streaming_stream_pool.main.id
+}
+
+# Confirmations published by the legacy order systems (via the country adapters) -> workflow signals
+resource "oci_streaming_stream" "bss" {
+  name               = "bss-events"
+  partitions         = 1
+  retention_in_hours = 48
+  stream_pool_id     = oci_streaming_stream_pool.main.id
+}
+
 # ---------------- Object Storage: raw usage archive ----------------
 data "oci_objectstorage_namespace" "ns" {
   compartment_id = var.tenancy_ocid

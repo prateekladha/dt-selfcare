@@ -98,6 +98,13 @@ def close_cycle(engine: Engine, state: UsageState, cycle: str, settle_before: st
     return {"created": created, "skipped_existing": skipped}
 
 
+def bill_summary(row) -> dict:
+    return {"id": row.id, "cycle": row.cycle, "total": row.total, "subtotal": row.subtotal, "vat": row.vat,
+            "currency": row.currency, "status": row.status, "amount_paid": row.amount_paid,
+            "outstanding": max(0, row.total - row.amount_paid), "issued_at": row.issued_at.isoformat(),
+            "due_date": row.due_date.isoformat()}
+
+
 def list_bills(engine: Engine, subscriber_id: str, months: int = 12) -> list:
     with engine.connect() as cx:
         rows = cx.execute(select(bills).where(bills.c.subscriber_id == subscriber_id)

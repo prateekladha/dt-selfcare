@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from ..db import get_engine, orders
 from ..security import Principal, current_principal
-from ..workflows.orders import OrderError, get, propose_addon, public, set_status
+from ..workflows.orders import OrderError, get, propose_addon, propose_plan_change, public, set_status
 
 router = APIRouter(prefix="/v1/me/orders", tags=["orders"])
 _client = None
@@ -37,13 +37,38 @@ def propose(body: AddonIn, p: Principal = Depends(current_principal)) -> dict:
         raise HTTPException(e.status, e.message) from e
 
 
+class PlanIn(BaseModel):
+    plan_code: str = Field(min_length=3, max_length=32)
+
+
+@router.post("/plan", status_code=201)
+def propose_plan(body: PlanIn, p: Principal = Depends(current_principal)) -> dict:
+    try:
+        return propose_plan_change(get_engine(), p.subscriber_id, body.plan_code, source="app")
+    except OrderError as e:
+        raise HTTPException(e.status, e.message) from e
+
+
+@router.get("/plans/available")
+def available_plans(p: Principal = Depends(current_principal)) -> dict:
+    from telco_common.catalog import COUNTRIES, plans_for
+
+    from ..db import subscribers
+
+    with get_engine().connect() as cx:
+        sub = cx.execute(select(subscribers).where(subscribers.c.id == p.subscriber_id)).one()
+    return {"current": sub.plan_code, "currency": COUNTRIES[sub.country].currency, "plans": [
+        {"code": x.code, "name": x.name, "monthly_fee": x.monthly_fee, "data_mb": x.data_mb, "voice_min": x.voice_min,
+         "sms": x.sms, "overage_policy": x.overage_policy} for x in plans_for(sub.country)]}
+
+
 @router.post("/{order_id}/approve")
 async def approve(order_id: str, p: Principal = Depends(current_principal)) -> dict:
     """The customer's approval starts the workflow. Workflow id = order id, so a double click can't
     start two workflows (Temporal rejects a duplicate id)."""
     from temporalio.exceptions import WorkflowAlreadyStartedError
 
-    from ..workflows.addon import TASK_QUEUE, AddonPurchaseWorkflow
+    from ..workflows.addon import TASK_QUEUE, AddonPurchaseWorkflow, PlanChangeWorkflow
 
     row = get(get_engine(), p.subscriber_id, order_id)
     if row is None:
@@ -52,7 +77,8 @@ async def approve(order_id: str, p: Principal = Depends(current_principal)) -> d
         return public(row)
     set_status(get_engine(), order_id, "APPROVED", "Approved: processing")
     try:
-        await (await temporal()).start_workflow(AddonPurchaseWorkflow.run, order_id, id=order_id, task_queue=TASK_QUEUE)
+        wf = PlanChangeWorkflow.run if row.kind == "PLAN" else AddonPurchaseWorkflow.run
+        await (await temporal()).start_workflow(wf, order_id, id=order_id, task_queue=TASK_QUEUE)
     except WorkflowAlreadyStartedError:
         pass
     return public(get(get_engine(), p.subscriber_id, order_id))
@@ -76,9 +102,7 @@ async def status(order_id: str, p: Principal = Depends(current_principal)) -> di
     out = public(row)
     if row.status in ("APPROVED", "SUBMITTED"):
         try:
-            from ..workflows.addon import AddonPurchaseWorkflow
-
-            out["workflow"] = await (await temporal()).get_workflow_handle(order_id).query(AddonPurchaseWorkflow.progress)
+            out["workflow"] = await (await temporal()).get_workflow_handle(order_id).query("progress")
         except Exception:  # noqa: BLE001 - workflow status is informative only
             out["workflow"] = None
     return out

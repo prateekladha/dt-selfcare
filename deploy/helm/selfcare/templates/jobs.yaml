@@ -36,12 +36,19 @@ spec:
         spec:
           restartPolicy: OnFailure
           {{- include "selfcare.podSecurity" . | nindent 10 }}
-          containers:
+          initContainers:   # 1) issue the bills
             - name: bill-run
               image: {{ include "selfcare.image" (dict "root" . "name" "core-api") }}
               command: ["bill-run", "--wait-quiet-seconds", "30"]
               env: {{- include "selfcare.env" . | nindent 16 }}
               resources: { requests: { cpu: 50m, memory: 192Mi }, limits: { memory: 384Mi } }
+              {{- include "selfcare.containerSecurity" . | nindent 14 }}
+          containers:       # 2) bill-day prep: warm home cache + pre-generate explanations at a fixed rate
+            - name: explain-batch
+              image: {{ include "selfcare.image" (dict "root" . "name" "core-api") }}
+              command: ["explain-batch", "--rps", {{ .Values.billDay.explainRps | quote }}]
+              env: {{- include "selfcare.env" . | nindent 16 }}
+              resources: { requests: { cpu: 50m, memory: 384Mi }, limits: { memory: 1Gi } }
               {{- include "selfcare.containerSecurity" . | nindent 14 }}
 {{- if .Values.demo.seed }}
 ---

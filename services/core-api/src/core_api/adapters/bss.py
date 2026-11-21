@@ -18,22 +18,31 @@ from xml.sax.saxutils import escape
 from sqlalchemy import insert, select
 from sqlalchemy.engine import Engine
 
+BASE = "/tmf-api/productOrderingManagement/v4/productOrder"  # TMF622 resource path
+
 # legacy status -> TMF622 ProductOrder.state
 TMF_STATE = {"SUBMITTED": "acknowledged", "PROCESSING": "inProgress", "CONFIRMED": "completed",
              "REJECTED": "failed", "UNKNOWN": "pending"}
 
 
-def product_order(order_id: str, subscriber_id: str, addon_code: str, country: str) -> dict:
-    """TMF622 ProductOrder (subset) - the only order shape services exchange."""
-    return {"@type": "ProductOrder", "externalId": order_id, "category": "addon", "requestedCompletionDate": None,
+def product_order(order_id: str, subscriber_id: str, offering: str, country: str, action: str = "add") -> dict:
+    """TMF622 ProductOrder (subset) - the only order shape services exchange.
+    action: "add" = buy an add-on; "modify" = switch the tariff to `offering`."""
+    return {"@type": "ProductOrder", "externalId": order_id, "category": "addon" if action == "add" else "tariff",
+            "requestedCompletionDate": None,
             "relatedParty": [{"id": subscriber_id, "role": "customer", "@referredType": "Individual"}],
-            "productOrderItem": [{"id": "1", "action": "add",
-                                  "productOffering": {"id": addon_code, "@referredType": "ProductOffering"}}],
+            "productOrderItem": [{"id": "1", "action": action,
+                                  "productOffering": {"id": offering, "@referredType": "ProductOffering"}}],
             "@baseType": "ProductOrder", "place": [{"id": country, "role": "market"}]}
+
+
+def market(order: dict) -> str:
+    return next(p["id"] for p in order.get("place", []) if p.get("role") == "market")
 
 
 class OrderAdapter(Protocol):
     protocol: str
+    prefix: str
 
     def submit(self, engine: Engine, order: dict) -> str: ...
     def state(self, engine: Engine, external_id: str) -> str: ...
@@ -71,8 +80,10 @@ class RestBssAdapter(_LegacyEmulator):
     protocol, prefix = "rest", "DEB"
 
     def submit(self, engine: Engine, order: dict) -> str:
+        item = order["productOrderItem"][0]
         wire = json.dumps({"auftragsnummer": order["externalId"], "kunde": order["relatedParty"][0]["id"],
-                           "option": order["productOrderItem"][0]["productOffering"]["id"], "aktion": "BUCHEN"})
+                           "option": item["productOffering"]["id"],
+                           "aktion": "BUCHEN" if item["action"] == "add" else "TARIFWECHSEL"})
         return self._store(engine, order, wire)
 
 
@@ -83,14 +94,19 @@ class SoapBssAdapter(_LegacyEmulator):
 
     def submit(self, engine: Engine, order: dict) -> str:
         item = order["productOrderItem"][0]["productOffering"]["id"]
+        op = "CreateOrder" if order["productOrderItem"][0]["action"] == "add" else "ChangeTariff"
         wire = ('<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ord="urn:legacy:orders">'
-                f'<soapenv:Body><ord:CreateOrder><ord:Ref>{escape(order["externalId"])}</ord:Ref>'
+                f'<soapenv:Body><ord:{op}><ord:Ref>{escape(order["externalId"])}</ord:Ref>'
                 f'<ord:Msisdn>{escape(order["relatedParty"][0]["id"])}</ord:Msisdn><ord:Option>{escape(item)}</ord:Option>'
-                '</ord:CreateOrder></soapenv:Body></soapenv:Envelope>')
+                f'</ord:{op}></soapenv:Body></soapenv:Envelope>')
         return self._store(engine, order, wire)
 
 
 ADAPTERS: dict[str, OrderAdapter] = {"DE": RestBssAdapter(), "PL": SoapBssAdapter()}
+
+
+def adapter_for_id(external_id: str) -> OrderAdapter | None:
+    return next((a for a in ADAPTERS.values() if external_id.startswith(a.prefix + "-")), None)
 
 
 def for_country(country: str) -> OrderAdapter:

@@ -39,8 +39,9 @@ HOW TO WORK
 - Every tool result has a "source_label" like S1. After each factual sentence cite the labels it uses, e.g. "... [S2]".
 - Use only numbers that appear in the tool results you cite; keep amounts exactly as written.
 - If the tools don't have the answer, say what is missing.
-- If the customer wants more data, you may prepare an add-on with propose_addon; then tell them to approve it
-  below. Never say it is bought or active: it only happens after their approval.
+- If the customer wants more data, you may prepare an add-on with propose_addon; if they want a different tariff,
+  prepare it with propose_plan_change (compare fees and data first). Then tell them to approve it below.
+  Never say it is bought, changed or active: it only happens after their approval.
 - For greetings or small talk, reply briefly and offer what you can help with (bills, usage, plan, payments). No tools needed.
 
 STYLE
@@ -54,6 +55,7 @@ STEP_LABELS = {
     "get_cdr_evidence": "Re-reading your raw usage records for {cycle}", "get_payments": "Checking your payments",
     "get_alerts": "Checking your alerts", "simulate_usage": "Pricing that scenario on your plan",
     "propose_addon": "Preparing an add-on for your approval",
+    "propose_plan_change": "Preparing a tariff change for your approval",
 }
 
 
@@ -126,8 +128,14 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                     out = await asyncio.to_thread(broker.request, c["name"], c["arguments"] or "{}", ctx)
                     yield {"type": "step_done", "tool": c["name"], "ok": out.decision != "DENY" and "error" not in out.result}
                     if out.decision == "PROPOSE" and out.result.get("proposal"):  # human-in-the-loop approval card
-                        yield {"type": "proposal", "order_id": out.result["order_id"], "add_on": out.result["add_on"],
-                               "extra_data": out.result["extra_data"], "price": out.result["price"]}
+                        r_ = out.result
+                        if "new_tariff" in r_:
+                            yield {"type": "proposal", "kind": "PLAN", "order_id": r_["order_id"], "add_on": r_["new_tariff"],
+                                   "extra_data": f"{r_['current_tariff']} → {r_['new_tariff']} · data {r_['data']}",
+                                   "price": r_["monthly_fee"].split(" -> ")[-1] + " / month"}
+                        else:
+                            yield {"type": "proposal", "kind": "ADDON", "order_id": r_["order_id"], "add_on": r_["add_on"],
+                                   "extra_data": r_["extra_data"], "price": r_["price"]}
                     messages.append({"role": "tool", "tool_call_id": c["id"], "content": json.dumps(out.result, default=str)[:3800]})
                 continue
             answer = res.text

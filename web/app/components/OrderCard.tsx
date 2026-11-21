@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, Loader2, PackagePlus, XCircle } from "lucide-react";
+import { ArrowLeftRight, CheckCircle2, Loader2, PackagePlus, XCircle } from "lucide-react";
 import { useRevalidator } from "react-router";
 import { Button } from "./ui";
 
 type Order = { order_id: string; status: string; detail?: string; workflow?: { stage: string } | null };
 
 /** Human-in-the-loop approval for a write action. Approve -> durable workflow; progress is polled live. */
-export function OrderCard({ orderId, title, extra, price }: { orderId: string; title: string; extra: string; price: string }) {
+export function OrderCard({ orderId, title, extra, price, kind = "ADDON" }:
+  { orderId: string; title: string; extra: string; price: string; kind?: "ADDON" | "PLAN" }) {
+  const plan = kind === "PLAN";
   const [order, setOrder] = useState<Order>({ order_id: orderId, status: "PROPOSED" });
   const [busy, setBusy] = useState(false);
   const revalidator = useRevalidator();
@@ -35,16 +37,16 @@ export function OrderCard({ orderId, title, extra, price }: { orderId: string; t
   return (
     <div className="rounded-[var(--radius)] border border-[var(--line-strong)] bg-[var(--surface)] p-4">
       <div className="flex items-start gap-3">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--brand-bg)] text-[var(--brand-ink)]"><PackagePlus size={18} /></span>
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--brand-bg)] text-[var(--brand-ink)]">{plan ? <ArrowLeftRight size={18} /> : <PackagePlus size={18} />}</span>
         <div className="min-w-0 flex-1">
           <p className="text-[15px] font-semibold">{title}</p>
-          <p className="mt-0.5 text-[13.5px] text-[var(--ink-3)]">{extra} for this billing cycle · {price}, added to your next bill</p>
+          <p className="mt-0.5 text-[13.5px] text-[var(--ink-3)]">{plan ? <>{extra} · {price} · active from today, this month billed on the new tariff</> : <>{extra} for this billing cycle · {price}, added to your next bill</>}</p>
         </div>
       </div>
       <div className="mt-4">
         {order.status === "PROPOSED" && (
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={() => act("approve")} disabled={busy}>{busy ? <Loader2 size={15} className="animate-spin" /> : null} Approve and buy</Button>
+            <Button size="sm" onClick={() => act("approve")} disabled={busy}>{busy ? <Loader2 size={15} className="animate-spin" /> : null} {plan ? "Approve tariff change" : "Approve and buy"}</Button>
             <Button size="sm" variant="secondary" onClick={() => act("decline")} disabled={busy}>Not now</Button>
           </div>
         )}
@@ -54,7 +56,7 @@ export function OrderCard({ orderId, title, extra, price }: { orderId: string; t
         )}
         {order.status === "COMPLETED" && <p className="flex items-center gap-2 text-[13.5px] font-medium text-[var(--good)]"><CheckCircle2 size={16} /> {order.detail}</p>}
         {order.status === "FAILED" && <p className="flex items-center gap-2 text-[13.5px] font-medium text-[var(--bad)]"><XCircle size={16} /> {order.detail}</p>}
-        {order.status === "DECLINED" && <p className="text-[13.5px] text-[var(--ink-3)]">Not bought.</p>}
+        {order.status === "DECLINED" && <p className="text-[13.5px] text-[var(--ink-3)]">{plan ? "Tariff unchanged." : "Not bought."}</p>}
       </div>
     </div>
   );

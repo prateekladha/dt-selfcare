@@ -46,7 +46,7 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
           <p className="text-sm font-medium text-[var(--ink-3)]">{d.greeting},</p>
           <h1 className="display text-[34px] font-extrabold leading-tight">{home.subscriber.name.split(" ")[0]}</h1>
         </div>
-        <p className="text-[13px] text-[var(--ink-3)]">{home.plan.name} · updated {d.asOfLabel}</p>
+        <p className="text-[13px] text-[var(--ink-3)]">{home.plan.name} · <Link to="/plan" className="font-semibold text-[var(--ink)] hover:underline">Change tariff</Link> · updated {d.asOfLabel}</p>
       </div>
 
       {explanation && (
