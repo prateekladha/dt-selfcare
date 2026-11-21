@@ -58,7 +58,7 @@ def home(response: Response, p: Principal = Depends(current_principal)) -> dict:
     outstanding = sum(max(0, b.total - b.amount_paid) for b in history)
     return {
         "as_of": now.isoformat(),
-        "subscriber": {"id": sub.id, "name": sub.name, "country": sub.country,
+        "subscriber": {"id": sub.id, "name": sub.name, "email": sub.email, "country": sub.country,
                        "locale": COUNTRIES[plan.country].locale},
         "plan": {"code": plan.code, "name": plan.name, "monthly_fee": plan.monthly_fee, "data_mb": plan.data_mb,
                  "voice_min": plan.voice_min, "sms": plan.sms, "overage_policy": plan.overage_policy},

@@ -68,7 +68,7 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
             <p className="mt-2 text-[13px] text-[var(--ink-3)]">{d.due ? `${cycleLabel(d.due.cycle, loc)} bill, including VAT` : "You're all paid up. Nice."}</p>
             <div className="mt-auto pt-6">
               <div className="flex flex-wrap gap-2">
-                {d.due && home.features.payments && <PayButton purpose="BILL" billId={d.due.id} label="Pay now" name={home.subscriber.name} contact={`+${home.subscriber.id}`} />}
+                {d.due && home.features.payments && <PayButton purpose="BILL" billId={d.due.id} label="Pay now" name={home.subscriber.name} contact={`+${home.subscriber.id}`} email={home.subscriber.email} />}
                 {home.last_bill && <LinkButton to={`/bills/${home.last_bill.cycle}`} variant="secondary"><Receipt size={16} /> View bill</LinkButton>}
               </div>
               {home.last_bill && <a href={`/bills/${home.last_bill.cycle}/pdf`} download className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-[var(--ink-2)] underline-offset-4 hover:underline"><Download size={15} /> Download PDF</a>}
@@ -91,7 +91,7 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
               ))}
             </ul>
             <div className="mt-auto flex flex-wrap items-center gap-2 pt-5">
-              {home.features.payments && home.unbilled.total > 0 && <PayButton purpose="ADVANCE" label="Pay in advance" variant="secondary" name={home.subscriber.name} contact={`+${home.subscriber.id}`} />}
+              {home.features.payments && home.unbilled.total > 0 && <PayButton purpose="ADVANCE" label="Pay in advance" variant="secondary" name={home.subscriber.name} contact={`+${home.subscriber.id}`} email={home.subscriber.email} />}
               <LinkButton to="/bills/current" variant="ghost">Explain <ArrowRight size={16} /></LinkButton>
             </div>
           </div>

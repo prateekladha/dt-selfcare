@@ -148,13 +148,9 @@ test("payment @payment: pay in advance in Razorpay test mode, settled exactly on
     await loc.click({ timeout: 15_000 });
     await loc.pressSequentially(text, { delay: 60 });
   };
-  const mobile = rzp.getByPlaceholder(/mobile number/i);
-  if (await mobile.isVisible({ timeout: 5_000 }).catch(() => false)) {
-    await mobile.clear();
-    await type(mobile, "9876543210");
-    await rzp.getByRole("button", { name: /^continue$/i }).last().click({ timeout: 15_000 });
-    await page.waitForTimeout(2000);
-  }
+  // The app pre-fills the customer's number and email, so the gateway's contact prompt should not appear.
+  const contactPrompt = rzp.getByText("Contact details");
+  expect(await contactPrompt.isVisible({ timeout: 4_000 }).catch(() => false), "contact prompt skipped by prefill").toBe(false);
   await shot(page, "08-pay-2-methods");
 
   const upi = rzp.getByText(/^UPI$/i).first();
@@ -168,7 +164,7 @@ test("payment @payment: pay in advance in Razorpay test mode, settled exactly on
     await rzp.getByText(/^Cards?$/i).first().click({ timeout: 10_000 }).catch(() => {});
     const field = (name: string, label: RegExp) =>
       rzp.locator(`input[name="${name}"]`).or(rzp.getByPlaceholder(label)).first();
-    await type(field("card[number]", /card number/i), "5267318187975449");
+    await type(field("card[number]", /card number/i), "4012888888881881");  // Razorpay international test card (EUR order)
     await type(field("card[expiry]", /MM ?\/ ?YY|expiry/i), "1230");
     await type(field("card[cvv]", /CVV/i), "123");
     await shot(page, "08-pay-3-card");
