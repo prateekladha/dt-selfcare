@@ -175,6 +175,21 @@ def t_simulate(args: dict, ctx: ToolContext) -> dict:
             "estimated_total": fmt_money(b.total, cur), "lines": [f"{x.label}: {fmt_money(x.amount, cur)}" for x in b.lines]}
 
 
+def t_propose_addon(args: dict, ctx: ToolContext) -> dict:
+    """WRITE (propose tier): prepares an add-on order for the customer to approve. Nothing changes until
+    the customer approves in the app; approval starts a durable workflow."""
+    from ..workflows.orders import OrderError, propose_addon
+
+    try:
+        o = propose_addon(ctx.engine, ctx.subscriber_id, args["addon_code"], source="assistant")
+    except OrderError as e:
+        return {"error": e.message}
+    pv = o["preview"]
+    return {"source": f"orders:{o['order_id']}", "proposal": True, "order_id": o["order_id"],
+            "add_on": pv["name"], "extra_data": f"{pv['data_mb']:,} MB", "price": fmt_money(pv["price"], pv["currency"]),
+            "status": "waiting for the customer's approval"}
+
+
 CYCLE = {"type": "object", "properties": {"cycle": {"type": "string", "pattern": r"^\d{4}-\d{2}$",
                                                     "description": "billing month, YYYY-MM"}},
          "required": ["cycle"], "additionalProperties": False}
@@ -201,6 +216,10 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
          {"type": "object", "properties": {"scenario": {"type": "string", "enum": [
              "us-trip-2-weeks", "eu-summer-holiday", "heavy-streaming", "calling-family-abroad", "light-month"]}},
           "required": ["scenario"], "additionalProperties": False}, t_simulate),
+    Tool("propose_addon", "Prepare a data add-on purchase for the customer to approve (nothing is bought until they approve). "
+         "Codes: DE-DATA-5GB, DE-DATA-20GB (Germany), PL-DATA-5GB (Poland).",
+         {"type": "object", "properties": {"addon_code": {"type": "string", "enum": ["DE-DATA-5GB", "DE-DATA-20GB", "PL-DATA-5GB"]}},
+          "required": ["addon_code"], "additionalProperties": False}, t_propose_addon, tier="propose"),
 ]}
 
 

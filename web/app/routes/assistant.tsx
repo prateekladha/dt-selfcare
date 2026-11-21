@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { ArrowUp, BrainCircuit, Check, ChevronDown, Loader2, ShieldCheck, Sparkles } from "lucide-react";
 import { AgentTraceView } from "~/components/AgentTrace";
+import { OrderCard } from "~/components/OrderCard";
 import { CiteMap, RichText, SourceList } from "~/components/RichText";
 import { Card } from "~/components/ui";
 import type { AgentTrace, ToolSource } from "~/lib/types";
@@ -9,7 +10,8 @@ import { useSnapshot } from "./_app";
 export const meta = () => [{ title: "Assistant · Self-care" }];
 
 type Step = { label: string; done: boolean; ok?: boolean };
-type Turn = { q: string; text: string; steps: Step[]; status?: string; citations: ToolSource[]; trace?: AgentTrace; error?: string; repairing?: boolean };
+type Proposal = { order_id: string; add_on: string; extra_data: string; price: string };
+type Turn = { q: string; text: string; steps: Step[]; proposals?: Proposal[]; status?: string; citations: ToolSource[]; trace?: AgentTrace; error?: string; repairing?: boolean };
 
 const TOOL_TITLES: Record<string, (a: Record<string, unknown>) => string> = {
   list_bills: () => "Your recent bills",
@@ -58,6 +60,9 @@ function Answer({ t }: { t: Turn }) {
         {t.error ? <p className="text-[15px] text-[var(--bad)]">{t.error}</p>
           : t.text ? body
           : <p className="flex items-center gap-2 text-[14px] text-[var(--ink-3)]"><Loader2 size={15} className="animate-spin" /> Thinking…</p>}
+        {!!t.proposals?.length && (
+          <div className="mt-4 space-y-3">{t.proposals.map((p) => <OrderCard key={p.order_id} orderId={p.order_id} title={p.add_on} extra={p.extra_data} price={`${p.price} + VAT`} />)}</div>
+        )}
         {t.repairing && <p className="mt-3 text-xs text-[var(--warn)]">Double-checking a number against your records…</p>}
         {t.status && t.status !== "CONVERSATIONAL" && (
           <p className="mt-4 flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
@@ -135,6 +140,7 @@ export default function Assistant() {
           else if (ev.type === "reset") patch((t) => ({ ...t, text: "" }));
           else if (ev.type === "step") patch((t) => ({ ...t, steps: [...t.steps, { label: ev.label, done: false }] }));
           else if (ev.type === "step_done") patch((t) => ({ ...t, steps: t.steps.map((s, i) => (i === t.steps.length - 1 ? { ...s, done: true, ok: ev.ok } : s)) }));
+          else if (ev.type === "proposal") patch((t) => ({ ...t, proposals: [...(t.proposals ?? []), ev] }));
           else if (ev.type === "repairing") patch((t) => ({ ...t, repairing: true }));
           else if (ev.type === "replace") patch((t) => ({ ...t, text: ev.text }));
           else if (ev.type === "done") patch((t) => ({ ...t, text: ev.answer, status: ev.status, citations: ev.citations ?? [], trace: ev.trace, repairing: false }));

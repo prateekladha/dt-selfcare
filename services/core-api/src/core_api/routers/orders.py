@@ -1,0 +1,92 @@
+"""Write actions with human-in-the-loop: propose -> customer approves -> durable Temporal workflow."""
+from __future__ import annotations
+
+import os
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+
+from ..db import get_engine, orders
+from ..security import Principal, current_principal
+from ..workflows.orders import OrderError, get, propose_addon, public, set_status
+
+router = APIRouter(prefix="/v1/me/orders", tags=["orders"])
+_client = None
+
+
+async def temporal():
+    global _client
+    if _client is None:
+        from temporalio.client import Client
+
+        _client = await Client.connect(os.environ.get("TEMPORAL_ADDRESS", "temporal:7233"),
+                                       namespace=os.environ.get("TEMPORAL_NAMESPACE", "default"))
+    return _client
+
+
+class AddonIn(BaseModel):
+    addon_code: str = Field(min_length=3, max_length=32)
+
+
+@router.post("/addon", status_code=201)
+def propose(body: AddonIn, p: Principal = Depends(current_principal)) -> dict:
+    try:
+        return propose_addon(get_engine(), p.subscriber_id, body.addon_code, source="app")
+    except OrderError as e:
+        raise HTTPException(e.status, e.message) from e
+
+
+@router.post("/{order_id}/approve")
+async def approve(order_id: str, p: Principal = Depends(current_principal)) -> dict:
+    """The customer's approval starts the workflow. Workflow id = order id, so a double click can't
+    start two workflows (Temporal rejects a duplicate id)."""
+    from temporalio.exceptions import WorkflowAlreadyStartedError
+
+    from ..workflows.addon import TASK_QUEUE, AddonPurchaseWorkflow
+
+    row = get(get_engine(), p.subscriber_id, order_id)
+    if row is None:
+        raise HTTPException(404, "order not found")
+    if row.status not in ("PROPOSED", "APPROVED"):
+        return public(row)
+    set_status(get_engine(), order_id, "APPROVED", "Approved: processing")
+    try:
+        await (await temporal()).start_workflow(AddonPurchaseWorkflow.run, order_id, id=order_id, task_queue=TASK_QUEUE)
+    except WorkflowAlreadyStartedError:
+        pass
+    return public(get(get_engine(), p.subscriber_id, order_id))
+
+
+@router.post("/{order_id}/decline")
+def decline(order_id: str, p: Principal = Depends(current_principal)) -> dict:
+    row = get(get_engine(), p.subscriber_id, order_id)
+    if row is None:
+        raise HTTPException(404, "order not found")
+    if row.status == "PROPOSED":
+        set_status(get_engine(), order_id, "DECLINED", "Declined by the customer")
+    return public(get(get_engine(), p.subscriber_id, order_id))
+
+
+@router.get("/{order_id}")
+async def status(order_id: str, p: Principal = Depends(current_principal)) -> dict:
+    row = get(get_engine(), p.subscriber_id, order_id)
+    if row is None:
+        raise HTTPException(404, "order not found")
+    out = public(row)
+    if row.status in ("APPROVED", "SUBMITTED"):
+        try:
+            from ..workflows.addon import AddonPurchaseWorkflow
+
+            out["workflow"] = await (await temporal()).get_workflow_handle(order_id).query(AddonPurchaseWorkflow.progress)
+        except Exception:  # noqa: BLE001 - workflow status is informative only
+            out["workflow"] = None
+    return out
+
+
+@router.get("")
+def list_orders(p: Principal = Depends(current_principal)) -> list[dict]:
+    with get_engine().connect() as cx:
+        rows = cx.execute(select(orders).where(orders.c.subscriber_id == p.subscriber_id)
+                          .order_by(orders.c.created_at.desc()).limit(20)).all()
+    return [public(r) for r in rows]
