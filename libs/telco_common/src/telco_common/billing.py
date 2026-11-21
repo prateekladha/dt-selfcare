@@ -8,6 +8,7 @@ number a customer sees mid-month is computed exactly like the invoice.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 
@@ -97,14 +98,41 @@ def split_counters(counters: dict[str, int]) -> tuple[dict[str, int], dict[str, 
     return plain, zoned, addons
 
 
+def prorated_plan(segments: list[tuple[Plan, int]]) -> tuple[Plan, list[BillLine]]:
+    """Tariff change mid-cycle. segments = [(plan, days in force)] in order, days summing to the cycle length.
+    - fee: one line per tariff, pro-rated by days (the change day is billed on the new tariff);
+    - allowances (data, minutes, SMS): pro-rated by days; unlimited if any segment was unlimited;
+    - per-unit, overage and roaming rates: the tariff in force at the end of the cycle (usage counters
+      are cycle totals, not split by date, so usage is priced once, at the current tariff)."""
+    total = sum(d for _, d in segments)
+    last = segments[-1][0]
+    lines: list[BillLine] = []
+    for i, (p, days) in enumerate(segments):
+        lines.append(BillLine(code=f"PLAN_FEE:{i + 1}:{p.code}", category=LineCategory.PLAN,
+                              label=f"{p.name} monthly fee, {days} of {total} days", quantity=days, unit="days",
+                              amount=int((Decimal(p.monthly_fee) * days / total).quantize(Decimal(1), ROUND_HALF_UP))))
+
+    def blend(attr: str) -> int | None:
+        vals = [(getattr(p, attr), d) for p, d in segments]
+        if any(v is None for v, _ in vals):
+            return None
+        return int((sum(Decimal(v) * d for v, d in vals) / total).quantize(Decimal(1), ROUND_HALF_UP))
+
+    eff = replace(last, data_mb=blend("data_mb"), voice_min=blend("voice_min"), sms=blend("sms"))
+    return eff, lines
+
+
 def rate(subscriber_id: str, cycle: str, plan: Plan, counters: dict[str, int],
-         adjustments: list[BillLine] | None = None) -> Bill:
+         adjustments: list[BillLine] | None = None, segments: list[tuple[Plan, int]] | None = None) -> Bill:
+    """segments: tariff history within the cycle (see prorated_plan); None/one segment = whole cycle on `plan`."""
+    if segments and len(segments) > 1:
+        plan, fee_lines = prorated_plan(segments)
+    else:
+        fee_lines = [BillLine(code="PLAN_FEE", category=LineCategory.PLAN, label=f"{plan.name} monthly fee",
+                              quantity=1, unit="month", amount=plan.monthly_fee)]
     cfg = COUNTRIES[plan.country]
     plain, zoned, addons = split_counters(counters)
-    lines: list[BillLine] = [
-        BillLine(code="PLAN_FEE", category=LineCategory.PLAN, label=f"{plan.name} monthly fee",
-                 quantity=1, unit="month", amount=plan.monthly_fee)
-    ]
+    lines: list[BillLine] = list(fee_lines)
 
     addon_mb = 0
     for code, count in sorted(addons.items()):

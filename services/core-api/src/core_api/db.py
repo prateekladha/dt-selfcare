@@ -176,6 +176,17 @@ agent_traces = Table(
     Column("created_at", DateTime(timezone=True), default=utcnow, nullable=False),
 )
 
+# ---- tariff history (customer domain): drives pro-rating of fees and allowances ----
+plan_changes = Table(
+    "plan_changes", metadata,
+    Column("order_id", String(36), primary_key=True),       # one change per order: a retried activity is a no-op
+    Column("subscriber_id", String(32), nullable=False),
+    Column("from_plan", String(32), nullable=False),
+    Column("to_plan", String(32), nullable=False),
+    Column("effective_at", DateTime(timezone=True), nullable=False),
+)
+Index("ix_plan_changes_sub", plan_changes.c.subscriber_id, plan_changes.c.effective_at)
+
 # ---- assistant chat history (owned by assistant-service) ----
 chat_sessions = Table(
     "chat_sessions", metadata,
