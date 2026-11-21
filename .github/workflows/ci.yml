@@ -91,7 +91,7 @@ jobs:
         run: |
           helm upgrade --install selfcare deploy/helm/selfcare -n selfcare \
             -f deploy/helm/values-oci.yaml --set image.tag=${{ github.sha }} \
-            --wait --timeout 20m --history-max 5
+            --wait --timeout 20m --history-max 5 --force-conflicts
       - name: in-cluster smoke test (every case-study flow)
         run: helm test selfcare -n selfcare --logs --timeout 5m
       - name: public endpoint
