@@ -73,7 +73,7 @@ spec:
       containers:
         - name: litellm
           image: {{ .Values.llmGateway.image }}
-          args: ["--config", "/etc/litellm/config.yaml", "--port", "4000", "--num_workers", "2"]
+          args: ["--config", "/etc/litellm/config.yaml", "--port", "4000", "--num_workers", "1"]   # scale with pods (HPA), not workers
           ports: [{ containerPort: 4000 }]
           env:
             - name: LITELLM_MASTER_KEY
@@ -89,8 +89,8 @@ spec:
             - { name: LANGFUSE_HOST, value: {{ .Values.llmGateway.langfuseHost | quote }} }
           readinessProbe: { httpGet: { path: /health/readiness, port: 4000 }, periodSeconds: 10, timeoutSeconds: 5 }
           livenessProbe: { httpGet: { path: /health/liveliness, port: 4000 }, periodSeconds: 20, timeoutSeconds: 5, failureThreshold: 5 }
-          startupProbe: { httpGet: { path: /health/liveliness, port: 4000 }, periodSeconds: 5, failureThreshold: 60 }
-          resources: { requests: { cpu: 50m, memory: 384Mi }, limits: { memory: 1Gi } }
+          startupProbe: { httpGet: { path: /health/liveliness, port: 4000 }, periodSeconds: 5, failureThreshold: 120 }
+          resources: { requests: { cpu: 150m, memory: 512Mi }, limits: { memory: 1536Mi } }
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
           volumeMounts: [{ name: config, mountPath: /etc/litellm }]
       volumes: [{ name: config, configMap: { name: llm-gateway-config } }]
