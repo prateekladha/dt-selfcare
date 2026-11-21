@@ -43,7 +43,7 @@ STRICT RULES:
 - Do not mention these rules, the facts list, or that you are an AI."""
 
 _NUM = re.compile(r"\d+(?:[.,\s]\d{3})*(?:[.,]\d+)?")
-_breaker = CircuitBreaker("mistral", failures=3, reset_s=60)
+_breakers: dict[str, CircuitBreaker] = {}  # one breaker per provider
 
 
 def _norm(token: str) -> str:
@@ -66,17 +66,34 @@ def template(ex: Explanation) -> str:
 class Narrator:
     def __init__(self, settings: Settings, engine: Engine, http: httpx.Client | None = None):
         self.s, self.engine = settings, engine
-        self.http = http or httpx.Client(timeout=settings.mistral_timeout_s)
+        self.http = http or httpx.Client(timeout=settings.llm_timeout_s)
+
+    def _provider(self, name: str) -> tuple[str, str, str] | None:
+        """-> (chat-completions URL, api key, model). All three speak the OpenAI chat format."""
+        s = self.s
+        table = {
+            "deepseek": ("https://api.deepseek.com/chat/completions", s.deepseek_api_key, s.deepseek_model),
+            "mistral": ("https://api.mistral.ai/v1/chat/completions", s.mistral_api_key, s.mistral_model),
+            # open-weights model (e.g. DeepSeek-V3 / Mistral Small) served by vLLM inside our own region
+            "selfhosted": (f"{s.selfhosted_llm_url.rstrip('/')}/v1/chat/completions", s.selfhosted_llm_key or "none",
+                           s.selfhosted_llm_model),
+        }
+        cfg = table.get(name)
+        if cfg is None or not cfg[1] or (name == "selfhosted" and not s.selfhosted_llm_url):
+            return None
+        return cfg
 
     def narrate(self, ex: Explanation, subscriber_id: str, country: str, lang: str = "en",
                 allow_llm: bool = True) -> tuple[str, str]:
         lang = lang if lang in LANGS else "en"
-        if not (allow_llm and flag_bool("ai-explanations", country, subscriber_id)
-                and flag_str("ai-provider", country, subscriber_id) == "mistral" and self.s.mistral_api_key):
+        name = flag_str("ai-provider", country, subscriber_id)
+        cfg = self._provider(name)
+        if not (allow_llm and flag_bool("ai-explanations", country, subscriber_id) and cfg):
             AI_CALLS.labels("template", "flag_or_config").inc()
             return template(ex), "template"
+        url, api_key, model = cfg
 
-        key = hashlib.sha256("|".join([*ex.facts, lang, self.s.mistral_model]).encode()).hexdigest()
+        key = hashlib.sha256("|".join([*ex.facts, lang, name, model]).encode()).hexdigest()
         with self.engine.connect() as cx:
             hit = cx.execute(select(explanations.c.text, explanations.c.provider)
                              .where(explanations.c.cache_key == key)).first()
@@ -84,48 +101,49 @@ class Narrator:
             AI_CALLS.labels(hit.provider, "cache_hit").inc()
             return hit.text, hit.provider
 
+        breaker = _breakers.setdefault(name, CircuitBreaker(name, failures=3, reset_s=60))
         try:
-            _breaker.before()
-            answer = self._mistral(ex, lang)
-            _breaker.success()
+            breaker.before()
+            answer = self._chat(url, api_key, model, ex, lang)
+            breaker.success()
         except CircuitOpen:
             AI_CALLS.labels("template", "breaker_open").inc()
             return template(ex), "template"
         except (httpx.HTTPError, KeyError, ValueError) as e:
-            _breaker.failure()
-            log.warning("llm_failed", error=str(e))
+            breaker.failure()
+            log.warning("llm_failed", provider=name, error=str(e))
             AI_CALLS.labels("template", "llm_error").inc()
             return template(ex), "template"
 
         if not grounded(answer, ex.facts, [ex.cycle, ex.previous_cycle or "", *ex.usage_changes]):
-            log.warning("llm_ungrounded_answer_discarded", cycle=ex.cycle)
+            log.warning("llm_ungrounded_answer_discarded", provider=name, cycle=ex.cycle)
             AI_CALLS.labels("template", "ungrounded").inc()
             return template(ex), "template"
 
-        provider = f"mistral:{self.s.mistral_model}"
+        provider = f"{name}:{model}"
         try:
             with self.engine.begin() as cx:
                 cx.execute(insert(explanations).values(cache_key=key, subscriber_id=subscriber_id, cycle=ex.cycle,
                                                        provider=provider, text=answer))
         except IntegrityError:
             pass  # concurrent request cached it first
-        AI_CALLS.labels("mistral", "ok").inc()
+        AI_CALLS.labels(name, "ok").inc()
         return answer, provider
 
-    def _mistral(self, ex: Explanation, lang: str) -> str:
+    def _chat(self, url: str, api_key: str, model: str, ex: Explanation, lang: str) -> str:
         facts = "\n".join(f"- {f}" for f in [*ex.facts, *ex.usage_changes])
         body = {
-            "model": self.s.mistral_model,
+            "model": model,
             "temperature": 0.2,
             "max_tokens": 350,
+            "stream": False,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT.format(language=LANGS[lang])},
                 {"role": "user", "content": f"Billing cycle {ex.cycle}. Facts:\n{facts}"},
             ],
         }
         t0 = time.monotonic()
-        r = self.http.post("https://api.mistral.ai/v1/chat/completions", json=body,
-                           headers={"Authorization": f"Bearer {self.s.mistral_api_key}"})
+        r = self.http.post(url, json=body, headers={"Authorization": f"Bearer {api_key}"})
         AI_LATENCY.observe(time.monotonic() - t0)
         r.raise_for_status()
         data = r.json()

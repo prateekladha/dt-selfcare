@@ -24,9 +24,15 @@ class Settings(BaseSettings):
     razorpay_key_secret: str = ""
     razorpay_webhook_secret: str = ""
 
+    # LLM providers (selected per country by the `ai-provider` flag)
+    deepseek_api_key: str = ""
+    deepseek_model: str = "deepseek-chat"
     mistral_api_key: str = ""
     mistral_model: str = "mistral-small-latest"
-    mistral_timeout_s: float = 8.0
+    selfhosted_llm_url: str = ""  # vLLM in-region (OpenAI-compatible)
+    selfhosted_llm_key: str = ""
+    selfhosted_llm_model: str = "deepseek-ai/DeepSeek-V3"
+    llm_timeout_s: float = 12.0
     ai_daily_limit_per_subscriber: int = 20
 
     bill_due_days: int = 14

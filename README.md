@@ -18,7 +18,7 @@ deployed on Oracle Cloud (OCI), but sized to cost close to nothing.
 | Payment gateway | Razorpay (test mode): order → checkout → signature check + server-side capture check → webhook. Idempotent end to end. |
 | Bill breakdown service | `telco_common.billing.rate`: plan fee, overage, roaming by zone (EU roam-like-at-home), international, add-ons, VAT per country |
 | "Why your bill increased" / "Top usage drivers" | `telco_common.explainer.explain`: deterministic, ranked by impact |
-| AI natural-language explanation | Mistral Small (EU-hosted) with guardrails: facts-only input, **every number in the answer is checked against the facts**, template fallback, circuit breaker, cache, per-user budget. EN / DE / PL. |
+| AI natural-language explanation | Provider-agnostic: DeepSeek (demo), Mistral (EU-hosted) or self-hosted open weights, chosen by a feature flag. Guardrails: facts-only input, **every number in the answer is checked against the facts**, template fallback, circuit breaker, cache, per-user budget. EN / DE / PL. |
 
 Beyond the brief: real-time **50/80/100% data alerts sent exactly once** (pushed live to the open
 app), multi-country (DE in EUR at 19% VAT, PL in PLN at 23% VAT), feature flags per country, and
@@ -41,7 +41,7 @@ a load generator.
  Browser ──▶ web (React Router SSR) ──▶ core-api (modular monolith) ──▶ Autonomous DB (bills, payments, outbox)
                                           │  billing · payments · insights · AI      └──▶ payment-events (outbox relay)
                                           ├──▶ Razorpay (orders, webhooks)
-                                          └──▶ Mistral (EU) — guarded
+                                          └──▶ LLM (DeepSeek / Mistral EU / self-hosted) — guarded
 ```
 
 ### Key design decisions (and the trade-off behind each)

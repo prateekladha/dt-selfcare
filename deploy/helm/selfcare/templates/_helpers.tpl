@@ -54,6 +54,8 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
   valueFrom: { secretKeyRef: { name: selfcare-razorpay-key-secret, key: value, optional: true } }
 - name: APP_RAZORPAY_WEBHOOK_SECRET
   valueFrom: { secretKeyRef: { name: selfcare-razorpay-webhook-secret, key: value, optional: true } }
+- name: APP_DEEPSEEK_API_KEY
+  valueFrom: { secretKeyRef: { name: selfcare-deepseek-api-key, key: value, optional: true } }
 - name: APP_MISTRAL_API_KEY
   valueFrom: { secretKeyRef: { name: selfcare-mistral-api-key, key: value, optional: true } }
 {{- end }}

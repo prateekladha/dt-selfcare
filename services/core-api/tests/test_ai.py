@@ -14,11 +14,11 @@ EX = explain(rate("s", "2026-10", PLAN, {"DATA": 3_500 * MB, "ROAMING_DATA:Z2": 
 
 def narrator(handler, monkeypatch):
     monkeypatch.setattr(ai, "flag_bool", lambda *a, **k: True)
-    monkeypatch.setattr(ai, "flag_str", lambda *a, **k: "mistral")
-    monkeypatch.setattr(ai, "_breaker", ai.CircuitBreaker("t", failures=2, reset_s=60))
+    monkeypatch.setattr(ai, "flag_str", lambda *a, **k: "deepseek")
+    monkeypatch.setattr(ai, "_breakers", {"deepseek": ai.CircuitBreaker("t", failures=2, reset_s=60)})
     engine = create_engine("sqlite://")
     create_schema(engine)
-    s = Settings(mistral_api_key="k", database_url="sqlite://")
+    s = Settings(deepseek_api_key="k", database_url="sqlite://")
     return ai.Narrator(s, engine, httpx.Client(transport=httpx.MockTransport(handler)))
 
 
@@ -37,7 +37,8 @@ def test_grounded_answer_is_used_and_cached(monkeypatch):
 
     n = narrator(handler, monkeypatch)
     text, provider = n.narrate(EX, "s", "DE")
-    assert provider.startswith("mistral") and "roaming" in text
+    assert provider == "deepseek:deepseek-chat" and "roaming" in text
+    assert str(calls[0].url) == "https://api.deepseek.com/chat/completions"
     n.narrate(EX, "s", "DE")
     assert len(calls) == 1  # second call served from cache
     assert b"4915" not in calls[0].content  # no subscriber identifiers sent to the LLM
@@ -60,3 +61,9 @@ def test_outage_opens_breaker_then_fails_fast(monkeypatch):
     for _ in range(4):
         assert n.narrate(EX, "s", "DE")[1] == "template"
     assert len(calls) == 2  # breaker opened after 2 failures; later calls never hit the provider
+
+
+def test_unconfigured_provider_uses_template(monkeypatch):
+    n = narrator(reply("unused"), monkeypatch)
+    monkeypatch.setattr(ai, "flag_str", lambda *a, **k: "mistral")  # flag points at a provider with no key
+    assert n.narrate(EX, "s", "DE")[1] == "template"

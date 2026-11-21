@@ -87,7 +87,7 @@ export function Narrative({ narrative, lang, basePath }: { narrative: Promise<Ex
             <div>
               <p className="whitespace-pre-line text-[15px] leading-relaxed text-[var(--ink)]">{r.narrative}</p>
               <p className="mt-3 text-[11px] text-[var(--ink-3)]">
-                {r.provider === "template" ? "Generated from your bill data." : `AI-written (${r.provider.replace("mistral:", "Mistral ")}) from verified bill facts. Every number is checked against your bill.`}
+                {r.provider === "template" ? "Generated from your bill data." : `AI-written (${r.provider.split(":")[1] ?? r.provider}) from verified bill facts. Every number is checked against your bill.`}
               </p>
             </div>
           )}

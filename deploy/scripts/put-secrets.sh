@@ -31,5 +31,6 @@ put() {
 put razorpay-key-id        "Razorpay TEST Key ID (rzp_test_...)"
 put razorpay-key-secret    "Razorpay TEST Key Secret"
 put razorpay-webhook-secret "Razorpay webhook secret (any strong string you also enter in the dashboard)"
-put mistral-api-key        "Mistral API key"
+put deepseek-api-key       "DeepSeek API key (sk-...)"
+put mistral-api-key        "Mistral API key (optional, EU-hosted alternative)"
 echo "done - secrets sync into the cluster within ~1 minute"

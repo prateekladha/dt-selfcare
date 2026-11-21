@@ -15,7 +15,7 @@ from openfeature.evaluation_context import EvaluationContext
 # key -> safe default
 DEFAULTS: dict[str, Any] = {
     "ai-explanations": False,  # off unless flagd says on: AI is an enhancement, never a dependency
-    "ai-provider": "mistral",  # mistral | template
+    "ai-provider": "deepseek",  # deepseek | mistral | selfhosted | template
     "payments-enabled": True,
     "payment-gateway": "razorpay",
     "payment-settlement": {"currency": "native"},
