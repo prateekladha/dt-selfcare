@@ -43,53 +43,53 @@ workloads:
     port: 8080
     replicas: 1
     hpa: { min: 1, max: 6, cpu: 70 }
-    resources: { requests: { cpu: 100m, memory: 192Mi }, limits: { memory: 512Mi } }
+    resources: { requests: { cpu: 25m, memory: 192Mi }, limits: { memory: 512Mi } }
   usage-aggregator:
     image: usage-aggregator
     command: ["usage-aggregator"]
     replicas: 2       # <= stream partitions; each pod owns a subset
-    resources: { requests: { cpu: 100m, memory: 192Mi }, limits: { memory: 512Mi } }
+    resources: { requests: { cpu: 25m, memory: 192Mi }, limits: { memory: 512Mi } }
   raw-archiver:
     image: usage-aggregator
     command: ["archiver"]
     replicas: 1
-    resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { memory: 512Mi } }
+    resources: { requests: { cpu: 25m, memory: 128Mi }, limits: { memory: 512Mi } }
   alert-relay:
     image: usage-aggregator
     command: ["alert-relay"]
     replicas: 1
-    resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { memory: 256Mi } }
+    resources: { requests: { cpu: 25m, memory: 128Mi }, limits: { memory: 256Mi } }
   core-api:
     image: core-api
     command: ["core-api"]
     port: 8080
     replicas: 2
     hpa: { min: 2, max: 8, cpu: 70 }
-    resources: { requests: { cpu: 150m, memory: 384Mi }, limits: { memory: 1Gi } }
+    resources: { requests: { cpu: 25m, memory: 384Mi }, limits: { memory: 1Gi } }
   payments-service:   # checkout, confirmation, webhook, reconciler; owns `payments`
     image: core-api
     command: ["payments-service"]
     port: 8080
     replicas: 2
     hpa: { min: 2, max: 6, cpu: 70 }
-    resources: { requests: { cpu: 50m, memory: 192Mi }, limits: { memory: 512Mi } }
+    resources: { requests: { cpu: 25m, memory: 192Mi }, limits: { memory: 512Mi } }
   assistant-service:  # tool-calling agent + SSE streams; owns `context_docs`, `agent_traces`
     image: core-api
     command: ["assistant-service"]
     port: 8080
     replicas: 1
     hpa: { min: 1, max: 6, cpu: 65 }
-    resources: { requests: { cpu: 100m, memory: 384Mi }, limits: { memory: 1Gi } }
+    resources: { requests: { cpu: 25m, memory: 384Mi }, limits: { memory: 1Gi } }
   notifier:   # alerts, outbox relay, billing consumer of payment-events, context-spine builder (L1)
     image: core-api
     command: ["notifier"]
     replicas: 1
-    resources: { requests: { cpu: 50m, memory: 320Mi }, limits: { memory: 768Mi } }
+    resources: { requests: { cpu: 25m, memory: 320Mi }, limits: { memory: 768Mi } }
 
 web:
   replicas: 2
   hpa: { min: 2, max: 6, cpu: 70 }
-  resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { memory: 384Mi } }
+  resources: { requests: { cpu: 25m, memory: 128Mi }, limits: { memory: 384Mi } }
 
 temporal:
   enabled: true
