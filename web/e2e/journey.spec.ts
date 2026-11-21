@@ -76,7 +76,7 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   await shot(page, "04-bill-detail");
 
   // Evidence trail: sources + raw CDRs re-summed from the archive must match the real-time counters
-  await page.getByRole("button", { name: /Sources \(\d+\) and evidence/ }).click();
+  await page.getByRole("button", { name: /Sources \([1-9]\d*\) and evidence/ }).click();
   await expect(page.locator('[id^="cite-"]').first()).toBeVisible();  // numbered sources matching the superscripts
   await page.getByRole("button", { name: "Re-sum my CDRs" }).click();
   await expect(page.getByText(/every total matches the real-time counters/)).toBeVisible({ timeout: 60_000 });
@@ -105,7 +105,7 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   await page.goto("/assistant");
   await page.getByRole("button", { name: /Why did my .* bill change\?/ }).click();
   await expect(page.getByText(/Checked against your records/)).toBeVisible({ timeout: 90_000 });  // streamed, tool steps, verified
-  await page.getByRole("button", { name: /^Sources \(\d+\)$/ }).click();
+  await page.getByRole("button", { name: /^Sources \([1-9]\d*\)$/ }).click();  // sources list matches the superscripts
   await page.getByText("How this answer was produced").click();
   await expect(page.getByText(/LLM calls: prompt cache and spend per stage/)).toBeVisible();
   await shot(page, "05b-assistant");
