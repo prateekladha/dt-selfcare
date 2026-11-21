@@ -1,0 +1,26 @@
+# In-cluster load test: synthetic mediation traffic -> collector -> OCI Streaming -> aggregator.
+#   kubectl -n selfcare apply -f deploy/loadtest/job.yaml   (IMAGE_TAG substituted by the caller)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: loadtest
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      imagePullSecrets: [{ name: ocir-pull }]
+      containers:
+        - name: loadgen
+          image: REGISTRY/network-emulator:IMAGE_TAG
+          command: ["network-emulator", "load", "--rate", "RATE", "--subscribers", "100000",
+                    "--duration-s", "120", "--concurrency", "16"]
+          env:
+            - { name: COLLECTOR_URL, value: "http://usage-collector:8080" }
+            - name: SOURCE_TOKEN
+              valueFrom: { secretKeyRef: { name: selfcare-secrets, key: source-token } }
+          resources: { requests: { cpu: 200m, memory: 256Mi }, limits: { memory: 1Gi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
