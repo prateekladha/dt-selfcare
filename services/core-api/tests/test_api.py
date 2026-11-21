@@ -59,6 +59,10 @@ def env(monkeypatch):
     state = UsageState(r, 4)
     for mod in (me_mod, pay_router):
         monkeypatch.setattr(mod, "get_usage_state", lambda: state)
+    import core_api.routers.demo as demo_mod
+    import core_api.routers.simulate as sim_mod
+    monkeypatch.setattr(demo_mod, "get_usage_state", lambda: state)
+    monkeypatch.setattr(sim_mod, "get_usage_state", lambda: state)
     import core_api.main as main_mod
     monkeypatch.setattr(main_mod, "get_usage_state", lambda: state)
     gw = FakeGateway()
@@ -177,6 +181,7 @@ def test_simulate_from_scenario_and_upload(env):
     assert any(s["key"] == "us-trip-2-weeks" for s in client.get("/v1/me/usage/scenarios", headers=h).json())
     r = client.post("/v1/me/usage/simulate", data={"scenario": "us-trip-2-weeks"}, headers=h).json()
     assert r["compared_to"] == "2026-10" and r["explanation"]["direction"] == "UP"
+    assert r["baseline"] == "your-last-cycle"  # scenario is applied on top of the real last-cycle usage
     import re
     assert re.fullmatch(r"\d{4}-\d{2}", r["bill"]["cycle"])  # must fit VARCHAR2(7) on Oracle
     assert r["explanation"]["drivers"][0]["category"] == "ROAMING"
@@ -240,3 +245,17 @@ def test_razorpay_adapter_captures_authorised_payment():
     gw = Razorpay("rzp_test_x", "s", "w", http=_httpx.Client(transport=_httpx.MockTransport(handler)))
     assert gw.is_order_paid("order_1") == (True, "pay_1")
     assert ("POST", "/v1/payments/pay_1/capture") in calls
+
+
+
+def test_demo_panel_is_computed_from_real_bills_and_off_by_default(env, monkeypatch):
+    client, engine, state, _ = env
+    assert client.get("/v1/demo/accounts").status_code == 404  # safe default: flag off
+    import core_api.routers.demo as demo_mod
+    monkeypatch.setattr(demo_mod, "flag_bool", lambda *a, **k: True)
+    add_usage(state, SUB, datetime(2026, 9, 10, tzinfo=UTC), [(UsageType.DATA, None, 1_000 * MB)])
+    add_usage(state, SUB, datetime(2026, 10, 10, tzinfo=UTC), [(UsageType.ROAMING_DATA, "Z2", 500 * MB)])
+    issue(engine, state, "2026-09")
+    issue(engine, state, "2026-10")
+    jonas = next(a for a in client.get("/v1/demo/accounts").json() if a["subscriber_id"] == SUB)
+    assert jonas["headline"].startswith("October bill +") and "roaming data, zone z2" in jonas["headline"]

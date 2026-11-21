@@ -118,7 +118,7 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
 
 // Real payment through Razorpay test mode (UPI success@razorpay). Uses "Pay in advance" on a
 // separate demo line (Paul, desktop only) so demo bills stay unpaid for walkthroughs.
-test("payment: pay in advance with UPI in Razorpay test mode, settled exactly once", async ({ page }) => {
+test("payment @payment: pay in advance in Razorpay test mode, settled exactly once", async ({ page }) => {
   test.skip(test.info().project.name !== "desktop", "one real payment per run");
   test.setTimeout(180_000);  // third-party checkout + bank simulator pages are slow
   await signIn(page, "Paul Becker");

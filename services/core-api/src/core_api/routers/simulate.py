@@ -8,7 +8,7 @@ from telco_common.explainer import explain
 from telco_common.models import cycle_of
 
 from ..db import bills, get_engine, subscribers
-from ..deps import RateLimiter, get_valkey
+from ..deps import RateLimiter, get_usage_state, get_valkey
 from ..security import Principal, current_principal
 from ..services.ai import Narrator
 from ..services.bills import row_to_bill
@@ -36,6 +36,7 @@ def sample_csv():
 async def simulate(p: Principal = Depends(current_principal), scenario: str | None = Form(default=None),
                    file: UploadFile | None = File(default=None),
                    lang: str = Query("en", pattern="^(en|de|pl)$")) -> dict:
+    personal = False
     try:
         if file is not None:
             counters = parse_upload(file.filename or "usage.csv", await file.read())
@@ -43,6 +44,7 @@ async def simulate(p: Principal = Depends(current_principal), scenario: str | No
         elif scenario:
             counters = scenario_counters(scenario)
             source = f"scenario:{scenario}"
+            personal = True
         else:
             raise HTTPException(422, "provide a usage file or a scenario")
     except (UsageFileError, ValueError, KeyError, UnicodeDecodeError) as e:
@@ -54,10 +56,18 @@ async def simulate(p: Principal = Depends(current_principal), scenario: str | No
         last = cx.execute(select(bills).where(bills.c.subscriber_id == p.subscriber_id)
                           .order_by(bills.c.cycle.desc()).limit(1)).first()
     # priced as "this cycle" (YYYY-MM) so it fits every cycle-typed column and renders like a real bill
+    base: dict[str, int] = {}
+    if personal and last:
+        # scenario on top of YOUR actual usage (CDR totals) from your latest billed cycle
+        base = {k: v for k, v in get_usage_state().counters(sub.id, last.cycle).items()}
+        for k, v in base.items():
+            counters[k] = counters.get(k, 0) + v
+    # priced as "this cycle" (YYYY-MM) so it fits every cycle-typed column and renders like a real bill
     simulated = rate(sub.id, cycle_of(datetime.now(UTC)), get_plan(sub.plan_code), counters)
     ex = explain(simulated, row_to_bill(last) if last else None)
     s = get_settings()
     budget = lambda: RateLimiter(get_valkey()).allow(f"ai:{p.subscriber_id}", s.ai_daily_limit_per_subscriber, 86400)
     text, provider = Narrator(s, engine).narrate(ex, p.subscriber_id, p.country, lang, budget=budget)
-    return {"source": source, "compared_to": last.cycle if last else None, "bill": simulated.model_dump(),
+    return {"source": source, "compared_to": last.cycle if last else None, "baseline": "your-last-cycle" if (personal and last) else None,
+            "bill": simulated.model_dump(),
             "explanation": ex.model_dump(), "narrative": text, "provider": provider}

@@ -9,19 +9,18 @@ import type { Route } from "./+types/login";
 
 export const meta = () => [{ title: "Sign in · Self-care" }];
 
-const DEMO = [
-  { id: "4915100000002", name: "Jonas Weber", country: "DE", story: "Traveller · roams outside the EU some months" },
-  { id: "4915100000001", name: "Lena Fischer", country: "DE", story: "Heavy streamer · usage grows every month" },
-  { id: "4915100000003", name: "Mia Schulz", country: "DE", story: "Flex plan · buys data add-ons in busy months" },
-  { id: "4915100000004", name: "Paul Becker", country: "DE", story: "Light user · stays inside the plan" },
-  { id: "48600000001", name: "Zofia Nowak", country: "PL", story: "Calls abroad · PLN, 23% VAT" },
-  { id: "48600000002", name: "Piotr Kowalski", country: "PL", story: "Streamer · PLN plan" },
-];
+type DemoAccount = { subscriber_id: string; name: string; country: string; plan: string; headline: string; data_pct_this_cycle: number };
 
 export async function loader({ request }: Route.LoaderArgs) {
   const session = await sessions.getSession(request.headers.get("Cookie"));
   if (session.get("token")) throw redirect("/");
-  return null;
+  // Demo lines with a one-line summary computed from each line's real bills and usage.
+  try {
+    const r = await rawCore("/v1/demo/accounts", { signal: AbortSignal.timeout(5000) });
+    return { demo: r.ok ? ((await r.json()) as DemoAccount[]) : [] };
+  } catch {
+    return { demo: [] as DemoAccount[] };
+  }
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -46,7 +45,8 @@ export async function action({ request }: Route.ActionArgs) {
   return redirect("/", { headers: { "Set-Cookie": await sessions.commitSession(session) } });
 }
 
-export default function Login({ actionData }: Route.ComponentProps) {
+export default function Login({ actionData, loaderData }: Route.ComponentProps) {
+  const DEMO = loaderData?.demo ?? [];
   const nav = useNavigation();
   const busy = nav.state !== "idle";
   const [number, setNumber] = useState(actionData?.subscriber_id ? `+${actionData.subscriber_id}` : "");
@@ -110,22 +110,23 @@ export default function Login({ actionData }: Route.ComponentProps) {
             <p className="flex items-center justify-center gap-1.5 text-xs text-[var(--ink-3)]"><Lock size={12} /> Encrypted connection · session in a secure cookie</p>
           </Form>
 
-          <div className="mt-10">
+          {DEMO.length > 0 && <div className="mt-10">
             <div className="flex items-center gap-3"><span className="h-px flex-1 bg-[var(--line)]" /><span className="text-xs font-semibold uppercase tracking-wider text-[var(--ink-3)]">Demo accounts</span><span className="h-px flex-1 bg-[var(--line)]" /></div>
             <ul className="mt-4 grid gap-2">
               {DEMO.map((d) => (
-                <li key={d.id}>
-                  <button type="button" onClick={() => { setNumber(phoneLabel(d.id)); pw.current?.focus(); }}
-                          className={`flex w-full items-center gap-3 rounded-lg border px-3.5 py-2.5 text-left transition-colors ${number.replace(/\D/g, "") === d.id ? "border-[var(--ink)] bg-[var(--surface-2)]" : "border-[var(--line)] hover:border-[var(--line-strong)] hover:bg-[var(--surface-2)]"}`}>
+                <li key={d.subscriber_id}>
+                  <button type="button" onClick={() => { setNumber(phoneLabel(d.subscriber_id)); pw.current?.focus(); }}
+                          className={`flex w-full items-center gap-3 rounded-lg border px-3.5 py-2.5 text-left transition-colors ${number.replace(/\D/g, "") === d.subscriber_id ? "border-[var(--ink)] bg-[var(--surface-2)]" : "border-[var(--line)] hover:border-[var(--line-strong)] hover:bg-[var(--surface-2)]"}`}>
                     <span className="text-lg" aria-hidden="true">{FLAGS[d.country]}</span>
-                    <span className="min-w-0 flex-1"><span className="block text-sm font-semibold">{d.name}</span><span className="block truncate text-[13px] text-[var(--ink-3)]">{d.story}</span></span>
+                    <span className="min-w-0 flex-1"><span className="block text-sm font-semibold">{d.name} <span className="font-normal text-[var(--ink-3)]">· {d.plan}</span></span>
+                      <span className="block truncate text-[13px] text-[var(--ink-3)]">{d.headline} · data {d.data_pct_this_cycle}% this month</span></span>
                     <ArrowRight size={16} className="shrink-0 text-[var(--ink-3)]" />
                   </button>
                 </li>
               ))}
             </ul>
-            <p className="mt-3 text-center text-xs text-[var(--ink-3)]">All demo lines share one password, provided with the case study.</p>
-          </div>
+            <p className="mt-3 text-center text-xs text-[var(--ink-3)]">Summaries are computed live from each line's bills and usage. All demo lines share one password, provided with the case study.</p>
+          </div>}
         </div>
       </section>
     </main>

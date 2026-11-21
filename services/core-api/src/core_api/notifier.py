@@ -30,17 +30,19 @@ OUTBOX = Counter("outbox_published_total", "Outbox events published")
 
 def render(alert: dict, plan_code: str) -> tuple[str, str, str]:
     level = int(alert["level"])
+    y, m = map(int, alert["cycle"].split("-"))
+    month = datetime(y, m, 1, tzinfo=UTC).strftime("%B %Y")
     plan = get_plan(plan_code)
     gb = int(alert["allowance_bytes"]) / 1e9
     if level >= 100:
         if plan.overage_policy == OveragePolicy.THROTTLE:
-            return ("DATA_EXHAUSTED", "You've used all your data",
-                    (f"You've used your {gb:.0f} GB. Speed is now reduced until your next cycle - "
+            return ("DATA_EXHAUSTED", f"All your {month} data is used",
+                    (f"You've used your {gb:.0f} GB for {month}. Speed is now reduced until your next cycle - "
                      "buy a data add-on to get full speed back."))
-        return ("DATA_EXHAUSTED", "You've used all your data",
-                f"You've used your {gb:.0f} GB. Further data is charged per MB - consider a data add-on.")
-    return (f"DATA_{level}", f"You've used {level}% of your data",
-            f"You've used {level}% of your {gb:.0f} GB data allowance this cycle.")
+        return ("DATA_EXHAUSTED", f"All your {month} data is used",
+                f"You've used your {gb:.0f} GB for {month}. Further data is charged per MB - consider a data add-on.")
+    return (f"DATA_{level}", f"{level}% of your {month} data used",
+            f"You've used {alert['pct']}% of your {gb:.0f} GB allowance for {month}.")
 
 
 def alerts_loop(stop: threading.Event) -> None:
