@@ -157,20 +157,30 @@ test("payment: pay in advance with UPI in Razorpay test mode, settled exactly on
     await type(field("card[expiry]", /MM ?\/ ?YY|expiry/i), "1230");
     await type(field("card[cvv]", /CVV/i), "123");
     await shot(page, "08-pay-3-card");
-    const popup = page.waitForEvent("popup", { timeout: 45_000 }).catch(() => null);
     await rzp.getByRole("button", { name: /^(continue|pay)/i }).last().click({ timeout: 15_000 });
     await page.waitForTimeout(2500);
     await shot(page, "08-pay-3b-after-continue");
     const later = rzp.getByRole("button", { name: /maybe later|skip|without saving/i }).first();
-    if (await later.isVisible({ timeout: 4_000 }).catch(() => false)) await later.click({ timeout: 10_000 });
-    const bank = await popup;
-    if (bank) {
-      await bank.waitForLoadState();
-      await bank.screenshot({ path: `${SHOTS}/desktop-08-pay-3c-bank.png` });
-      await bank.getByRole("button", { name: /success/i }).click({ timeout: 30_000 });
-    } else {
-      await rzp.getByRole("button", { name: /success/i }).first().click({ timeout: 30_000 });
+    if (await later.isVisible({ timeout: 6_000 }).catch(() => false)) await later.click({ timeout: 10_000 });
+    // Test-mode bank simulator: may open as a popup window or inside a frame. Search everywhere.
+    let clicked = false;
+    for (let i = 0; i < 40 && !clicked; i++) {
+      await page.waitForTimeout(1500);
+      for (const pg of page.context().pages()) {
+        for (const fr of pg.frames()) {
+          const btn = fr.getByRole("button", { name: /^\s*success\s*$/i }).first();
+          if (await btn.isVisible().catch(() => false)) {
+            await pg.screenshot({ path: `${SHOTS}/desktop-08-pay-3c-bank.png` }).catch(() => {});
+            await btn.click();
+            clicked = true;
+            break;
+          }
+        }
+        if (clicked) break;
+      }
+      if (i === 5) await shot(page, "08-pay-3c-waiting");
     }
+    expect(clicked, "bank simulator Success button").toBe(true);
   }
   await page.waitForTimeout(3000);
   await shot(page, "08-pay-4-submitted");
