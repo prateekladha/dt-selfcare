@@ -54,7 +54,7 @@ def main() -> None:
                  json={"purpose": "BILL", "bill_id": hj.get("outstanding", {}).get("bill_id")})
     check("payment order (Razorpay)", pay.status_code in (200, 201), f"{pay.status_code} {pay.text[:80]}")
     w = httpx.get(f"{WEB}/login", timeout=15)
-    check("web SSR login page", w.status_code == 200 and "Mobile self-care" in w.text)
+    check("web SSR login page", w.status_code == 200 and "Sign in" in w.text and "Demo accounts" in w.text)
 
     width = max(len(n) for n, *_ in results)
     for name, ok, info in results:
