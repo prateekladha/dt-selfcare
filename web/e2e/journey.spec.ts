@@ -7,7 +7,12 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: `${SHOTS}/${test.info().project.name}-${name}.png`, fullPage: true });
 }
 
-async function signIn(page: Page, who = "Jonas Weber") {
+// Each project uses its own demo line so the login brute-force limiter (10 / 15 min per number)
+// never trips across desktop + mobile + retries.
+const JOURNEY_USER = () => (test.info().project.name === "mobile" ? "Lena Fischer" : "Jonas Weber");
+const WRONG_PW_USER = () => (test.info().project.name === "mobile" ? "Mia Schulz" : "Paul Becker");
+
+async function signIn(page: Page, who = JOURNEY_USER()) {
   await page.goto("/login");
   await page.getByRole("button", { name: new RegExp(who) }).click();
   await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
@@ -23,7 +28,7 @@ test("login: wrong password is rejected with a clear message", async ({ page }) 
   await page.goto("/login");
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   await shot(page, "01-login");
-  await page.getByRole("button", { name: /Jonas Weber/ }).click();
+  await page.getByRole("button", { name: new RegExp(WRONG_PW_USER()) }).click();
   await expect(page.getByLabel("Mobile number")).toHaveValue(/49 151/);
   await page.getByLabel("Password", { exact: true }).fill("definitely-wrong");
   await page.getByRole("button", { name: /^Sign in/ }).click();
@@ -39,6 +44,8 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   await expect(page.getByText("Mobile data")).toBeVisible();
   await expect(page.getByRole("img", { name: /Bill totals/ })).toBeVisible();
   await expect(page.getByText(/Why your .* bill/)).toBeVisible();
+  // fail the journey if login silently fell back to a rate-limit / error state
+  await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(page.getByText(/Written by AI|Generated from your bill data/)).toBeVisible({ timeout: 45_000 });
   await shot(page, "02-overview");
 
