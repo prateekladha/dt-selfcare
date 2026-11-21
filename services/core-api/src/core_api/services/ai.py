@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
+from collections.abc import Callable
 
 import httpx
 import structlog
@@ -84,7 +85,8 @@ class Narrator:
         return cfg
 
     def narrate(self, ex: Explanation, subscriber_id: str, country: str, lang: str = "en",
-                allow_llm: bool = True) -> tuple[str, str]:
+                allow_llm: bool = True, budget: Callable[[], bool] | None = None) -> tuple[str, str]:
+        """budget() is consulted only when we are about to call the LLM (cache hits are free)."""
         lang = lang if lang in LANGS else "en"
         name = flag_str("ai-provider", country, subscriber_id)
         cfg = self._provider(name)
@@ -100,6 +102,10 @@ class Narrator:
         if hit:
             AI_CALLS.labels(hit.provider, "cache_hit").inc()
             return hit.text, hit.provider
+
+        if budget is not None and not budget():
+            AI_CALLS.labels("template", "budget_exhausted").inc()
+            return template(ex), "template"
 
         breaker = _breakers.setdefault(name, CircuitBreaker(name, failures=3, reset_s=60))
         try:

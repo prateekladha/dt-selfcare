@@ -57,7 +57,7 @@ async def simulate(p: Principal = Depends(current_principal), scenario: str | No
     simulated = rate(sub.id, cycle_of(datetime.now(UTC)), get_plan(sub.plan_code), counters)
     ex = explain(simulated, row_to_bill(last) if last else None)
     s = get_settings()
-    allowed = RateLimiter(get_valkey()).allow(f"ai:{p.subscriber_id}", s.ai_daily_limit_per_subscriber, 86400)
-    text, provider = Narrator(s, engine).narrate(ex, p.subscriber_id, p.country, lang, allow_llm=allowed)
+    budget = lambda: RateLimiter(get_valkey()).allow(f"ai:{p.subscriber_id}", s.ai_daily_limit_per_subscriber, 86400)
+    text, provider = Narrator(s, engine).narrate(ex, p.subscriber_id, p.country, lang, budget=budget)
     return {"source": source, "compared_to": last.cycle if last else None, "bill": simulated.model_dump(),
             "explanation": ex.model_dump(), "narrative": text, "provider": provider}

@@ -12,7 +12,7 @@ export function derive(home: Home) {
   const projectedMb = Math.round((home.usage.data_mb / day) * daysInCycle);
   const hour = Number(new Intl.DateTimeFormat("en-GB", { hour: "numeric", hourCycle: "h23", timeZone: tz }).format(asOf));
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
-  const asOfLabel = new Intl.DateTimeFormat(home.subscriber.locale, { hour: "2-digit", minute: "2-digit", timeZone: tz }).format(asOf);
+  const asOfLabel = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: tz }).format(asOf);
   const due = home.trend.find((b) => b.id === home.outstanding.bill_id) ?? null;
   const overdue = !!due && new Date(due.due_date) < asOf;
   const unread = home.notifications.filter((n) => !n.read).length;
