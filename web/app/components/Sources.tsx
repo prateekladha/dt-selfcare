@@ -90,6 +90,7 @@ export function SourcesPanel({ sources, cycle, open, setOpen, highlight }:
                     </tbody>
                   </table>
                 </div>
+                <p className="text-xs text-[var(--ink-3)]">The bill rounds each usage type up to the next started MB / minute (e.g. 371.04 MB is billed as 372 MB), per the tariff rules.</p>
                 {ev.bill_lines.length > 0 && (
                   <p className="text-xs text-[var(--ink-3)]">Priced into bill <code className="text-[var(--ink-2)]">{ev.bill_id}</code>: {ev.bill_lines.map((l) => `${l.label} ${l.quantity.toLocaleString("en-GB")} ${l.unit}`).join(" · ")}</p>
                 )}
