@@ -7,7 +7,7 @@ metadata:
     {{- include "selfcare.labels" . | nindent 4 }}
 spec:
   # replicas owned by the HPA (setting it here fights the autoscaler on every upgrade)
-  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } }   # min 2 pods: in place, one at a time (PDB keeps one serving)
   selector: { matchLabels: { app: web } }
   template:
     metadata: { labels: { app: web } }

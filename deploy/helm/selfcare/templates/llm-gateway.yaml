@@ -62,6 +62,7 @@ metadata:
     app: llm-gateway
     {{- include "selfcare.labels" . | nindent 4 }}
 spec:
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } }   # min 2 pods: in place (PDB keeps one serving)
   selector: { matchLabels: { app: llm-gateway } }
   template:
     metadata:
@@ -92,7 +93,7 @@ spec:
           readinessProbe: { httpGet: { path: /health/readiness, port: 4000 }, periodSeconds: 10, timeoutSeconds: 5 }
           livenessProbe: { httpGet: { path: /health/liveliness, port: 4000 }, periodSeconds: 20, timeoutSeconds: 5, failureThreshold: 5 }
           startupProbe: { httpGet: { path: /health/liveliness, port: 4000 }, periodSeconds: 3, failureThreshold: 40 }
-          resources: { requests: { cpu: 150m, memory: 512Mi }, limits: { memory: 1536Mi } }
+          resources: { requests: { cpu: 75m, memory: 512Mi }, limits: { memory: 1536Mi } }
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
           volumeMounts: [{ name: config, mountPath: /etc/litellm }]
       volumes: [{ name: config, configMap: { name: llm-gateway-config } }]
