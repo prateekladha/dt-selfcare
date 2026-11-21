@@ -24,9 +24,14 @@ variable "node_count" {
   default     = 1
   description = "Set to 0 to park the platform at near-zero cost; control plane, DB and data stay."
 }
+variable "node_shape" {
+  type        = string
+  default     = "VM.Standard.E5.Flex"
+  description = "A1.Flex (ARM, Always-Free eligible) when capacity allows; E5.Flex (AMD) otherwise"
+}
 variable "node_ocpus" {
   type    = number
-  default = 2
+  default = 1
 }
 variable "node_memory_gb" {
   type    = number

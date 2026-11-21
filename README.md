@@ -101,8 +101,8 @@ git push                               # CI: test -> arm64 images -> helm upgrad
 ```
 
 Cost: OKE basic control plane, Autonomous DB, load balancer, Vault, Object Storage and the
-container registry are all Always Free. One A1 worker node is roughly $1/day; set
-`node_count=0` to park it.
+container registry are all Always Free. One worker node (E5.Flex 1 OCPU/16 GB, about $1.5/day;
+A1 ARM when Mumbai has capacity) is the only real cost. Set `node_count=0` to park it.
 
 ## Repository
 ```

@@ -9,10 +9,12 @@ data "oci_containerengine_node_pool_option" "opts" {
 
 locals {
   k8s_minor = trimprefix(var.kubernetes_version, "v")
-  # Latest Oracle Linux aarch64 OKE image for our Kubernetes version (A1 = Ampere ARM).
+  is_arm    = length(regexall("A1", var.node_shape)) > 0
+  # Latest Oracle Linux OKE image for our Kubernetes version and the node CPU architecture.
   node_image_id = [
     for s in data.oci_containerengine_node_pool_option.opts.sources : s.image_id
-    if length(regexall("aarch64", s.source_name)) > 0 && length(regexall("OKE-${local.k8s_minor}-", s.source_name)) > 0
+    if(length(regexall("aarch64", s.source_name)) > 0) == local.is_arm
+    && length(regexall("OKE-${local.k8s_minor}-", s.source_name)) > 0
     && length(regexall("GPU", s.source_name)) == 0
   ][0]
 }
@@ -46,7 +48,7 @@ resource "oci_containerengine_node_pool" "a1" {
   cluster_id         = oci_containerengine_cluster.main.id
   name               = "${var.name}-a1"
   kubernetes_version = var.kubernetes_version
-  node_shape         = "VM.Standard.A1.Flex"
+  node_shape         = var.node_shape
 
   node_shape_config {
     ocpus         = var.node_ocpus

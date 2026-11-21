@@ -36,7 +36,7 @@ jobs:
   images:
     if: github.event_name != 'pull_request'
     needs: test
-    runs-on: ubuntu-24.04-arm   # native arm64 = same arch as the Ampere A1 nodes
+    runs-on: ubuntu-24.04   # node pool is AMD E5 (A1 out of capacity); use ubuntu-24.04-arm + linux/arm64 for A1
     strategy:
       matrix:
         image: [core-api, usage-collector, usage-aggregator, network-emulator, web]
@@ -52,7 +52,7 @@ jobs:
         with:
           context: ${{ matrix.image == 'web' && 'web' || '.' }}
           build-args: ${{ matrix.image != 'web' && format('SERVICE={0}', matrix.image) || '' }}
-          platforms: linux/arm64
+          platforms: linux/amd64
           push: true
           tags: |
             ${{ vars.OCIR_REGISTRY }}/${{ matrix.image }}:${{ github.sha }}
