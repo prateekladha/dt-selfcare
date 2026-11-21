@@ -39,9 +39,9 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   await signIn(page);
 
   // Overview: amount due, unbilled, data, trend, explanation (AI narrative must finish streaming)
-  await expect(page.getByText("Amount due")).toBeVisible();
-  await expect(page.getByText("This month so far")).toBeVisible();
-  await expect(page.getByText("Mobile data")).toBeVisible();
+  await expect(page.getByText("Amount due", { exact: true })).toBeVisible();
+  await expect(page.getByText("This month so far", { exact: true })).toBeVisible();
+  await expect(page.getByText("Mobile data", { exact: true })).toBeVisible();
   await expect(page.getByRole("img", { name: /Bill totals/ })).toBeVisible();
   await expect(page.getByText(/Why your .* bill/)).toBeVisible();
   // fail the journey if login silently fell back to a rate-limit / error state
@@ -55,8 +55,8 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   expect(await page.locator("tbody tr").count()).toBeGreaterThanOrEqual(11);
   await shot(page, "03-bills");
   await page.locator("tbody tr").first().getByRole("link").first().click();
-  await expect(page.getByText("Breakdown")).toBeVisible();
-  await expect(page.getByText("Top usage drivers")).toBeVisible();
+  await expect(page.getByText("Breakdown", { exact: true })).toBeVisible();
+  await expect(page.getByText("Top usage drivers", { exact: true })).toBeVisible();
   const cycle = page.url().split("/bills/")[1].split("?")[0];
   const pdf = await page.request.get(`/bills/${cycle}/pdf`);
   expect(pdf.status()).toBe(200);
@@ -86,9 +86,9 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
 
   // System transparency
   await page.goto("/system");
-  await expect(page.getByText("Architecture, live")).toBeVisible();
-  await expect(page.getByText("Stream partitions")).toBeVisible();
-  await expect(page.getByText("Your data, layer by layer")).toBeVisible();
+  await expect(page.getByText("Architecture, live", { exact: true })).toBeVisible();
+  await expect(page.getByText("Stream partitions", { exact: true })).toBeVisible();
+  await expect(page.getByText("Your data, layer by layer", { exact: true })).toBeVisible();
   await shot(page, "06-system");
 
   // Payment: Pay now opens the real Razorpay checkout
@@ -120,20 +120,41 @@ test("payment: pay in advance with UPI in Razorpay test mode, settled exactly on
   await page.waitForTimeout(1500);
   await shot(page, "08-pay-1-checkout");
 
-  // Razorpay asks for a contact number first (test mode accepts any valid Indian number).
+  // Razorpay asks for a contact number first (test mode: any valid-format Indian mobile).
   const mobile = rzp.getByPlaceholder(/mobile number/i);
   if (await mobile.isVisible({ timeout: 8_000 }).catch(() => false)) {
-    await mobile.fill("9999999999");
+    await mobile.fill("9876543210");
     await rzp.getByRole("button", { name: /^continue$/i }).last().click();
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(2000);
   }
   await shot(page, "08-pay-2-methods");
-  await rzp.getByText(/^UPI/i).first().click({ timeout: 20_000 });
-  await page.waitForTimeout(1500);
-  await shot(page, "08-pay-3-upi");
-  const vpa = rzp.locator('input[name="vpa"]').or(rzp.getByPlaceholder(/@|upi id/i)).first();
-  await vpa.fill("success@razorpay", { timeout: 20_000 });
-  await rzp.getByRole("button", { name: /verify|pay now|^pay/i }).last().click();
+
+  const upi = rzp.getByText(/^UPI$/i).first();
+  if (await upi.isVisible({ timeout: 3_000 }).catch(() => false)) {
+    await upi.click();
+    await rzp.locator('input[name="vpa"]').or(rzp.getByPlaceholder(/@|upi id/i)).first().fill("success@razorpay");
+    await shot(page, "08-pay-3-upi");
+    await rzp.getByRole("button", { name: /verify|pay/i }).last().click();
+  } else {
+    // Card path with Razorpay's documented domestic test card; bank page in test mode offers Success/Failure.
+    await rzp.getByText(/^Cards?$/i).first().click().catch(() => {});
+    await rzp.getByPlaceholder(/card number/i).fill("5267 3181 8797 5449");
+    await rzp.getByPlaceholder(/MM ?\/ ?YY/i).fill("12/30");
+    await rzp.getByPlaceholder(/CVV/i).fill("123");
+    await shot(page, "08-pay-3-card");
+    const popup = page.waitForEvent("popup", { timeout: 30_000 }).catch(() => null);
+    await rzp.getByRole("button", { name: /^(continue|pay)/i }).last().click();
+    await page.waitForTimeout(2500);
+    const later = rzp.getByRole("button", { name: /maybe later|skip|without saving/i }).first();
+    if (await later.isVisible({ timeout: 4_000 }).catch(() => false)) await later.click();
+    const bank = await popup;
+    if (bank) {
+      await bank.waitForLoadState();
+      await bank.getByRole("button", { name: /success/i }).click({ timeout: 30_000 });
+    } else {
+      await rzp.getByRole("button", { name: /success/i }).first().click({ timeout: 30_000 });
+    }
+  }
   await page.waitForTimeout(3000);
   await shot(page, "08-pay-4-submitted");
 
