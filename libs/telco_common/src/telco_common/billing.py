@@ -13,7 +13,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
-from .catalog import COUNTRIES, MB, ROAM_LIKE_AT_HOME_ZONE, OveragePolicy, Plan, get_addon
+from .catalog import COUNTRIES, MB, MESSAGE_RATES, ROAM_LIKE_AT_HOME_ZONE, OveragePolicy, Plan, get_addon
 from .models import UsageType
 
 
@@ -23,6 +23,9 @@ class LineCategory(StrEnum):
     OVERAGE = "OVERAGE"
     ROAMING = "ROAMING"
     INTERNATIONAL = "INTERNATIONAL"
+    MESSAGING = "MESSAGING"
+    THIRD_PARTY = "THIRD_PARTY"
+    ADJUSTMENT = "ADJUSTMENT"
 
 
 class BillLine(BaseModel):
@@ -45,6 +48,14 @@ class UsageTotals(BaseModel):
     roaming_data_mb: dict[str, int]  # non-EU zones
     roaming_voice_min: dict[str, int]
     eu_roaming_data_mb: int
+    # added with extended CDR coverage (defaults keep older stored bills readable)
+    incoming_min: int = 0
+    roaming_incoming_min: dict[str, int] = {}
+    mms: int = 0
+    intl_sms: int = 0
+    free_calls_min: int = 0  # emergency + toll-free
+    zero_rated_mb: int = 0
+    third_party_charges: int = 0
 
 
 class Bill(BaseModel):
@@ -86,7 +97,8 @@ def split_counters(counters: dict[str, int]) -> tuple[dict[str, int], dict[str, 
     return plain, zoned, addons
 
 
-def rate(subscriber_id: str, cycle: str, plan: Plan, counters: dict[str, int]) -> Bill:
+def rate(subscriber_id: str, cycle: str, plan: Plan, counters: dict[str, int],
+         adjustments: list[BillLine] | None = None) -> Bill:
     cfg = COUNTRIES[plan.country]
     plain, zoned, addons = split_counters(counters)
     lines: list[BillLine] = [
@@ -154,6 +166,33 @@ def rate(subscriber_id: str, cycle: str, plan: Plan, counters: dict[str, int]) -
                               label=f"Roaming calls, zone {zone}", quantity=m, unit="min",
                               amount=_money(plan.roaming[zone].voice_per_min * m)))
 
+    # incoming calls: free at home; charged per zone when roaming outside the EU
+    roam_mt = zoned.get(UsageType.ROAMING_VOICE_MT, {})
+    roaming_incoming_min: dict[str, int] = {}
+    for zone, s_ in sorted(roam_mt.items()):
+        m = _ceil_div(s_, 60)
+        roaming_incoming_min[zone] = m
+        if zone == ROAM_LIKE_AT_HOME_ZONE or m == 0:
+            continue
+        lines.append(BillLine(code=f"ROAMING_VOICE_MT:{zone}", category=LineCategory.ROAMING,
+                              label=f"Incoming calls while roaming, zone {zone}", quantity=m, unit="min",
+                              amount=_money(plan.roaming[zone].voice_mt_per_min * m)))
+    rates = MESSAGE_RATES[plan.country]
+    mms = plain.get(UsageType.MMS, 0)
+    if mms:
+        lines.append(BillLine(code="MMS", category=LineCategory.MESSAGING, label="MMS", quantity=mms, unit="mms",
+                              amount=_money(rates["MMS"] * mms)))
+    intl_sms = plain.get(UsageType.SMS_INTL, 0)
+    if intl_sms:
+        lines.append(BillLine(code="SMS_INTL", category=LineCategory.MESSAGING, label="International SMS",
+                              quantity=intl_sms, unit="sms", amount=_money(rates["SMS_INTL"] * intl_sms)))
+    premium = plain.get(UsageType.PREMIUM, 0)
+    if premium:
+        lines.append(BillLine(code="PREMIUM", category=LineCategory.THIRD_PARTY,
+                              label="Third-party services (premium / value-added)", quantity=1, unit="total",
+                              amount=premium))
+    lines.extend(adjustments or [])
+
     subtotal = sum(line.amount for line in lines)
     vat = _money(Decimal(subtotal) * cfg.vat_rate)
     return Bill(
@@ -164,6 +203,10 @@ def rate(subscriber_id: str, cycle: str, plan: Plan, counters: dict[str, int]) -
             data_mb=data_mb, data_allowance_mb=allowance_mb, voice_min=voice_min, sms=sms,
             intl_voice_min=intl_min, roaming_data_mb=roaming_data_mb,
             roaming_voice_min=roaming_voice_min, eu_roaming_data_mb=_ceil_div(eu_bytes, MB),
+            incoming_min=_ceil_div(plain.get(UsageType.VOICE_MT, 0), 60), roaming_incoming_min=roaming_incoming_min,
+            mms=mms, intl_sms=intl_sms,
+            free_calls_min=_ceil_div(plain.get(UsageType.EMERGENCY, 0) + plain.get(UsageType.TOLLFREE, 0), 60),
+            zero_rated_mb=_ceil_div(plain.get(UsageType.DATA_ZERO_RATED, 0), MB), third_party_charges=premium,
         ),
     )
 

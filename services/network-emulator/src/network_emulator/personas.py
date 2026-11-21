@@ -46,8 +46,13 @@ def day_records(sub: str, country: str, persona: str, allowance_mb: int, d: date
 
     sessions = rng.randint(3, 8)
     day_bytes = int(allowance_mb * MONTH_SHARE[persona] / 30 * growth * rng.uniform(0.6, 1.4) * MB)
-    for _ in range(sessions):
+    sid = f"{sub}-{d:%Y%m%d}-s"
+    for k in range(sessions):
         q = day_bytes // sessions
+        if not roaming_zone and k == 0 and sessions > 3:  # one long session reported as 3 interim records
+            for part in range(3):
+                rec(usage_type="DATA", quantity=q // 3, session_id=f"{sid}0", sequence=part)
+            continue
         if roaming_zone:
             rec(usage_type="ROAMING_DATA", roaming_zone=roaming_zone, quantity=q // (3 if roaming_zone == "Z2" else 1))
         else:
@@ -63,6 +68,28 @@ def day_records(sub: str, country: str, persona: str, allowance_mb: int, d: date
         rec(usage_type="INTL_VOICE", quantity=rng.randint(60, 700))
     for _ in range(rng.randint(0, 3)):
         rec(usage_type="SMS", quantity=1)
+
+    # ---- extended CDR coverage (realistic frequencies) ----
+    for _ in range(rng.randint(0, 3)):  # incoming calls: free at home, charged when roaming outside the EU
+        secs = rng.randint(15, 300)
+        if roaming_zone:
+            rec(usage_type="ROAMING_VOICE_MT", roaming_zone=roaming_zone, quantity=secs, session_id=f"mt-{seq}")
+        else:
+            rec(usage_type="VOICE_MT", quantity=secs)
+    if rng.random() < 0.08:
+        rec(usage_type="MMS", quantity=1)
+    if rng.random() < (0.3 if persona == "intl_caller" else 0.03):
+        rec(usage_type="SMS_INTL", quantity=1)
+    if rng.random() < 0.05:
+        rec(usage_type="TOLLFREE", quantity=rng.randint(60, 600))
+    if rng.random() < 0.004:
+        rec(usage_type="EMERGENCY", quantity=rng.randint(30, 240))
+    if rng.random() < 0.03:  # premium SMS / value-added service, price set by the provider
+        rec(usage_type="PREMIUM", quantity=rng.choice([99, 199, 299, 499]), service=rng.choice(["vas-quiz", "vas-ringtone", "donation-ngo"]))
+    if persona == "streamer" and rng.random() < 0.6:  # zero-rated streaming pass: no allowance use
+        rec(usage_type="DATA_ZERO_RATED", quantity=int(rng.uniform(200, 900) * MB), service="stream-pass")
+    if rng.random() < 0.05:  # dropped / zero-duration call attempt
+        rec(usage_type="VOICE", quantity=0)
 
     if persona == "addon_buyer" and d.month in (3, 6, 9, 11) and d.day == 18:
         rec(kind="PLAN_CHANGED", addon_code="DE-DATA-5GB")

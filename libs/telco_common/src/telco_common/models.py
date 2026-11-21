@@ -18,6 +18,14 @@ class UsageType(StrEnum):
     ROAMING_DATA = "ROAMING_DATA"  # bytes, needs roaming_zone
     ROAMING_VOICE = "ROAMING_VOICE"  # seconds, needs roaming_zone
     INTL_VOICE = "INTL_VOICE"  # seconds, call to a foreign number from home network
+    VOICE_MT = "VOICE_MT"  # seconds, incoming call at home (free, counted)
+    ROAMING_VOICE_MT = "ROAMING_VOICE_MT"  # seconds, incoming call while roaming (charged outside the EU)
+    MMS = "MMS"  # count
+    SMS_INTL = "SMS_INTL"  # count, SMS to a foreign number
+    EMERGENCY = "EMERGENCY"  # seconds, emergency number (always free)
+    TOLLFREE = "TOLLFREE"  # seconds, toll-free number (free)
+    PREMIUM = "PREMIUM"  # quantity = charge in minor units set by the content/VAS provider (passed through)
+    DATA_ZERO_RATED = "DATA_ZERO_RATED"  # bytes on a zero-rated service (e.g. streaming pass): no allowance use
 
 
 class EventKind(StrEnum):
@@ -25,7 +33,7 @@ class EventKind(StrEnum):
     PLAN_CHANGED = "PLAN_CHANGED"  # add-on bought / plan switched mid-cycle
 
 
-ROAMING_TYPES = {UsageType.ROAMING_DATA, UsageType.ROAMING_VOICE}
+ROAMING_TYPES = {UsageType.ROAMING_DATA, UsageType.ROAMING_VOICE, UsageType.ROAMING_VOICE_MT}
 DATA_TYPES = {UsageType.DATA, UsageType.ROAMING_DATA}
 
 
@@ -41,6 +49,10 @@ class UsageRecord(BaseModel):
     roaming_zone: str | None = None
     # PLAN_CHANGED payload: catalogue code of the add-on bought (e.g. "DE-DATA-5GB").
     addon_code: str | None = None
+    # Optional mediation metadata (real CDRs carry these; used for tracing, not for rating)
+    session_id: str | None = Field(default=None, max_length=64)   # data session / call id
+    sequence: int | None = Field(default=None, ge=0)              # partial/interim record number
+    service: str | None = Field(default=None, max_length=32)      # e.g. VAS provider, zero-rated service
     event_time: datetime
 
     @field_validator("event_time")
@@ -79,3 +91,12 @@ class UsageBatch(BaseModel):
     batch_id: str = Field(min_length=3, max_length=128)
     source: str = Field(min_length=1, max_length=64)
     records: list[UsageRecord] = Field(min_length=1, max_length=5000)
+
+
+class RawBatch(BaseModel):
+    """Batch as received on the wire: records are validated one by one at the collector so that one
+    malformed CDR is quarantined instead of rejecting the whole file."""
+
+    batch_id: str = Field(min_length=3, max_length=128)
+    source: str = Field(min_length=1, max_length=64)
+    records: list[dict] = Field(min_length=1, max_length=5000)

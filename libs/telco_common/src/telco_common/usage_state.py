@@ -75,6 +75,14 @@ class UsageState:
         v = self.r.get(offset_key(partition))
         return int(v) if v is not None else None
 
+    def cdr_type_stats(self) -> dict[str, int]:
+        """CDRs applied per usage type across all partitions (sum of per-partition counters)."""
+        out: dict[str, int] = defaultdict(int)
+        for p in range(self.partitions):
+            for k, v in self.r.hgetall(f"stats:{slot_tag(p)}").items():
+                out[k.decode()] += int(v)
+        return dict(out)
+
     def committed_offset_for(self, subscriber_id: str) -> int | None:
         """Monotonic version of a subscriber's usage view (offset of their partition)."""
         return self.committed_offset(partition_for(subscriber_id, self.partitions))
@@ -83,7 +91,9 @@ class UsageState:
     def apply(self, partition: int, offset: int, msg_id: str, records: list[UsageRecord],
               levels: list[int]) -> ApplyResult:
         groups: dict[tuple[str, str, str], dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        stats: dict[str, int] = defaultdict(int)
         for rec in records:
+            stats[str(rec.usage_type or rec.kind)] += 1
             if partition_for(rec.subscriber_id, self.partitions) != partition:
                 raise ValueError(f"record for {rec.subscriber_id} does not belong to partition {partition}")
             fields = groups[(rec.subscriber_id, rec.cycle, rec.country)]
@@ -95,7 +105,8 @@ class UsageState:
                 key = f"{rec.usage_type}:{rec.roaming_zone}" if rec.roaming_zone else str(rec.usage_type)
                 fields[key] += rec.quantity
 
-        keys = [offset_key(partition), f"seen:{slot_tag(partition)}:{msg_id}", outbox_key(partition)]
+        keys = [offset_key(partition), f"seen:{slot_tag(partition)}:{msg_id}", outbox_key(partition),
+                f"stats:{slot_tag(partition)}"]
         args: list[str | int] = [offset, msg_id, SEEN_TTL_S, USAGE_TTL_S, ",".join(map(str, sorted(levels))),
                                  len(groups)]
         for (sub, cycle, country), fields in groups.items():
@@ -103,5 +114,8 @@ class UsageState:
             args += [sub, cycle, country, len(fields)]
             for f, inc in fields.items():
                 args += [f, inc]
+        args.append(len(stats))
+        for f, inc in stats.items():
+            args += [f, inc]
         applied, alerts, reason = self._script(keys=keys, args=args)
         return ApplyResult(bool(applied), int(alerts), reason.decode() if isinstance(reason, bytes) else reason)

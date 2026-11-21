@@ -29,6 +29,7 @@ ROAM_LIKE_AT_HOME_ZONE = "EU"
 class RoamingRates:
     data_per_mb: Decimal
     voice_per_min: Decimal
+    voice_mt_per_min: Decimal = Decimal(0)  # receiving calls while roaming in this zone
 
 
 @dataclass(frozen=True)
@@ -67,13 +68,17 @@ COUNTRIES: dict[Country, CountryConfig] = {
 }
 
 _DE_ROAMING = {
-    "Z2": RoamingRates(Decimal("1.99"), Decimal(49)),  # CH, UK, US …
-    "Z3": RoamingRates(Decimal("9.99"), Decimal(199)),  # rest of world
+    "Z2": RoamingRates(Decimal("1.99"), Decimal(49), Decimal(19)),  # CH, UK, US …
+    "Z3": RoamingRates(Decimal("9.99"), Decimal(199), Decimal(99)),  # rest of world
 }
 _PL_ROAMING = {
-    "Z2": RoamingRates(Decimal("8.6"), Decimal(199)),
-    "Z3": RoamingRates(Decimal(43), Decimal(899)),
+    "Z2": RoamingRates(Decimal("8.6"), Decimal(199), Decimal(79)),
+    "Z3": RoamingRates(Decimal(43), Decimal(899), Decimal(399)),
 }
+
+# Per-country message rates (minor units, net): MMS and international SMS are outside any SMS allowance.
+MESSAGE_RATES = {Country.DE: {"MMS": Decimal(39), "SMS_INTL": Decimal(19)},
+                 Country.PL: {"MMS": Decimal(49), "SMS_INTL": Decimal(49)}}
 
 PLANS: dict[str, Plan] = {
     p.code: p

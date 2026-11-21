@@ -10,10 +10,11 @@ Exactly-once on an at-least-once broker:
 All keys share the hash tag {pN} of the stream partition, so on a sharded Valkey cluster the
 whole script still runs on one node atomically.
 
-KEYS[1] offset key   KEYS[2] seen-message key   KEYS[3] alert outbox stream
-KEYS[4+2i] usage hash (per subscriber+cycle)   KEYS[5+2i] profile hash (per subscriber)
+KEYS[1] offset key   KEYS[2] seen-message key   KEYS[3] alert outbox stream   KEYS[4] per-partition CDR stats
+KEYS[5+2i] usage hash (per subscriber+cycle)   KEYS[6+2i] profile hash (per subscriber)
 ARGV: offset, msg_id, seen_ttl, usage_ttl, levels_csv, n_groups,
-      then per group: subscriber, cycle, country, n_fields, (field, increment)*
+      then per group: subscriber, cycle, country, n_fields, (field, increment)*,
+      then n_stats, (stat_field, increment)*
 --]]
 local offset = tonumber(ARGV[1])
 local current = tonumber(redis.call('GET', KEYS[1]) or '-1')
@@ -33,7 +34,7 @@ local n_groups = tonumber(ARGV[6])
 local a = 7
 local alerts = 0
 for g = 0, n_groups - 1 do
-  local ukey, pkey = KEYS[4 + 2 * g], KEYS[5 + 2 * g]
+  local ukey, pkey = KEYS[5 + 2 * g], KEYS[6 + 2 * g]
   local sub, cycle, country, n_fields = ARGV[a], ARGV[a + 1], ARGV[a + 2], tonumber(ARGV[a + 3])
   a = a + 4
   local addon_changed = false
@@ -67,6 +68,13 @@ for g = 0, n_groups - 1 do
       end
     end
   end
+end
+
+local n_stats = tonumber(ARGV[a] or '0')
+a = a + 1
+for _ = 1, n_stats do
+  redis.call('HINCRBY', KEYS[4], ARGV[a], tonumber(ARGV[a + 1]))
+  a = a + 2
 end
 
 redis.call('SET', KEYS[2], 1, 'EX', tonumber(ARGV[3]))

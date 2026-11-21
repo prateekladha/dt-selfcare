@@ -58,6 +58,7 @@ bills = Table(
     Column("issued_at", DateTime(timezone=True), nullable=False),
     Column("due_date", DateTime(timezone=True), nullable=False),
     Column("payload", Text, nullable=False),  # full Bill JSON (lines + usage)
+    Column("rated_counters", Text),  # the exact CDR totals this bill was priced from (late-usage adjustments)
     UniqueConstraint("subscriber_id", "cycle", name="uq_bill_sub_cycle"),
 )
 Index("ix_bills_sub_cycle", bills.c.subscriber_id, bills.c.cycle)
@@ -197,6 +198,7 @@ MIGRATIONS: list[tuple[str, list]] = [
     ("0003_purge_backfill_notifications", [_purge_backfill_notifications]),
     # Oracle 23ai AI Vector Search: native vector column for semantic retrieval (L2)
     ("0004_context_docs_vector", ["ALTER TABLE context_docs ADD (embedding VECTOR(384, FLOAT32))"]),
+    ("0005_bills_rated_counters", ["ALTER TABLE bills ADD (rated_counters CLOB)"]),
 ]
 
 
