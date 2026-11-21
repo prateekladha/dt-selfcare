@@ -45,7 +45,7 @@ class OrderAdapter(Protocol):
     prefix: str
 
     def submit(self, engine: Engine, order: dict) -> str: ...
-    def state(self, engine: Engine, external_id: str) -> str: ...
+    def state(self, engine: Engine, external_id: str) -> str | None: ...
 
 
 class _LegacyEmulator:
@@ -66,12 +66,13 @@ class _LegacyEmulator:
         self.last_wire = wire
         return bid
 
-    def state(self, engine: Engine, external_id: str) -> str:
+    def state(self, engine: Engine, external_id: str) -> str | None:
+        """TMF622 state, or None if the legacy system has no such order."""
         from ..db import bss_orders
 
         with engine.connect() as cx:
             legacy = cx.execute(select(bss_orders.c.status).where(bss_orders.c.id == external_id)).scalar()
-        return TMF_STATE.get(legacy or "UNKNOWN", "pending")
+        return None if legacy is None else TMF_STATE.get(legacy, "pending")
 
 
 class RestBssAdapter(_LegacyEmulator):

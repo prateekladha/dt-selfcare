@@ -191,3 +191,12 @@ def test_bill_day_prepare_warms_home_cache(world):
     snap, hit = get_or_build(r, SUB, lambda: {"miss": True})
     assert hit and snap["bills"][-1]["cycle"] == "2026-10"
     assert datetime.now(UTC)
+
+
+def test_adapter_unknown_order_is_404(world):
+    from core_api.adapters.bss import BASE
+    from core_api.apps import adapter as app_mod
+
+    c = TestClient(app_mod.build("order-adapter-test2", [app_mod.router]))
+    assert c.get(f"{BASE}/DEB-NOTEXIST").status_code == 404
+    assert c.get(f"{BASE}/XYZ-1").status_code == 404
