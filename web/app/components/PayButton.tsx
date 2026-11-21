@@ -34,9 +34,13 @@ export function PayButton({ purpose, billId, label, name }: { purpose: "BILL" | 
       const p = await res.json();
       if (!res.ok) throw new Error(p.detail ?? "payment could not be started");
       if (p.status === "PAID") { setState("done"); revalidator.revalidate(); return; }
+      if (p.fx_rate) {
+        const fmt = (v: number, c: string) => new Intl.NumberFormat("en-GB", { style: "currency", currency: c }).format(v / 100);
+        setMsg(`Charged as ${fmt(p.charged_amount, p.charged_currency)} (1 ${p.currency} = ${p.fx_rate} ${p.charged_currency}) via UPI/cards`);
+      }
       await loadCheckout();
       const rzp = new window.Razorpay!({
-        key: p.checkout.key_id, order_id: p.order_id, amount: p.amount, currency: p.currency,
+        key: p.checkout.key_id, order_id: p.order_id, amount: p.charged_amount, currency: p.charged_currency,
         name: "Mobile self-care", description: purpose === "BILL" ? "Bill payment" : "Pay unbilled usage",
         prefill: { name }, theme: { color: "#E20074" },
         handler: async (r: any) => {
@@ -62,7 +66,7 @@ export function PayButton({ purpose, billId, label, name }: { purpose: "BILL" | 
       <Button onClick={pay} disabled={state === "busy" || state === "done"}>
         {state === "busy" ? "Opening checkout…" : state === "done" ? "✓ Paid" : label}
       </Button>
-      {msg && <p className={`text-xs ${state === "error" ? "text-[var(--bad)]" : "text-[var(--good)]"}`}>{msg}</p>}
+      {msg && <p className={`text-xs ${state === "error" ? "text-[var(--bad)]" : state === "done" ? "text-[var(--good)]" : "text-[var(--ink-3)]"}`}>{msg}</p>}
     </div>
   );
 }

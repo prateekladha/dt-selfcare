@@ -29,6 +29,7 @@ class FakeGateway:
 
     def create_order(self, amount, currency, receipt, notes):
         self.orders += 1
+        self.last = (amount, currency)
         return GatewayOrder(f"order_{self.orders}", amount, currency, {"provider": "razorpay", "order_id": f"order_{self.orders}"})
 
     def verify_client_signature(self, order_id, payment_id, signature):
@@ -185,3 +186,20 @@ def test_simulate_from_scenario_and_upload(env):
     assert bad.status_code == 422
     from core_api.services.bills import list_bills
     assert len(list_bills(engine, SUB)) == 1  # simulation never touched real bills/usage
+
+
+def test_settlement_in_inr_keeps_bill_currency_for_the_ledger(env, monkeypatch):
+    client, engine, state, gw = env
+    issue(engine, state, "2026-10")
+    monkeypatch.setattr(pay_router, "flag_obj", lambda *a, **k: {"currency": "INR", "fx": {"EUR": 90.0}})
+    h = login(client)
+    p = client.post("/v1/me/payments", json={"purpose": "BILL", "bill_id": f"{SUB}:2026-10"},
+                    headers=h | {"Idempotency-Key": "inr-00000001"}).json()
+    assert p["currency"] == "EUR" and p["charged_currency"] == "INR" and p["fx_rate"] == "90.0"
+    assert gw.last == (p["charged_amount"], "INR") and p["charged_amount"] == p["amount"] * 90
+    gw.captured.add(p["order_id"])
+    sig = hmac.new(b"s3cret", f"{p['order_id']}|pay_y".encode(), hashlib.sha256).hexdigest()
+    client.post(f"/v1/me/payments/{p['payment_id']}/confirm", json={"gateway_payment_id": "pay_y", "signature": sig},
+                headers=h)
+    bill = client.get("/v1/me/bills/2026-10", headers=h).json()
+    assert bill["status"] == "PAID" and bill["amount_paid"] == bill["total"]  # ledger in EUR, not INR

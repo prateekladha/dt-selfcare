@@ -69,6 +69,10 @@ payments = Table(
     Column("bill_id", String(64)),
     Column("amount", BigInteger, nullable=False),
     Column("currency", String(3), nullable=False),
+    # What the gateway actually charged (may differ from the bill currency, e.g. INR for UPI)
+    Column("charged_amount", BigInteger),
+    Column("charged_currency", String(3)),
+    Column("fx_rate", String(24)),
     Column("gateway", String(16), nullable=False),
     Column("gateway_order_id", String(64), unique=True),
     Column("gateway_payment_id", String(64)),
@@ -136,5 +140,34 @@ def set_engine(engine: Engine) -> None:
     _engine = engine
 
 
+schema_migrations = Table(
+    "schema_migrations", metadata,
+    Column("id", String(64), primary_key=True),
+    Column("applied_at", DateTime(timezone=True), default=utcnow, nullable=False),
+)
+
+# Forward-only, idempotent migrations for tables that already exist (create_all never alters).
+MIGRATIONS: list[tuple[str, list[str]]] = [
+    ("0002_payment_settlement_currency", [
+        ("ALTER TABLE payments ADD (charged_amount NUMBER(19), charged_currency VARCHAR2(3 CHAR), "
+        "fx_rate VARCHAR2(24 CHAR))"),
+    ]),
+]
+
+
 def create_schema(engine: Engine) -> None:
+    from sqlalchemy import insert, inspect, select
+
+    fresh = not inspect(engine).has_table("payments")
     metadata.create_all(engine)
+    with engine.begin() as cx:
+        done = {r[0] for r in cx.execute(select(schema_migrations.c.id))}
+        for mid, statements in MIGRATIONS:
+            if mid in done:
+                continue
+            if not fresh and engine.dialect.name == "oracle":
+                cols = {c["name"].lower() for c in inspect(cx).get_columns("payments")}
+                if "charged_amount" not in cols:
+                    for sql in statements:
+                        cx.exec_driver_sql(sql)
+            cx.execute(insert(schema_migrations).values(id=mid))

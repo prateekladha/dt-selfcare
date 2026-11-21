@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import insert, select, update
 from sqlalchemy.engine import Engine
@@ -23,14 +24,32 @@ class PaymentError(Exception):
         self.status, self.message = status, message
 
 
+def settlement(amount: int, currency: str, policy: dict) -> tuple[int, str, str | None]:
+    """Bill amount -> (amount, currency, fx) the gateway is asked to charge.
+
+    policy comes from the per-country `payment-settlement` flag, e.g.
+    {"currency": "INR", "fx": {"EUR": 90.0}}. Razorpay's UPI rail is INR-only; an EU gateway
+    (Adyen/Stripe) would use {"currency": "native"} and charge the bill currency directly.
+    """
+    target = (policy or {}).get("currency", "native")
+    if target in ("native", currency):
+        return amount, currency, None
+    rate = (policy.get("fx") or {}).get(currency)
+    if not rate:
+        raise PaymentError(503, f"no settlement rate configured for {currency}->{target}")
+    return int((Decimal(amount) * Decimal(str(rate))).quantize(Decimal(1), rounding=ROUND_HALF_UP)), target, str(rate)
+
+
 def _public(row, checkout: dict | None = None) -> dict:
     return {"payment_id": row.id, "status": row.status, "amount": row.amount, "currency": row.currency,
+            "charged_amount": row.charged_amount or row.amount, "charged_currency": row.charged_currency or row.currency,
+            "fx_rate": row.fx_rate,
             "purpose": row.purpose, "bill_id": row.bill_id, "gateway": row.gateway,
             "order_id": row.gateway_order_id, "checkout": checkout}
 
 
 def create_payment(engine: Engine, gw: PaymentGateway, subscriber_id: str, idem_key: str, purpose: str,
-                   amount: int, currency: str, bill_id: str | None) -> dict:
+                   amount: int, currency: str, bill_id: str | None, settle: dict | None = None) -> dict:
     with engine.connect() as cx:
         existing = cx.execute(select(payments).where(payments.c.subscriber_id == subscriber_id,
                                                      payments.c.idempotency_key == idem_key)).first()
@@ -40,11 +59,14 @@ def create_payment(engine: Engine, gw: PaymentGateway, subscriber_id: str, idem_
     if amount <= 0:
         raise PaymentError(409, "nothing to pay")
     pid = str(uuid.uuid4())
-    order = gw.create_order(amount, currency, receipt=pid, notes={"payment_id": pid, "purpose": purpose})
+    charged, charged_cur, fx = settlement(amount, currency, settle or {})
+    order = gw.create_order(charged, charged_cur, receipt=pid, notes={
+        "payment_id": pid, "purpose": purpose, "bill_amount": f"{amount} {currency}", **({"fx": fx} if fx else {})})
     with engine.begin() as cx:
         cx.execute(insert(payments).values(
             id=pid, subscriber_id=subscriber_id, purpose=purpose, bill_id=bill_id, amount=amount,
-            currency=currency, gateway=gw.name, gateway_order_id=order.order_id, status="CREATED",
+            currency=currency, charged_amount=charged, charged_currency=charged_cur, fx_rate=fx,
+            gateway=gw.name, gateway_order_id=order.order_id, status="CREATED",
             idempotency_key=idem_key))
         row = cx.execute(select(payments).where(payments.c.id == pid)).one()
     return _public(row, order.checkout)

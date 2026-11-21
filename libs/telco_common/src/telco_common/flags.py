@@ -18,6 +18,7 @@ DEFAULTS: dict[str, Any] = {
     "ai-provider": "mistral",  # mistral | template
     "payments-enabled": True,
     "payment-gateway": "razorpay",
+    "payment-settlement": {"currency": "native"},
     "usage-alert-thresholds": {"levels": [50, 80, 100]},
     "throttle-at-100": True,
 }

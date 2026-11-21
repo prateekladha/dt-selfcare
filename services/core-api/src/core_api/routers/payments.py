@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from telco_common.flags import flag_bool, flag_str
+from telco_common.flags import flag_bool, flag_obj, flag_str
 
 from ..db import bills, get_engine, subscribers
 from ..deps import get_usage_state
@@ -64,7 +64,8 @@ def create(body: CreatePaymentIn, p: Principal = Depends(current_principal),
         amount, currency, bill_id = current.total, current.currency, None
     try:
         return create_payment(engine, gateway_for(p.country, p.subscriber_id), p.subscriber_id, idempotency_key,
-                              body.purpose, amount, currency, bill_id)
+                              body.purpose, amount, currency, bill_id,
+                              settle=flag_obj("payment-settlement", p.country, p.subscriber_id))
     except PaymentError as e:
         raise HTTPException(e.status, e.message) from e
     except CircuitOpen as e:
