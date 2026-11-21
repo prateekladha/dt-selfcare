@@ -1,5 +1,16 @@
 # The billing agent (Layers 1 to 4)
 
+> **Two AI paths, chosen on purpose:**
+> - **Bill explanation:** one structured LLM call over computed facts, in `agent/explain_llm.py`. The inputs are known up front, so a tool loop would add latency and cost without adding relevance. The output is JSON: summary, drivers, top usage and a tip. Each item cites sources, and every number is checked against the sources that item cites, with up to 2 repairs. Results are cached for 30 days by a hash of the facts.
+> - **Assistant (chat):** a **multi-step, multi-tool ReAct agent behind a broker**, streamed over SSE (`agent/loop.py`, `agent/broker.py`, `agent/tools.py`). It follows the perpetuum design:
+>   - **The broker is the only executor.** It checks the allow-list, validates arguments against a JSON schema, runs tools scoped to the caller, caps each result's size and logs every decision.
+>   - **Tools:** `list_bills`, `get_bill`, `compare_bills`, `get_current_usage`, `search_knowledge` (L2 hybrid search with RRF and the CRAG grader), `get_cdr_evidence`, `get_payments`, `get_alerts`, `simulate_usage`.
+>   - **Limits:** 6 turns and 10 tool calls; tools are withheld on the last turn so the model must answer.
+>   - **Events:** `step`, `step_done`, `token`, `reset`, `repairing`, `replace`, `done`.
+>   - **Verification:** the final answer cites `[S#]` tool results and every number is checked against them, with repairs if needed. It never falls back to a template.
+>
+> The spine-first retrieval pipeline described below is what the `search_knowledge` tool uses.
+
 The assistant ("Ask about your bill") and the bill explanation run through one agent. It never answers from
 the model's own knowledge: every statement is grounded in **documents built from the system's own records**,
 every number is verified against the documents it cites, and every run leaves a full trace.

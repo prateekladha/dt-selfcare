@@ -4,7 +4,7 @@ A self-care backend and web app for a multi-country mobile operator. It covers t
 the network usage stream to an explained, payable bill. It's built to production standards and
 deployed on Oracle Cloud (OCI), but sized to cost close to nothing.
 
-**Design docs:** [HLD](docs/HLD.md) · [LLD](docs/LLD.md) · [AI agent L1–L4](docs/AI_AGENT.md) · [CDR scenario coverage](docs/CDR_SCENARIOS.md) · [Operations runbook: see inside the DB, Valkey and the stream](docs/OPERATIONS.md) · [Load test](docs/LOADTEST.md) · [Interview walkthrough](docs/WALKTHROUGH.md)
+**Design docs:** [HLD](docs/HLD.md) · [LLD](docs/LLD.md) · [AI agent L1–L4](docs/AI_AGENT.md) · [Payments & reconciliation](docs/PAYMENTS.md) · [CDR scenario coverage](docs/CDR_SCENARIOS.md) · [Operations runbook: see inside the DB, Valkey and the stream](docs/OPERATIONS.md) · [Load test](docs/LOADTEST.md) · [Interview walkthrough](docs/WALKTHROUGH.md)
 
 > Case study: **"Usage & Bill Explainer"**: the user uploads or selects their usage and gets
 > insights on their bill.
