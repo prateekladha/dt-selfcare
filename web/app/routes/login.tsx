@@ -10,12 +10,12 @@ import type { Route } from "./+types/login";
 export const meta = () => [{ title: "Sign in · Self-care" }];
 
 const DEMO = [
-  { id: "4915100000002", name: "Jonas Weber", country: "DE", story: "Bill jumped in October: roaming outside the EU" },
-  { id: "4915100000001", name: "Lena Fischer", country: "DE", story: "Heavy streamer: live 80% / 100% data alerts" },
-  { id: "4915100000003", name: "Mia Schulz", country: "DE", story: "Buys data add-ons instead of paying overage" },
-  { id: "4915100000004", name: "Paul Becker", country: "DE", story: "Light user: flat bill every month" },
-  { id: "48600000001", name: "Zofia Nowak", country: "PL", story: "Calls abroad, billed in PLN with 23% VAT" },
-  { id: "48600000002", name: "Piotr Kowalski", country: "PL", story: "Streamer on a PLN plan" },
+  { id: "4915100000002", name: "Jonas Weber", country: "DE", story: "Traveller · roams outside the EU some months" },
+  { id: "4915100000001", name: "Lena Fischer", country: "DE", story: "Heavy streamer · usage grows every month" },
+  { id: "4915100000003", name: "Mia Schulz", country: "DE", story: "Flex plan · buys data add-ons in busy months" },
+  { id: "4915100000004", name: "Paul Becker", country: "DE", story: "Light user · stays inside the plan" },
+  { id: "48600000001", name: "Zofia Nowak", country: "PL", story: "Calls abroad · PLN, 23% VAT" },
+  { id: "48600000002", name: "Piotr Kowalski", country: "PL", story: "Streamer · PLN plan" },
 ];
 
 export async function loader({ request }: Route.LoaderArgs) {

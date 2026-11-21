@@ -14,6 +14,7 @@ from telco_common.billing import Bill, data_usage_pct
 from telco_common.catalog import COUNTRIES, get_plan
 from telco_common.explainer import explain
 from telco_common.flags import flag_bool
+from telco_common.models import cycle_of
 
 from ..db import get_engine, notifications, subscribers
 from ..deps import RateLimiter, get_usage_state, get_valkey
@@ -123,7 +124,25 @@ def bill_explanation(cycle: str, response: Response, lang: str = Query("en", pat
     s = get_settings()
     budget = lambda: RateLimiter(get_valkey()).allow(f"ai:{p.subscriber_id}", s.ai_daily_limit_per_subscriber, 86400)
     text, provider = Narrator(s, get_engine()).narrate(ex, p.subscriber_id, p.country, lang, allow_llm=ai, budget=budget)
-    return {"explanation": ex.model_dump(), "narrative": text, "provider": provider, "partial": cycle == "current"}
+    sources = [*ex.facts, *ex.usage_changes]  # numbered [1..n] exactly as given to the model
+    return {"explanation": ex.model_dump(), "narrative": text, "provider": provider, "partial": cycle == "current",
+            "sources": sources, "bill_id": None if cycle == "current" else f"{p.subscriber_id}:{cycle}"}
+
+
+@router.get("/bills/{cycle}/evidence")
+def bill_evidence(cycle: str, response: Response, p: Principal = Depends(current_principal)) -> dict:
+    """Raw-CDR evidence for a bill: re-summed from the archive and reconciled with Valkey + the bill."""
+    from ..services.evidence import cdr_evidence
+
+    response.headers.update(NO_STORE)
+    real_cycle = cycle_of(datetime.now(UTC)) if cycle == "current" else cycle
+    ev = cdr_evidence(get_usage_state(), p.subscriber_id, real_cycle)
+    row = None if cycle == "current" else get_bill_row(get_engine(), p.subscriber_id, cycle)
+    ev["bill_lines"] = [x.model_dump() for x in row_to_bill(row).lines] if row else []
+    ev["bill_id"] = row.id if row else None
+    ev["note"] = ("Current cycle: the archive is flushed every ~60 s, so the newest CDRs may not be archived yet."
+                  if cycle == "current" else None)
+    return ev
 
 
 @router.post("/notifications/{nid}/read", status_code=204)

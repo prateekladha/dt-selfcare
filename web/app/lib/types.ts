@@ -10,7 +10,14 @@ export type Explanation = {
   delta_total: number | null; delta_pct: number | null; direction: "UP" | "DOWN" | "SAME" | "FIRST_BILL";
   drivers: Driver[]; top_usage_drivers: UsageDriver[]; usage_changes: string[]; facts: string[];
 };
-export type ExplanationResponse = { explanation: Explanation; narrative: string; provider: string; partial: boolean };
+export type ExplanationResponse = { explanation: Explanation; narrative: string; provider: string; partial: boolean; sources?: string[]; bill_id?: string | null };
+export type Evidence = {
+  subscriber_id: string; cycle: string; partition: number; source: string; objects_scanned: number; cdr_count: number;
+  first_event: string | null; last_event: string | null; all_match: boolean; note: string | null; bill_id: string | null;
+  reconciliation: { key: string; unit: string; cdr_records: number; from_cdrs: number; valkey_counter: number; match: boolean }[];
+  sample: { record_id: string; event_time: string; key: string; quantity: number; unit: string; archive_object: string }[];
+  bill_lines: Line[];
+};
 export type Home = {
   as_of: string;
   subscriber: { id: string; name: string; country: string; locale: string };

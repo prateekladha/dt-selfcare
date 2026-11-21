@@ -106,3 +106,14 @@ def test_validation_rules():
     with pytest.raises(ValueError):
         UsageRecord(record_id="rec-00000001", subscriber_id="491", country="DE", usage_type="DATA",
                     quantity=1, event_time=datetime(2026, 11, 1))
+
+
+
+def test_concatenated_messages_parse_including_legacy_no_newline_format():
+    import gzip
+
+    from telco_common.codec import iter_json_lines
+    a, b = [_rec(1)], [_rec(2)]
+    assert decode_records(encode_records(a) + encode_records(b)) == a + b  # archive = concatenated gzip members
+    legacy = gzip.compress(a[0].model_dump_json().encode()) + gzip.compress(b[0].model_dump_json().encode())
+    assert len(list(iter_json_lines(gzip.decompress(legacy).decode()))) == 2  # '}{' on one line

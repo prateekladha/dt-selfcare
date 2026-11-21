@@ -16,6 +16,7 @@ dependencies = [
   "prometheus-client>=0.21",
   "sse-starlette>=2.1",
   "python-multipart>=0.0.12",
+  "oci>=2.130",
   "openfeature-provider-flagd>=0.1.5",
 ]
 

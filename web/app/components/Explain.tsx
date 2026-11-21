@@ -1,4 +1,5 @@
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
+import { CitedText, SourcesPanel } from "./Sources";
 import { Await, Link } from "react-router";
 import { ShieldCheck, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
 import type { Explanation, ExplanationResponse } from "~/lib/types";
@@ -78,8 +79,14 @@ export function TopDrivers({ ex, locale }: { ex: Explanation; locale: string }) 
 
 const LANGS = [["en", "English"], ["de", "Deutsch"], ["pl", "Polski"]] as const;
 
-export function Narrative({ narrative, lang, basePath, title = "In plain words", languages = true }:
-  { narrative: Promise<ExplanationResponse> | ExplanationResponse; lang: string; basePath: string; title?: string; languages?: boolean }) {
+export function Narrative({ narrative, lang, basePath, title = "In plain words", languages = true, cycle }:
+  { narrative: Promise<ExplanationResponse> | ExplanationResponse; lang: string; basePath: string; title?: string; languages?: boolean; cycle?: string }) {
+  const [open, setOpen] = useState(false);
+  const [hl, setHl] = useState<number | null>(null);
+  const cite = (n: number) => {
+    setOpen(true); setHl(n);
+    setTimeout(() => document.getElementById(`src-${n}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+  };
   return (
     <Card className="overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] bg-[var(--surface-2)] px-6 py-3.5">
@@ -96,16 +103,23 @@ export function Narrative({ narrative, lang, basePath, title = "In plain words",
           <Await resolve={narrative} errorElement={<p className="text-sm text-[var(--ink-3)]">The written explanation is unavailable right now. The breakdown is complete.</p>}>
             {(r) => (
               <div className="fade-up">
-                <p className="whitespace-pre-line text-[16px] leading-[1.65] text-[var(--ink)]">{r.narrative}</p>
+                <CitedText text={r.narrative} onCite={cite} />
                 <p className="mt-4 flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
                   <ShieldCheck size={13} />
-                  {r.provider === "template" ? "Generated from your bill data." : `Written by AI (${r.provider.split(":")[1] ?? r.provider}) from your bill facts. Every number is verified against your bill.`}
+                  {r.provider === "template" ? "Generated from your bill data." : `Written by AI (${r.provider.split(":")[1] ?? r.provider}) from the numbered facts below. Every number is checked against them, and each fact traces back to your CDRs.`}
                 </p>
               </div>
             )}
           </Await>
         </Suspense>
       </div>
+      {cycle && (
+        <Suspense fallback={null}>
+          <Await resolve={narrative} errorElement={null}>
+            {(r) => r.sources?.length ? <SourcesPanel sources={r.sources} cycle={cycle} open={open} setOpen={setOpen} highlight={hl} /> : null}
+          </Await>
+        </Suspense>
+      )}
     </Card>
   );
 }

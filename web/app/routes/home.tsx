@@ -142,7 +142,7 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
           </div>
           <div className="grid gap-6 lg:grid-cols-5">
             <div className="space-y-6 lg:col-span-3">
-              <Narrative narrative={narrative} lang={lang} basePath="/" />
+              <Narrative narrative={narrative} lang={lang} basePath="/" cycle={ex.cycle} />
               <WhatChanged ex={ex} locale={loc} />
             </div>
             <div className="lg:col-span-2"><TopDrivers ex={ex} locale={loc} /></div>
