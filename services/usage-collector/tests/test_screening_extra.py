@@ -20,3 +20,17 @@ def test_unknown_addon_zone_and_huge_quantity_are_quarantined():
     reasons = [q["reason"] for q in out.quarantined]
     assert len(out.valid) == 2 and len(reasons) == 3
     assert any("add-on" in r for r in reasons) and any("roaming zone" in r for r in reasons) and any("large" in r for r in reasons)
+
+
+def test_overlapping_batches_count_a_record_once_and_a_failed_publish_releases_it():
+    from usage_collector.screening import release, remember
+    r = fakeredis.FakeRedis()
+    batch = [rec(i, usage_type="DATA", quantity=100) for i in range(10, 13)]
+    first = screen(batch, r)                       # claims the 3 ids
+    second = screen(batch, r)                      # concurrent re-send: nothing left to claim
+    assert len(first.valid) == 3 and len(second.valid) == 0 and second.duplicates == 3
+    release(first.valid, r)                        # first publish failed
+    retry = screen(batch, r)
+    assert len(retry.valid) == 3                   # the retry goes through
+    remember(retry.valid, r)
+    assert screen(batch, r).duplicates == 3        # and afterwards it's remembered

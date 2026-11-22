@@ -19,6 +19,7 @@ from telco_common.models import EventKind, UsageRecord
 
 RECORD_TTL_S = 7 * 24 * 3600
 MAX_FUTURE = timedelta(minutes=10)
+CLAIM_TTL_S = 300   # in-flight claim; longer than any publish attempt
 # Values the rating engine knows. Anything else used to pass ingest and then fail downstream: an unknown add-on
 # code crash-looped the aggregator on that partition; an unknown roaming zone broke the bill run.
 KNOWN_ZONES = {"EU"} | {z for p in PLANS.values() for z in p.roaming}
@@ -62,23 +63,33 @@ def screen(raw: list[dict], r, now: datetime | None = None) -> Screened:
         seen_in_batch.add(u.record_id)
         unique.append(u)
     if unique:
+        # CLAIM each record id atomically (SET NX, short TTL while in flight) instead of only checking it: two
+        # overlapping batches (or a re-sent file while the first is still publishing) both passed an EXISTS
+        # check and were counted twice. The claim becomes permanent after the broker ack (remember) and is
+        # released if publishing fails (release), so a retry still goes through.
         pipe = r.pipeline(transaction=False)
         for u in unique:
-            pipe.exists(f"rec:{u.record_id}")
-        for u, exists in zip(unique, pipe.execute(), strict=True):
-            if exists:
-                out.duplicates += 1
-            else:
+            pipe.set(f"rec:{u.record_id}", "pending", nx=True, ex=CLAIM_TTL_S)
+        for u, claimed in zip(unique, pipe.execute(), strict=True):
+            if claimed:
                 out.valid.append(u)
+            else:
+                out.duplicates += 1
     return out
 
 
 def remember(valid: list[UsageRecord], r) -> None:
-    """Called only after the broker acknowledged the batch, so a failed publish can be retried."""
+    """Called only after the broker acknowledged the batch: the claims become the 7-day dedupe memory."""
     pipe = r.pipeline(transaction=False)
     for u in valid:
         pipe.set(f"rec:{u.record_id}", 1, ex=RECORD_TTL_S)
     pipe.execute()
+
+
+def release(valid: list[UsageRecord], r) -> None:
+    """Publishing failed: give the claimed ids back so the retry isn't dropped as a duplicate."""
+    if valid:
+        r.delete(*[f"rec:{u.record_id}" for u in valid])
 
 
 def quarantine(source: str, batch_id: str, items: list[dict], r) -> None:
