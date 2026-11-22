@@ -14,7 +14,7 @@ export function baseFor(path: string) {
 }
 
 /** One opossum circuit breaker per downstream service (BFF -> core-api / payments / assistant).
- *  - each call has a timeout (5 s; 30 s for the LLM explanation; 120 s for the assistant stream);
+ *  - each call has a timeout (5 s; 30 s for the LLM explanation and the CDR evidence re-scan; 120 s for the assistant stream);
  *  - failures = timeouts, connection errors, 5xx (4xx is the caller's problem and doesn't count);
  *  - the circuit OPENS when >= 50% of at least 5 calls in a 10 s window fail; while open, calls fail
  *    fast (no request leaves the BFF) and the page falls back (stale snapshot / degraded UI);
@@ -57,6 +57,7 @@ export function degradedServices(): string[] {
 function timeoutFor(path: string) {
   if (path.startsWith("/v1/me/assistant")) return 120_000;
   if (path.includes("/explanation")) return 30_000;
+  if (path.endsWith("/evidence")) return 30_000;   // re-reads the raw CDR archive: seconds when cold
   return 5_000;
 }
 
