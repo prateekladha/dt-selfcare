@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
-from telco_common.billing import data_usage_pct, rate, split_counters
+from telco_common.billing import rate, split_counters
 from telco_common.catalog import COUNTRIES, MB, get_addon, get_plan
 from telco_common.explainer import explain, fmt_money
 from telco_common.models import cycle_of
@@ -101,13 +101,13 @@ OVERAGE_WORDS = {"THROTTLE": "beyond the allowance the speed is reduced; there i
                  "CHARGE": "every MB beyond the allowance is charged"}
 
 
-def _data_position(plan, counters: dict[str, int], extra_mb: int = 0) -> dict:
-    """Plan allowance, add-ons, total, used, remaining / over, in MB: what the customer actually has left."""
+def _data_position(plan_mb: int, counters: dict[str, int], extra_mb: int = 0) -> dict:
+    """Plan allowance (pro-rated after a tariff change), add-ons, total, used, remaining / over, in MB."""
     _, _, addons = split_counters(counters)
     used_mb = -(-(counters.get("DATA", 0) + counters.get("ROAMING_DATA:EU", 0)) // MB)
     addon_mb = sum(get_addon(c).data_mb * n for c, n in addons.items())
-    total = plan.data_mb + addon_mb + extra_mb
-    pos = {"plan_data": f"{plan.data_mb:,} MB",
+    total = plan_mb + addon_mb + extra_mb
+    pos = {"plan_data": f"{plan_mb:,} MB",
            "add_ons_this_month": [f"{get_addon(c).name} x{n} (+{get_addon(c).data_mb * n:,} MB)" for c, n in addons.items()] or "none",
            "total_allowance": f"{total:,} MB", "data_used": f"{used_mb:,} MB"}
     if used_mb <= total:
@@ -118,24 +118,62 @@ def _data_position(plan, counters: dict[str, int], extra_mb: int = 0) -> dict:
     return pos
 
 
-def t_current_usage(args: dict, ctx: ToolContext) -> dict:
+def _live(ctx: ToolContext):
+    """The current month exactly as the app shows it: pro-rated by tariff segments (services.bills.unbilled),
+    not the whole month on today's plan. -> (sub, plan, counters, bill, plan_mb)."""
+    from ..services.bills import unbilled
+
     sub = _sub(ctx)
     plan = get_plan(sub.plan_code)
+    counters = ctx.state.counters(ctx.subscriber_id, cycle_of(datetime.now(UTC)))
+    b = unbilled(ctx.state, ctx.subscriber_id, sub.plan_code, engine=ctx.engine)
+    _, _, addons = split_counters(counters)
+    plan_mb = b.usage.data_allowance_mb - sum(get_addon(c).data_mb * n for c, n in addons.items())
+    return sub, plan, counters, b, max(plan_mb, 0)
+
+
+def _overage(plan) -> str:
+    return OVERAGE_WORDS.get(str(plan.overage_policy).split(".")[-1].upper(), str(plan.overage_policy))
+
+
+def t_current_usage(args: dict, ctx: ToolContext) -> dict:
+    _, plan, counters, b, plan_mb = _live(ctx)
     now = datetime.now(UTC)
     cycle = cycle_of(now)
-    counters = ctx.state.counters(ctx.subscriber_id, cycle)
-    b = rate(ctx.subscriber_id, cycle, plan, counters)
     u = b.usage
-    pct = data_usage_pct(plan, counters)
     days = monthrange(now.year, now.month)[1]   # 28-31: the cycle is the calendar month
     proj = int(u.data_mb / max(now.day, 1) * days)
+    pos = _data_position(plan_mb, counters)
+    total = u.data_allowance_mb
     return {"source": f"valkey:u:{{p{partition_for(ctx.subscriber_id, ctx.state.partitions)}}}:{cycle}",
-            "as_of": now.strftime("%d %B %Y %H:%M UTC"), "day_of_cycle": now.day,
-            **_data_position(plan, counters), "data_used_pct": f"{pct:.0f}%",
+            "as_of": now.strftime("%d %B %Y %H:%M UTC"), "day_of_cycle": now.day, "current_plan": plan.name,
+            **pos, "data_used_pct": f"{(u.data_mb * 100 / total) if total else 0:.0f}%",
             "projected_month_end": f"{proj:,} MB", "calls": f"{u.voice_min:,} min", "sms": u.sms,
             "unbilled_total": fmt_money(b.total, b.currency),
             "unbilled_lines": [f"{x.label}: {fmt_money(x.amount, b.currency)}" for x in b.lines],
-            "beyond_the_allowance": OVERAGE_WORDS.get(str(plan.overage_policy).split(".")[-1].upper(), str(plan.overage_policy))}
+            "beyond_the_allowance": _overage(plan)}
+
+
+def t_catalog(args: dict, ctx: ToolContext) -> dict:
+    """Tariffs and add-ons the customer can actually order (their country only), with the current plan marked."""
+    from telco_common.catalog import ADDONS, plans_for
+
+    sub = _sub(ctx)
+    cur = get_plan(sub.plan_code)
+    cur_cfg = COUNTRIES[cur.country]
+    plans = sorted(plans_for(cur.country), key=lambda p: p.data_mb)
+    def money(minor: int) -> str:
+        return fmt_money(minor, cur_cfg.currency)
+    return {"source": f"catalog:{cur.country}",
+            "plans": [{"code": p.code, "name": p.name, "monthly_fee": money(p.monthly_fee), "data": f"{p.data_mb:,} MB",
+                       "calls": "unlimited" if p.voice_min is None else f"{p.voice_min:,} min",
+                       "beyond_the_allowance": _overage(p), **({"current": True} if p.code == cur.code else {})}
+                      for p in plans],
+            "largest_plan": plans[-1].name if plans else None,
+            "add_ons": [{"code": a.code, "name": a.name, "data": f"{a.data_mb:,} MB", "price": money(a.price),
+                         "applies": "this month only, on top of the plan"}
+                        for a in ADDONS.values() if a.country == cur.country],
+            "note": "these are all the plans and add-ons available; there are no others"}
 
 
 def t_search_knowledge(args: dict, ctx: ToolContext) -> dict:
@@ -251,17 +289,15 @@ def t_propose_addon(args: dict, ctx: ToolContext) -> dict:
         return {"error": e.message}
     pv = o["preview"]
     # the honest effect of this add-on on THIS month: does it actually give the customer data back?
-    sub = _sub(ctx)
-    plan = get_plan(sub.plan_code)
-    counters = ctx.state.counters(ctx.subscriber_id, cycle_of(datetime.now(UTC)))
-    after = _data_position(plan, counters, extra_mb=pv["data_mb"])
+    _, plan, counters, _, plan_mb = _live(ctx)
+    after = _data_position(plan_mb, counters, extra_mb=pv["data_mb"])
     helps = "over_allowance_by" not in after
     return {"source": f"orders:{o['order_id']}", "proposal": True, "order_id": o["order_id"],
             "add_on": pv["name"], "extra_data": f"{pv['data_mb']:,} MB", "price": fmt_money(pv["price"], pv["currency"]),
             "after_this_add_on": after,
             "effect": ("after it, the customer has data left this month" if helps else
                        f"even after it the customer is still {after['over_allowance_by']} over the allowance: "
-                       + OVERAGE_WORDS.get(str(plan.overage_policy).split(".")[-1].upper(), "")),
+                       + _overage(plan)),
             "status": "waiting for the customer's approval in the card below (charged on the next bill)"}
 
 
@@ -330,6 +366,8 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
     Tool("get_payments", "Recent payments and their status (status comes from the payment gateway's status API).",
          NONE, t_payments),
     Tool("get_alerts", "Data alerts sent to the customer.", NONE, t_alerts),
+    Tool("get_plans_and_addons", "All tariffs and data add-ons the customer can order in their country (fees, data, "
+         "which plan is current, which is the largest). Check it before suggesting a plan or add-on.", NONE, t_catalog),
     Tool("get_orders", "The customer's recent add-on and tariff-change orders and their status (proposed, being "
          "processed, active, declined, failed). Use it when they mention an order or say they approved something.",
          NONE, t_orders),
