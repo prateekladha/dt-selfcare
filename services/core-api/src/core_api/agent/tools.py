@@ -173,6 +173,10 @@ def t_catalog(args: dict, ctx: ToolContext) -> dict:
             "add_ons": [{"code": a.code, "name": a.name, "data": f"{a.data_mb:,} MB", "price": money(a.price),
                          "applies": "this month only, on top of the plan"}
                         for a in ADDONS.values() if a.country == cur.country],
+            "rules": {"tariff_change": "takes effect today once approved; this month is pro-rated by day: the old plan "
+                                      "until yesterday, the new plan from today (fee and allowances)",
+                      "add_on": "active a few seconds after approval; adds data to this month only; charged on the next bill",
+                      "orders_blocked_when": "a bill is overdue: it must be paid first"},
             "note": "these are all the plans and add-ons available; there are no others"}
 
 
