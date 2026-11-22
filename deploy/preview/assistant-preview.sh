@@ -15,7 +15,7 @@ kubectl -n $NS delete pod $NAME --ignore-not-found --wait=true >/dev/null
 kubectl -n $NS get deploy assistant-service -o json | jq --arg n $NAME '
   .spec.template | .apiVersion="v1" | .kind="Pod" | .metadata={name:$n, labels:{app:$n}} |
   .spec.containers[0].command=["sh","-c","while [ ! -f /tmp/preview/ready ]; do sleep 1; done; exec python /tmp/preview/launch.py"] |
-  del(.spec.containers[0].readinessProbe, .spec.containers[0].livenessProbe) | .spec.restartPolicy="Never"' \
+  del(.spec.containers[0].readinessProbe, .spec.containers[0].livenessProbe, .spec.containers[0].startupProbe) | .spec.restartPolicy="Never"' \
   | kubectl -n $NS apply -f - >/dev/null
 kubectl -n $NS wait --for=condition=Ready pod/$NAME --timeout=180s >/dev/null
 kubectl -n $NS exec $NAME -- mkdir -p /tmp/preview
