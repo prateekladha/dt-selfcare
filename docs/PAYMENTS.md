@@ -6,11 +6,20 @@ reconciler are all just *triggers* that cause `reconcile_order()` to call
 `GET /v1/orders/{id}` and `GET /v1/orders/{id}/payments` and apply the result. Webhook and callback payloads
 are verified (HMAC) but **never** used to set a status. That makes the order of events irrelevant.
 
+## Customer flow (web)
+- **Payment page:** `/pay/bill/<cycle>` (an issued bill: lines, VAT, already paid, outstanding) or `/pay/advance` (this
+  month's usage so far, minus advances already paid: `GET /v1/me/payments/advance-due`). One button opens the
+  Razorpay checkout as an overlay; one idempotency key per page visit.
+- **Result page:** `/pay/result?id=<payment>`. Its loader calls `GET /v1/me/payments/{id}?refresh=true`, i.e. the
+  gateway's status API (unless already PAID), so the browser callback is never the source of truth. It re-checks
+  every 4 s for up to a minute while the bank confirms. If the gateway is down or its breaker is open, the stored
+  status is shown (`status_check_delayed`) instead of an error page.
+
 ## State machine
 ```mermaid
 stateDiagram-v2
   [*] --> CREATED: order created (idempotency key)
-  CREATED --> PENDING: attempt seen, not captured
+  CREATED --> PENDING: attempt seen or authorised, not captured
   CREATED --> PAID: captured
   PENDING --> PAID: captured / authorised then captured by us
   PENDING --> FAILED: all attempts failed
@@ -21,13 +30,20 @@ stateDiagram-v2
   EXPIRED --> [*]
 ```
 - **PAID is terminal.** It's enforced in SQL with `UPDATE … WHERE status <> 'PAID'`, so it happens exactly once.
-- **On settlement,** the bill balance, the payment row and the `PAYMENT_SUCCEEDED` outbox event are written in **one transaction**. Advance payments are credited on the next bill run.
+- **On settlement,** the payment row and the `PAYMENT_SUCCEEDED` outbox event are written in **one transaction**. Billing applies the event to the bill through the `bill_payments` ledger (PK = payment id, so a redelivery does nothing).
+- **AUTHORIZED but not captured** is PENDING (the money is held), never "nothing was charged"; the reconciler keeps trying to capture it.
+- **Advance payments** are credited at the bill run by payment: every PAID advance up to the end of the cycle that no bill has credited yet (recorded in `bill_payments`). An advance that settles after the bill run is credited by the next run, and none is credited twice.
+- **No double charge:** a bill's payable amount is `total - amount_paid - paid-not-applied` (captured payments whose event hasn't reached the bill yet), and an advance is `usage so far - advances already paid this month`. Nothing left → 409.
 - **`settled_by`** records which trigger observed the capture first: browser, webhook, reconciler or poll.
 
 ## Scenarios
 | Situation | Outcome |
 |---|---|
-| Customer double-taps Pay | same idempotency key, same order |
+| Customer double-taps Pay | same idempotency key, same order (a simultaneous duplicate's `IntegrityError` returns the first order) |
+| Two tabs start paying the same bill / advance | single flight per bill/advance (Valkey lock `pay-lock:<sub>:<bill or advance>`), then the open order is reused |
+| Fresh visit right after paying, bill not updated yet | captured-but-unapplied payment is subtracted; 409 "already paid" |
+| Pay in advance twice in one month | the second charges only usage not covered by the first |
+| `PAYMENT_SUCCEEDED` event lost or billing consumer down | the billing consumer commits only applied events and re-reads a failed one; the reconciler's `apply_missing` sweep applies any captured bill payment missing from its bill after 2 min (idempotent via `bill_payments`) |
 | Browser says "success" but Razorpay hasn't captured yet | stays CREATED/PENDING; the reconciler picks it up |
 | `payment.failed` (user dropped) arrives **after** `payment.captured` | status API says captured, stays PAID |
 | Failed attempt, then a successful retry on the same order | ends PAID |
@@ -35,12 +51,17 @@ stateDiagram-v2
 | Webhook never arrives / our system was down | reconciler: everything overdue is checked at startup |
 | Duplicate webhooks | idempotent (status API + terminal PAID) |
 | Abandoned checkout | EXPIRED after 24 h |
-| Razorpay API down | circuit breaker; the check is rescheduled with backoff |
+| Razorpay API down | circuit breaker; the check is rescheduled with backoff; the result page shows the stored status |
 
 ## Reconciler (worker)
-Every 15 s it picks the non-final payments whose `next_check_at` is due. It checks each one and schedules the next check:
+Every 15 s it picks the non-final payments (created in the last 7 days) whose `next_check_at` is due. It checks each one and schedules the next check:
 - **exponential** (default): `delay(n) = min(1 h, 30 s · 2ⁿ)`, giving 30 s, 60 s, 2 min, 4 min, 8 min…
 - **polynomial** (option): `delay(n) = min(1 h, a·n² + b·n + c)` with (a, b, c) = (20, 10, 30), giving 30 s, 60 s, 130 s, 240 s…
+
+- **Per-order handling:** one failing order is backed off on its own and never blocks the others.
+- **Only the reconciler moves the schedule:** result-page polls and browser callbacks refresh the status but don't push `next_check_at` back.
+- **Sweep:** after each round, `apply_missing` applies captured bill payments that never reached their bill.
+- The webhook reuses the cached gateway client, so there is one circuit breaker.
 
 Columns on `payments`: `gateway_status`, `check_attempts`, `next_check_at`, `last_checked_at`, `settled_by` (migration 0006).
 
@@ -64,3 +85,6 @@ Configure in the Razorpay Dashboard → Webhooks:
 - catch-up after downtime and expiry
 - backoff schedules
 - authorised payments are captured
+- paying again before the first payment reaches the bill is refused
+- a lost payment event is applied by the sweep
+- an advance is charged only for usage not already paid

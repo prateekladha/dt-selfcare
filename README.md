@@ -15,12 +15,12 @@ deployed on Oracle Cloud (OCI), but sized to cost close to nothing.
 |---|---|
 | Mock usage input (data, calls, roaming…) | `network-emulator` → `usage-collector` → OCI Streaming → `usage-aggregator` (real-time totals) |
 | User uploads / selects usage → insights | **Try your usage** page → `POST /v1/me/usage/simulate` (CSV/JSON upload or scenarios) |
-| Bill trends, last 12 months · view · download | Overview trend chart, bill detail page, PDF (`/v1/me/bills/{cycle}/pdf`) |
-| Bill pending: unbilled amount + tap to pay | *Unbilled so far* card (priced live from the stream) + *Bill pending* card, real Razorpay checkout |
-| Payment gateway | Razorpay (test mode): order → checkout → signature check + server-side capture check → webhook. Idempotent end to end. |
+| Bill trends, last 12 months · view · download | Overview trend chart, bill detail page, PDF (`/v1/me/bills/{cycle}/pdf`, opens inline in a new tab; embedded font, seller block) |
+| Bill pending: unbilled amount + tap to pay | *Unbilled so far* card (priced live from the stream) + *Bill pending* card → payment page `/pay/bill/<cycle>` or `/pay/advance` → real Razorpay checkout → result page `/pay/result` |
+| Payment gateway | Razorpay (test mode): order → checkout → signature check + server-side capture check → webhook; the result page takes the status from the gateway. Idempotent end to end; advances are charged net of earlier advances and credited at the bill run. |
 | Bill breakdown service | `telco_common.billing.rate`: plan fee, overage, roaming by zone (EU roam-like-at-home), international, add-ons, VAT per country |
 | "Why your bill increased" / "Top usage drivers" | `telco_common.explainer.explain`: deterministic, ranked by impact |
-| AI natural-language explanation | Provider-agnostic: DeepSeek (demo), Mistral (EU-hosted) or self-hosted open weights, chosen by a feature flag. Guardrails: facts-only input, **every number in the answer is checked against the facts**, template fallback, circuit breaker, cache, per-user budget. EN / DE / PL. |
+| AI natural-language explanation | Provider-agnostic: DeepSeek (demo), Mistral (EU-hosted) or self-hosted open weights, chosen by a feature flag. Guardrails: facts-only input, **every number in the answer is checked against the facts** (repaired, or not shown), circuit breaker, cache, per-user budget. EN / DE / PL. |
 
 Beyond the brief: real-time **50/80/100% data alerts sent exactly once** (pushed live to the open
 app), multi-country (DE in EUR at 19% VAT, PL in PLN at 23% VAT), feature flags per country, and
@@ -62,7 +62,9 @@ a load generator.
    (d) raises each threshold once per cycle (`HSETNX`), and (e) writes the alert to an outbox stream.
    All keys share the partition hash tag `{pN}`, so this stays atomic on a sharded Valkey cluster.
 2. **Batch-level idempotency at ingest.** Network systems re-send files. Deduplicating per batch
-   keeps the dedupe store tiny (per-record keys at 5B/day would need ~800 GB of RAM).
+   (batch ids scoped per source) keeps the dedupe store tiny. Record ids are also claimed atomically
+   at screening (`SET NX`, 7 days), so overlapping re-sends count once; at 5B/day that becomes a
+   Bloom filter (plain per-record keys would need ~800 GB of RAM).
 3. **Partitioned by subscriber, with an explicit partition number.** Each subscriber has exactly
    one state owner and their events stay in order. Partition counts are fixed on OCI, so the
    mapping is stable.
@@ -74,7 +76,8 @@ a load generator.
    Raw usage is archived to Object Storage for reconciliation and disputes.
 6. **AI is an enhancement, never a dependency.** The deterministic explainer always renders
    first (it's in the SSR HTML); the AI narrative streams in after. A flag off, a timeout, an open
-   breaker or an ungrounded answer all fall back to the template.
+   breaker or an answer that can't be verified leave the exact deterministic breakdown with "the
+   explanation isn't available right now"; an unverified number is never shown.
 7. **Modular monolith for the customer domains.** `core-api` keeps billing, payments and
    insights in separate modules, so each can be split into its own service when team size or
    load justifies it. The hot path (collector, aggregator) is already separate because it scales
@@ -82,9 +85,11 @@ a load generator.
 8. **Server-side rendering with one snapshot per page.** `/v1/me/home` returns one consistent
    snapshot (`as_of` plus version numbers). Personal responses are `private, no-store` and never
    cached on a CDN. Formatting is locale-pinned and in UTC, so server and client render identically.
-9. **Payments settle exactly once.** An idempotency key per tap, server-side capture
-   confirmation, and both the browser callback and the webhook end in the same conditional
-   `UPDATE … WHERE status='CREATED'`. The bill balance and the outbox event go in the same transaction.
+9. **Payments settle exactly once.** An idempotency key per page visit, server-side capture
+   confirmation, and the browser callback, the webhook and the reconciler all end in the same conditional
+   `UPDATE … WHERE status<>'PAID'`. The payment and its outbox event go in the same transaction; billing
+   applies the event to the bill through the `bill_payments` ledger (PK = payment id), with a reconciler
+   sweep as a safety net.
 
 ### Scaling to 50M subscribers / 10 countries
 | Component | How it scales | Bottleneck we avoid |
@@ -105,6 +110,7 @@ deploy/scripts/bootstrap.sh            # compartment + Terraform state bucket (i
 cd deploy/terraform && terraform init -backend-config=backend.hcl && terraform apply
 deploy/scripts/cluster-addons.sh       # External Secrets, cert-manager, Traefik, metrics-server, CI RBAC
 deploy/scripts/gh-secrets.sh           # CI credentials -> GitHub secrets
+deploy/scripts/auth-keys.sh            # JWT RS256 key pair, web session-secret, order-source-token -> OCI Vault (--rotate)
 deploy/scripts/put-secrets.sh          # Razorpay + Mistral keys -> OCI Vault (input hidden)
 # Delivery: main is protected. Open a PR -> pr-validation (lint, tests, web build, helm + kubeconform,
 # terraform validate, image builds, gitleaks) must pass -> merge -> deploy-prod (images -> helm upgrade

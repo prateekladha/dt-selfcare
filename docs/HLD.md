@@ -163,15 +163,16 @@ sequenceDiagram
   participant B as Browser
 
   N->>C: POST /v1/usage-batches {batch_id, records[]}
-  C->>V: GET batch:id (done? → 200 duplicate) · SET NX inflight EX 120
-  C->>C: group by crc32(sub)%4, chunk ≤2000, gzip, msg_id=sha256(batch|p|chunk)
+  C->>V: GET batch:source:id (done? → 200 duplicate) · SET NX inflight EX 120
+  C->>V: screening: quarantine invalid records · SET NX rec:id EX 300 per record (claim, taken → duplicate)
+  C->>C: group by crc32(sub)%4, chunk ≤2000, gzip, msg_id=sha256(source:batch|p|chunk)
   C->>S: produce(partition=p, headers msg_id,batch_id), acks=all
   S-->>C: all acked
-  C->>V: SET batch:id done EX 7d
+  C->>V: SET batch:source:id done EX 7d · rec:id EX 7d (claims released if publishing fails)
   C-->>N: 202 accepted
   S->>A: message (partition p, offset o)
   A->>V: EVAL apply.lua (all keys tagged {p})
-  Note over V: o ≤ off:{p}? → stale, no-op<br/>seen:{p}:msg exists? → duplicate, no-op<br/>HINCRBY totals · pct = used/allowance<br/>pct≥80 and HSETNX alert:80 → XADD alerts:{p}<br/>SET seen, SET off:{p}=o
+  Note over V: o ≤ off:{p}? → stale, no-op<br/>seen:{p}:msg exists? → duplicate, no-op<br/>HINCRBY totals · pct = used/allowance<br/>pct≥80 and HSETNX alert:80 → XADD alerts:{p}<br/>(alert_id = sub:cycle:level:offset, one per arming)<br/>SET seen, SET off:{p}=o
   R->>V: XREADGROUP relay alerts:{p}
   R->>S: produce usage-alerts (key=sub, alert_id)
   S-->>R: acked → XACK
@@ -190,14 +191,15 @@ sequenceDiagram
   participant V as Valkey
   participant DB as Autonomous DB
   K->>V: wait until off:{p} unchanged for 30 s (aggregator drained)
-  loop each subscriber
-    K->>V: HGETALL u:{p}:sub:cycle
-    K->>K: rate(counters, plan) → lines, subtotal, VAT, total
-    K->>DB: SUM(ADVANCE payments PAID in cycle) → amount_paid
-    K->>DB: INSERT bills id=sub:cycle (IntegrityError → skipped, bill already issued)
+  loop each subscriber (isolated: a failure is logged and counted, the run continues)
+    K->>DB: plan_at(cycle end) → tariff in force, tariff segments, first billable day
+    K->>V: HGETALL u:{p}:sub:cycle (+ the last 3 billed months for late usage)
+    K->>K: rate segments → lines, subtotal, VAT, total (+ one ADJ line per month with late usage)
+    K->>DB: PAID advances up to cycle end not yet in bill_payments → amount_paid
+    K->>DB: INSERT bills id=sub:cycle + bill_payments rows (IntegrityError → skipped, bill already issued)
   end
 ```
-Bills are immutable. Re-running the job is safe. Late records stay in the cycle counters and become an adjustment through reconciliation, never a mutation of an issued invoice.
+Bills are immutable. Re-running the job is safe. Each month is priced on the tariff in force then (`plan_at`), not today's. A customer who joined mid-month (no earlier bill) pays fee and allowances only from the join day. Late records stay in the cycle counters; on every bill run the last 3 billed months are compared with the counters they were priced from (`rated_counters`), and any difference becomes one adjustment line on the new bill, applied once, never a mutation of an issued invoice.
 
 ### (c) Home page (server-rendered snapshot + streamed AI narrative)
 
@@ -231,9 +233,10 @@ sequenceDiagram
   participant API as core-api
   participant DB as ADB
   participant RZ as Razorpay
-  B->>W: Pay (idempotency key = one per button instance)
+  B->>W: GET /pay/bill/<cycle> or /pay/advance (amount net of paid-not-applied / earlier advances)
+  B->>W: Pay (idempotency key = one per page visit)
   W->>API: POST /v1/me/payments {purpose, bill_id} + Idempotency-Key
-  API->>DB: existing (sub, key)? → return same order
+  API->>DB: existing (sub, key) or open order for this bill/advance? → return same order (409 if nothing left)
   API->>API: flag payment-settlement → EUR/PLN bill amount × fx → INR
   API->>RZ: POST /v1/orders {amount INR paise, notes}
   API->>DB: INSERT payments CREATED (amount+currency of bill, charged_amount/currency, fx_rate)
@@ -244,32 +247,34 @@ sequenceDiagram
   W->>API: POST /v1/me/payments/{id}/confirm
   API->>API: HMAC(order|payment, secret) == signature
   API->>RZ: GET /orders/{id}/payments → captured? (never trust the browser)
-  API->>DB: UPDATE payments SET PAID WHERE status='CREATED' (exactly once)<br/>bill.amount_paid += amount · INSERT outbox PAYMENT_SUCCEEDED (same tx)
+  API->>DB: UPDATE payments SET PAID WHERE status<>'PAID' (exactly once)<br/>INSERT outbox PAYMENT_SUCCEEDED (same tx)
+  B->>W: GET /pay/result?id=<payment>
+  W->>API: GET /v1/me/payments/{id}?refresh=true → gateway status API (stored status if gateway down)
   RZ->>API: webhook payment.captured (HMAC body) → same mark_paid → no-op if already PAID
-  Note over API: notifier outbox loop → payment-events topic
+  Note over API: outbox relay → payment-events → billing consumer → bill_payments + bill.amount_paid<br/>(reconciler sweep apply_missing as safety net)
 ```
 
 ### (e) AI explanation with guardrails
 
 ```mermaid
 flowchart LR
-  ex[explainer.explain<br/>deterministic facts] --> f{flag ai-explanations<br/>and provider configured?}
-  f -- no --> T[template = facts joined]
-  f -- yes --> c{cache hit?<br/>sha256 facts·lang·provider·model}
-  c -- yes --> out[cached text]
-  c -- no --> rl{daily budget<br/>rl:ai:sub ≤ 20}
-  rl -- over --> T
-  rl -- ok --> br{circuit breaker<br/>per provider open?}
-  br -- open --> T
-  br -- closed --> call[LLM chat completion<br/>system prompt + facts only, temp 0.2, 12 s timeout]
-  call -- error/timeout --> T
-  call --> g{every number in answer<br/>∈ numbers in facts?}
-  g -- no --> T
-  g -- yes --> save[INSERT explanations cache] --> out
+  ex[explainer.explain<br/>deterministic facts, always shown] --> f{flag ai-explanations?}
+  f -- no --> NA[breakdown only<br/>'explanation not available']
+  f -- yes --> c{cache hit? Valkey exp:<br/>sha256 sources·lang·model·served prompt text}
+  c -- yes --> out[cached JSON]
+  c -- no --> rl{daily quota<br/>rl:ai:sub ≤ 20}
+  rl -- over --> NA
+  rl -- ok --> call[LLM gateway, JSON mode<br/>prompt from Langfuse 'production']
+  call -- error/timeout --> NA
+  call --> g{every number in each item<br/>∈ the sources it cites?}
+  g -- no, ≤2 repairs --> call
+  g -- still no --> NA
+  g -- yes --> save[cache 30 days] --> out
 ```
+Driver impacts are before VAT and totals include VAT; the prompt makes the model say which. The model's JSON is normalised to the shape the page renders (missing lists become empty).
 
 ### (f) Usage upload / scenario simulation
-The customer uploads CSV/JSON (≤1 MB, ≤10,000 rows, validated units and zones) or picks a scenario. `core-api` converts it to counters, prices it with the **same** `rate()` as the current cycle, explains it against the latest real bill, and narrates it with the same guardrails. **Nothing is written to Valkey or to bills**, so a customer can't change their own invoice this way.
+The customer uploads CSV/JSON (≤1 MB, read bounded; ≤10,000 rows, validated units and zones) or picks a scenario. Scenarios start from the counters the last bill was priced from (`rated_counters`): trips and calls are added on top (`mode: add`), a light or heavy month replaces that part of the month (`mode: replace`). `core-api` prices the result with the **same** `rate()` as the current cycle, explains it against the latest real bill, and narrates it with the same guardrails, told that it is a what-if estimate. The narration respects the `ai-explanations` kill switch and has its own quota (10 a day), so what-ifs can't use up the real bill's explanations. Bad files get a friendly 422 (wrong JSON shape, unsupported types, UTF-16 Excel, `;` delimiter, decimal comma, loose headers). **Nothing is written to Valkey or to bills**, so a customer can't change their own invoice this way.
 
 ## 6. Design decisions
 
@@ -278,7 +283,7 @@ The customer uploads CSV/JSON (≤1 MB, ≤10,000 rows, validated units and zone
 | 1 | **OCI Streaming (classic)**, used through the Kafka API | OCI managed Kafka; self-run Kafka (Strimzi) | Billed per GB (cents for this scale); clients are plain Kafka, so moving later is a config change. Costs: 1 MB/s/partition, fixed partition count, no transactions → decisions 2, 5, 6 |
 | 2 | **Idempotent consumer**: offset stored with state + message id dedupe + HSETNX alert flags + outbox, all in one Lua script | Kafka transactions / Flink checkpoints | Works on any at-least-once broker; atomic per message; independent of broker features |
 | 3 | **Valkey hash tag `{pN}`** on every key of a partition | Per-subscriber keys without tags | The whole message is one atomic script even on a sharded cluster; each partition = one slot |
-| 4 | **Batch-level idempotency** at ingest (`batch:<id>`) | Per-record dedupe keys | 5B/day per-record keys ≈ hundreds of GB of RAM; batch keys are tiny. Re-published chunks are caught downstream by deterministic `msg_id` |
+| 4 | **Batch-level idempotency** at ingest (`batch:<source>:<id>`; batch ids are only unique per source) | Per-record dedupe keys only | Batch keys are tiny. Record ids are also claimed atomically at screening (`SET NX`, 7 days; a Bloom filter at 5B/day). Re-published chunks are caught downstream by deterministic `msg_id` |
 | 5 | **Explicit partition** = crc32(subscriber) % N | Kafka key hashing | Producer and state layout must agree exactly; stable because N is fixed on OCI |
 | 6 | **gzip JSONL batches** (≤2,000 records/message) | One record per message | Fits under 1 MB/s/partition at peak with ~12 partitions instead of ~60 |
 | 7 | **Modular monolith** `core-api` + separate hot path | Microservice per domain | Avoids distributed-system cost before teams or load need it; module boundaries keep extraction cheap |
@@ -313,7 +318,10 @@ Measured: **14,721 records/s sustained on one 1-OCPU node**, 0 retries or duplic
 | Collector crash mid-publish | Network retries batch | `batch:` key not marked done → republish; duplicates dropped by `seen:{p}:msg_id` |
 | Valkey unavailable | Usage/unbilled stale; home may fail | Aggregator blocks with backoff (never skips); AOF every second; rebuild from stream or raw archive |
 | OCI Streaming unavailable | Alerts delayed | Collector answers 503 + Retry-After; sources retry |
-| Poison message | Nothing | Pushed to `dlq:{p}` list, partition continues |
+| Poison or unappliable message | Nothing | Pushed to `dlq:{p}` list, partition continues (no crash loop) |
+| Invalid record (unknown add-on code or roaming zone, implausible quantity) | Nothing | Quarantined at ingest; an unknown zone that slips through is priced as the plan's most expensive zone |
+| One customer's bad data at bill run | Their bill is missing; everyone else's is issued | Per-customer isolation; failures logged and counted |
+| notifier worker thread dies | Nothing (pod restarts) | main() exits when any worker thread dies, so Kubernetes restarts the pod |
 | LLM provider down / slow | Answer from the fallback provider (Mistral EU) | Gateway retries, cooldown, fallback; per-pod concurrency limit |
 | All LLM providers down / answer fails verification | "The explanation isn't available right now"; bill breakdown unaffected | No templates by design; numbers verified against sources or not shown |
 | core-api down | Last good account view with "as of HH:MM" banner; auto-refresh | opossum breaker in the BFF; stale snapshot (≤ 1 h) or styled outage page |
@@ -328,10 +336,13 @@ Measured: **14,721 records/s sustained on one 1-OCPU node**, 0 retries or duplic
 - **Auth:** argon2id hashes, JWT (15 min) kept in an httpOnly, SameSite=Lax, Secure cookie by the web tier, never readable by page JS. Every customer route derives the subscriber from the token (`/v1/me/...`), so there's no IDOR by construction. Tokens are **RS256**: only core-api (the issuer) holds the private key; every other service gets the public key, which verifies but cannot sign, and only RS256 is accepted (no `alg` confusion). The web BFF signs its cookie with its **own** `session-secret`. Keys are generated straight into OCI Vault by `deploy/scripts/auth-keys.sh` (never printed, on disk or in Terraform state; `--rotate` for rotation).
 - **Login limits:** 10 attempts per number per 15 min (brute force on one account) **and** 20 *failed* logins per client IP per 15 min (credential stuffing / password spraying across many accounts). Only failures count per IP, so many customers behind one NAT still sign in. The client IP is the ingress' `X-Real-Ip` (the ingress overwrites any client-sent value), passed by the BFF; IPv6 is keyed per /64. **Caveat, measured on prod:** the OCI flexible load balancer proxies TCP, so today the ingress sees the LB's private address, not the visitor's. Non-public addresses are ignored (otherwise every visitor would share one bucket and 20 failures by anyone would lock everyone out), so on this cluster only the per-account limit is active until the real address arrives: PROXY protocol on the LB listener or an OCI Network Load Balancer (preserves the source IP) is the next step.
 - **CSRF:** React Router origin check on form actions (Express `trust proxy` so the https origin is seen correctly), plus an Express guard that refuses any non-GET `/api/*` or `/logout` request whose `Sec-Fetch-Site`/`Origin` is not same-origin (SameSite=Lax alone would trust every `*.sslip.io` host). Logout is POST-only. Strict **CSP**: `script-src 'nonce-<per request>' 'strict-dynamic'` plus `frame-ancestors 'none'; base-uri 'self'; object-src 'none'`. React Router's inline hydration and module scripts carry the nonce (`entry.server.tsx`); scripts they load (route chunks, Razorpay checkout) are trusted through `strict-dynamic`; an injected script or inline handler has no nonce and is blocked.
-- **Abuse and cost limits per customer:** 20 fresh (uncached) AI explanations a day, so one customer can't use up the shared daily LLM budget; 30 CDR evidence re-scans an hour; every `/bills/{cycle}` path is validated as a month before any work is done.
-- **Payments ledger:** a second tab paying the same bill gets the open order (a bill can't be paid twice); `amount_paid` is incremented atomically in SQL.
+- **Abuse and cost limits per customer:** 20 fresh (uncached) AI explanations a day (what-if simulations have their own 10 a day), so one customer can't use up the shared daily LLM budget; 30 CDR evidence re-scans an hour; every `/bills/{cycle}` path is validated as a month before any work is done.
+- **Payments ledger:** a second tab paying the same bill or advance gets the open order (single flight per bill/advance); captured-but-unapplied payments and earlier advances are subtracted from what is charged; `amount_paid` is incremented atomically in SQL.
+- **Allowance can't be granted by the network:** add-on (`PLAN_CHANGED`) events are accepted only from order sources. With the dedicated `order-source-token` (Vault, created by `auth-keys.sh`), core-api sends them as source `core-orders` and only that source may; other sources' add-on records are quarantined.
 - **Billing month = UTC calendar month (deliberate):** one global billing clock for usage keys, per-day fields, bill runs and the 12-month history. Usage between 00:00 and 01:00/02:00 local time on the 1st therefore lands in the previous month for DE/PL. Moving to local-time cycles is a per-market configuration (`CountryConfig.timezone`) **plus a data migration** of usage keys and history, so it is planned as its own change rather than patched in.
-- **Known gaps, production next steps:** no NetworkPolicies (flannel doesn't enforce them: Calico or OCI VCN-native CNI, then default-deny); order-adapter trusts the cluster network (service token or mTLS); the real client IP at the ingress (PROXY protocol or OCI NLB) so the per-IP login limit engages, plus a bot check / WAF and the group IdP (MFA) in front of login; the System page shows cluster-wide aggregates to every customer (admin-only in production).
+- **System page:** cluster-wide aggregates only. Quarantine samples show reasons only (raw entries carry other customers' record ids), layer errors are logged server-side and shown as "unavailable", and each layer is single flight and cached (5–30 s; the slow stream probe 15 s, the table counts 30 s), so page views can't exhaust the threadpool.
+- **Closed gaps:** the web tier no longer shares the token secret (RS256, own `session-secret`); per-IP failed-login limit (in code; engages once the real client IP arrives, see below); `script-src` nonce CSP.
+- **Known gaps, production next steps:** no NetworkPolicies (flannel doesn't enforce them: Calico or OCI VCN-native CNI, then default-deny); order-adapter trusts the cluster network (service token or mTLS); the real client IP at the ingress (PROXY protocol or OCI NLB) so the per-IP login limit engages, plus a bot check / WAF and the group IdP (MFA) in front of login; the System page shows cluster-wide aggregates to every customer (admin-only in production); the invoice has a seller block but no customer postal address yet; billing cycles are UTC months, not local time (see above). Infrastructure: run `db-init` as a pre-upgrade hook (a fresh install would wait on it); move the CI deploy secrets to the `production` environment restricted to `main`; scope the nodes' Vault policy to named secrets or use OKE Workload Identity (any pod can use the node identity today); PDBs need a second node (or surge) to drain the single node; readiness shouldn't depend on the shared DB; pin third-party actions and base images by digest.
 - **Edge:** only `web` and `/v1/webhooks/razorpay` are public. Collector, Valkey, flagd and the rest of core-api are cluster-internal. HSTS, nosniff, frame-deny headers.
 - **Secrets:** OCI Vault → External Secrets via instance principal. Third-party keys are added by a script with hidden input and never touch Terraform state.
 - **Data minimisation for AI:** facts only, no name, number or email; outputs verified.

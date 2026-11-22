@@ -50,7 +50,7 @@ FROM payments ORDER BY created_at DESC;
 -- 6. Idempotency at work: one row per (subscriber, idempotency_key)
 SELECT subscriber_id, idempotency_key, COUNT(*) FROM payments GROUP BY subscriber_id, idempotency_key;
 
--- 7. Usage alerts delivered (exactly one per subscriber/cycle/level)
+-- 7. Usage alerts delivered (exactly one per subscriber/cycle/level and arming; alert_id = sub:cycle:level:offset)
 SELECT subscriber_id, alert_id, kind, title, created_at FROM notifications ORDER BY created_at DESC;
 
 -- 8. AI explanation cache: which provider answered
@@ -62,6 +62,14 @@ SELECT id, topic, event_key, created_at, published_at FROM outbox ORDER BY id DE
 
 -- 10. Schema migrations applied
 SELECT * FROM schema_migrations;
+
+-- 11. Which payment was credited to which bill (bill payments via payment-events, advances at the bill run)
+SELECT bp.payment_id, bp.bill_id, bp.amount/100 AS amount, bp.applied_at, p.purpose
+FROM bill_payments bp LEFT JOIN payments p ON p.id = bp.payment_id ORDER BY bp.applied_at DESC;
+
+-- 12. Captured but not yet credited (should be empty after ~2 min for bills; advances wait for the bill run)
+SELECT id, purpose, bill_id, amount/100 AS amount, updated_at FROM payments
+WHERE status = 'PAID' AND id NOT IN (SELECT payment_id FROM bill_payments);
 ```
 
 ## 2. Valkey (usage state)
@@ -81,9 +89,10 @@ XLEN alerts:{p3}                                     # outbox depth
 XRANGE alerts:{p3} - + COUNT 5                       # recent alerts raised
 XINFO GROUPS alerts:{p3}                             # relay group: pending / last delivered
 SCAN 0 MATCH u:{p1}:* COUNT 100                      # usage keys on a partition
-SCAN 0 MATCH batch:* COUNT 20                        # ingest idempotency keys
+SCAN 0 MATCH batch:* COUNT 20                        # ingest idempotency keys (batch:<source>:<batch_id>)
+SCAN 0 MATCH rec:* COUNT 20                          # record-id claims (pending while publishing, then 7 days)
 TTL u:{p1}:4915100000002:2026-11                     # ~400 days
-LLEN dlq:{p0}                                        # poison messages (should be 0)
+LLEN dlq:{p0}                                        # poison / unappliable messages (should be 0)
 DBSIZE
 INFO memory
 ```
@@ -114,6 +123,9 @@ Lifecycle moves objects to Archive after 30 days and deletes them after 400.
 ```bash
 kubectl -n selfcare logs deploy/usage-aggregator --tail=50          # partitions_assigned, poison_message
 kubectl -n selfcare logs deploy/notifier | grep notified            # alerts delivered
+kubectl -n selfcare logs deploy/notifier | grep -E 'worker_thread_died|payment_apply_failed|outbox_delivery_failed'
+kubectl -n selfcare logs deploy/payments-service | grep -E 'reconcile_failed|payments_applied_by_sweep'
+kubectl -n selfcare logs job/<bill-run job> -c bill-run | grep -E 'bill_failed|"failed"'  # customers the run couldn't bill (the rest are billed)
 kubectl -n selfcare logs -l app=core-api | grep -E 'llm_|ungrounded' # AI fallbacks
 kubectl -n selfcare logs -l app=core-api | grep unhandled_error      # server errors with request_id
 kubectl -n selfcare logs -l app=web --tail=50                        # SSR access log
@@ -143,6 +155,7 @@ Durable change: edit `flags:` in `deploy/helm/selfcare/values.yaml` and push. CI
 
 ## 7. Secrets and cost
 - Add or rotate third-party keys: `./deploy/scripts/put-secrets.sh`. Then `kubectl -n selfcare rollout restart deploy/core-api`.
+- Auth keys (JWT RS256 key pair, web `session-secret`, `order-source-token`): `./deploy/scripts/auth-keys.sh` creates whichever is missing; `--rotate` makes new versions of all, then `kubectl -n selfcare rollout restart deploy` once External Secrets has synced (≤ 5 min). Rotation signs everyone out once.
 - Park the platform (DB, streams and data are kept):
   ```bash
   cd deploy/terraform && terraform apply -var node_count=0

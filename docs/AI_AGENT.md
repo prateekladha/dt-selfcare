@@ -1,13 +1,14 @@
 # The billing agent (Layers 1 to 4)
 
 > **Two AI paths, chosen on purpose:**
-> - **Bill explanation:** one structured LLM call over computed facts, in `agent/explain_llm.py`. The inputs are known up front, so a tool loop would add latency and cost without adding relevance. The output is JSON: summary, drivers, top usage and a tip. Each item cites sources, and every number is checked against the sources that item cites, with up to 2 repairs. Results are cached for 30 days by a hash of the facts.
+> - **Bill explanation:** one structured LLM call over computed facts, in `agent/explain_llm.py`. The inputs are known up front, so a tool loop would add latency and cost without adding relevance. The output is JSON: summary, drivers, top usage and a tip. Each item cites sources, and every number is checked against the sources that item cites, with up to 2 repairs. Results are cached for 30 days, keyed by the sources, language, model and the **prompt text actually served** (a new Langfuse version never reuses old explanations). Driver impacts are before VAT and totals include VAT, and the prompt makes the model say which. The model's JSON is normalised to the shape the page renders.
 > - **Assistant (chat):** a **multi-step, multi-tool ReAct agent behind a broker**, streamed over SSE (`agent/loop.py`, `agent/broker.py`, `agent/tools.py`). It follows the perpetuum design:
 >   - **The broker is the only executor.** It checks the allow-list, validates arguments against a JSON schema, runs tools scoped to the caller, caps each result's size and logs every decision.
->   - **Tools:** `list_bills`, `get_bill`, `compare_bills`, `get_current_usage`, `search_knowledge` (L2 hybrid search with RRF and the CRAG grader), `get_cdr_evidence`, `get_payments`, `get_alerts`, `simulate_usage`.
+>   - **Tools:** `list_bills` (6 bills by default), `get_bill`, `compare_bills`, `get_current_usage`, `search_knowledge` (L2 hybrid search with RRF and the CRAG grader), `get_cdr_evidence`, `get_payments`, `get_alerts`, `simulate_usage`; propose tier: `propose_addon`, `propose_plan_change`, `propose_payment`. Bill tools return `outstanding`, `paid_so_far`, `payment_status` (overdue / not yet due / paid), `days_overdue` or `days_until_due`, and dates in words. Each result is capped at 8,000 chars (`RESULT_CHARS`).
 >   - **Limits:** 6 turns and 10 tool calls; tools are withheld on the last turn so the model must answer.
->   - **Events:** `step`, `step_done`, `token`, `reset`, `repairing`, `replace`, `done`.
->   - **Verification:** the final answer cites `[S#]` tool results and every number is checked against them, with repairs if needed. It never falls back to a template.
+>   - **Events:** `step`, `step_done`, `proposal`, `token`, `done`. `token` carries only the final, checked answer: the model's draft is never streamed.
+>   - **Verification:** every figure in the answer must appear in a tool result of this turn; failures are repaired silently through the tool loop. `[S#]` citations are then attached by code (`attach_sources`). It never falls back to a template.
+>   - **Approval cards** (`proposal`) are held until the final answer and sent once with it, so they always match its words. They are stored with the chat message (`{sources, cards}`) and restored when a chat is reopened. The open conversation is in the URL (`?c=<id>`).
 >
 > The spine-first retrieval pipeline described below is what the `search_knowledge` tool uses.
 
@@ -39,21 +40,21 @@ flowchart LR
     - plan profile (CRM)
     - every issued bill (`adb:bills:<id>`)
     - every bill-to-bill change (rating engine/explainer)
-    - **live current-cycle usage from the CDR totals in Valkey**, versioned by stream offset (`valkey:u:{pN}:<sub>:<cycle>@offsetN`)
+    - **live current-cycle usage from the CDR totals in Valkey**, versioned by stream offset (`valkey:u:{pN}:<sub>:<cycle>@offsetN`), priced through `unbilled()` like the app (tariff changes, mid-month join). The text has no clock time, so its hash changes only when the facts do.
     - alerts and payments
   - **Shared:** plan sheets, roaming zones, rounding, VAT, add-ons, billing-cycle and late-CDR policy, all generated from the product catalogue.
-- **Privacy:** no names, phone numbers or emails are written into documents.
+- **Privacy:** no names, phone numbers or emails are written into documents. Documents use customer words (no status codes such as ISSUED/CREATED, dates in words).
 - **When it updates:**
   - **Event-driven:** the worker re-embeds a subscriber as soon as an alert fires.
   - **Sweep every 60 s:** picks up new CDR totals, issued bills and payments.
   - **Before every answer:** a refresh that costs one DB read when nothing changed.
-- **Cost of updates:** content-hash upserts mean only changed documents are re-embedded.
+- **Cost of updates:** content-hash upserts mean only changed documents are re-embedded. Documents that are no longer generated (last month's live usage, removed bills or payments) are deleted, so they stop being searchable. Two writers inserting the same new document retry as an update.
 - **Embeddings:** `all-MiniLM-L6-v2` running **locally** (fastembed/ONNX, the Python equivalent of Xenova MiniLM), baked into the image. No embedding API, no per-token cost, and the data stays in the cluster. DeepSeek offers no embeddings endpoint anyway.
 
 ## L2: retrieval and CRAG
 - **Lexical:** BM25 over the customer's and shared documents.
 - **Semantic:** cosine similarity with the query embedding, computed in **Oracle 23ai `VECTOR_DISTANCE(…, COSINE)`**.
-- **Metadata ranker:** documents about the billing cycle the question refers to (from an explicit cycle or a month name in the question).
+- **Metadata ranker:** documents about the billing cycle the question refers to (from an explicit cycle or a month name in the question; whole words only, and "may" only in a month context).
 - **Reciprocal Rank Fusion** (k = 60) combines the three rankings. The trace shows each document's BM25, vector and RRF scores and its ranks.
 - **Grader:** a cheap, short LLM call (JSON mode) marks each document relevant or not and says whether the context is sufficient.
 - **Corrective RAG.** When the grade is insufficient or fewer than 2 documents are relevant:
@@ -75,8 +76,9 @@ flowchart LR
   - Earlier chat answers are context, not sources. The prompt says so, and only answers that passed verification are fed back as history.
   - Day counts (`days_overdue`, `days_until_due`) come from the tools, so the model never does date maths, which the verifier would rightly reject.
 - **Citations are attached by code, not demanded from the model.** Every figure must appear in a tool result of this turn, and `attach_sources` adds the `[S#]` markers afterwards. Before this, 7 of 8 answers in one conversation were rewritten only because the model left out a marker, and the customer saw the answer change after the "double-check".
-- **No flicker:** a turn's opening text is held back until it is clearly the answer, so a preamble before a tool call is never shown and then reset. Until something has been looked up in this turn, the whole reply is held; any figures in it would come from memory and be replaced.
-- **Payment card by code:** if an answer sends the customer to the checkout and no payment was prepared, code calls `propose_payment`, with no extra model round.
+- **Only the final answer is shown:** tools run (their steps are shown), the answer is drafted, checked and silently repaired, and only then is the final answer written out in chunks (`deliver`). Nothing on screen is replaced afterwards; there is no "double-checking" notice and no reset/replace event (`STREAM_DRAFTS = False`).
+- **Payment card by code:** payment is prepared from the final answer (after the checks). If it sends the customer to the checkout and no payment was prepared, code calls `propose_payment`, with no extra model round. An answer that points to a checkout or approval "below" that was never prepared is a verification problem, and the repair prepares it.
+- **Repairs** use the agent stage's budget (the small `repair` cap would turn answers into budget messages) and fetch only what the question needs.
 - **Tone:** the prompt asks for a warm, plain-language care agent, with no status codes, field names or internal terms, and no invented policy (fees, restrictions). Payments tool output is customer-level: paid, declined or awaiting the bank; abandoned checkouts are left out.
 - **Prompts reach prod:** the prompt is served from Langfuse ("production" label). A post-upgrade Helm hook (`prompt-seed`) publishes the repo prompt as a new version whenever its text changed. Before this, prod kept serving an old version and prompt changes in code never applied.
 - **If it still can't be verified,** the answer says so (`UNVERIFIED`). It never substitutes canned text. The deterministic breakdown and CDR evidence on the page are always exact.
@@ -92,6 +94,7 @@ flowchart LR
 |---|---|---|
 | Item-level budget | about 600 tokens per document (2,400 chars) | `agent.py` `DOC_CHARS` |
 | Context budget | about 3k tokens of customer documents | `CONTEXT_CHARS` |
+| Tool result size | 8,000 chars per result | `broker.py` `RESULT_CHARS` |
 | Stage `max_tokens` | grade 300 · generate 450 · repair 450 | `llm.py` `STAGES` |
 | **Stage-level daily spend caps (USD)** | grade $0.50 · generate $2.00 · repair $1.00 | Valkey `spend:<stage>:<day>`, cost from the provider's usage block |
 | Cheap-stage routing | grader runs with temperature 0, JSON mode and a small `max_tokens`; skipped when capped | `llm.py`, `agent._grade` |

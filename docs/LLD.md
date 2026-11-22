@@ -14,7 +14,7 @@
 | `web` | React Router SSR + Express | UI, session cookie, proxies to core-api | `node server.mjs` |
 | `deploy/terraform` | IaC | VCN, OKE, ADB, Streaming, Object Storage, Vault, IAM, OCIR | — |
 | `deploy/helm/selfcare` | Helm chart | All workloads, Valkey, flagd, ExternalSecrets, ingress/TLS, jobs, smoke test | — |
-| `deploy/scripts` | Bash | `bootstrap.sh`, `cluster-addons.sh`, `gh-secrets.sh`, `put-secrets.sh` | — |
+| `deploy/scripts` | Bash | `bootstrap.sh`, `cluster-addons.sh`, `gh-secrets.sh`, `put-secrets.sh`, `auth-keys.sh` (JWT key pair, `session-secret`, `order-source-token`; `--rotate`) | — |
 
 ### Configuration (environment)
 
@@ -26,6 +26,7 @@
 | `APP_JWT_PRIVATE_KEY` (core-api only), `APP_JWT_PUBLIC_KEY` (all services), `APP_REQUIRE_JWT_KEYS` | core-api image | RS256 signing / verify-only; never fall back to a throwaway key in the cluster |
 | `APP_DEMO_PASSWORD`, `APP_SEED_DEMO` | core-api | Demo seed |
 | `APP_SOURCE_TOKENS` | collector | JSON `{source: token}` |
+| `APP_ORDER_SOURCE_TOKEN` (optional, Vault `order-source-token`) | collector, core-api workflows | Dedicated source `core-orders` for add-on events; once set, the collector accepts `PLAN_CHANGED` only from it (otherwise from `order_sources`, default `emu-mediation-01`) |
 | `APP_RAZORPAY_KEY_ID/_KEY_SECRET/_WEBHOOK_SECRET` | core-api | Gateway |
 | `APP_DEEPSEEK_API_KEY`, `APP_MISTRAL_API_KEY`, `APP_SELFHOSTED_LLM_URL` | core-api | LLM providers |
 | `APP_ARCHIVE_BUCKET`, `APP_ARCHIVE_NAMESPACE`, `APP_OCI_AUTH=instance_principal` | archiver | Raw archive |
@@ -41,20 +42,21 @@ All customer routes require `Authorization: Bearer <JWT>` and are scoped to the 
 
 | Method & path | Request | Response | Errors |
 |---|---|---|---|
-| `POST /v1/auth/login` | `{subscriber_id, password}` | `{access_token, token_type, expires_in}` | 401 bad credentials · 429 >10 attempts/15 min |
+| `POST /v1/auth/login` | `{subscriber_id, password}` | `{access_token, token_type, expires_in}` | 401 bad credentials · 429 >10 attempts per number or >20 failed logins per public client IP (/64 for IPv6) in 15 min |
 | `GET /v1/me/home` | — | Snapshot: `as_of`, `subscriber{id,name,country,locale}`, `plan`, `usage{cycle,data_pct,version,data_mb,data_allowance_mb,voice_min,sms,intl_voice_min,roaming_*}`, `unbilled{cycle,currency,subtotal,vat,total,lines[]}`, `outstanding{amount,currency,bill_id}`, `last_bill`, `trend[≤12]`, `notifications[≤10]`, `features{ai_explanations,payments}` | 401, 404 |
 | `GET /v1/me/bills?months=1..24` | — | `[BillSummary]` (`id, cycle, total, subtotal, vat, currency, status, amount_paid, outstanding, issued_at, due_date`) | 401 |
 | `GET /v1/me/bills/{cycle}` | — | BillSummary + `lines[], usage, vat_rate, plan_code` | 404 |
-| `GET /v1/me/bills/{cycle}/pdf` | — | `application/pdf` attachment | 404 |
+| `GET /v1/me/bills/{cycle}/pdf` | — | `application/pdf` (embedded DejaVu Sans, seller block); the web route serves it `inline`, opened in a new tab | 404 |
 | `GET /v1/me/bills/{cycle\|current}/explanation?lang=en\|de\|pl&ai=true\|false` | — | `{explanation, narrative, provider, partial}`. `ai=false` = deterministic only (fast SSR path, no budget used) | 404 |
 | `POST /v1/me/notifications/{id}/read` | — | 204 | — |
 | `GET /v1/me/events` | — | SSE: `notification` events, `ping` every 15 s | 401 |
 | `GET /v1/me/usage/scenarios` | — | `[{key,title}]` | — |
 | `GET /v1/me/usage/sample.csv` | — | CSV template | — |
-| `POST /v1/me/usage/simulate?lang=` | multipart `file` (CSV/JSON) **or** form `scenario` | `{source, compared_to, bill, explanation, narrative, provider}` | 422 invalid usage |
-| `POST /v1/me/payments` | header `Idempotency-Key` (8–64), `{purpose: BILL\|ADVANCE, bill_id?}` | 201 `{payment_id,status,amount,currency,charged_amount,charged_currency,fx_rate,purpose,bill_id,gateway,order_id,checkout{provider,key_id,order_id}}`; same key → same order | 404 bill not found/not yours · 409 nothing to pay · 503 payments disabled/not configured/breaker open/no fx rate · 502 gateway rejected |
+| `POST /v1/me/usage/simulate?lang=` | multipart `file` (CSV/JSON, ≤1 MB) **or** form `scenario` | `{source, scenario_title, compared_to, baseline, bill, explanation, llm, status, sources}` | 422 invalid usage (friendly message per problem) |
+| `POST /v1/me/payments` | header `Idempotency-Key` (8–64), `{purpose: BILL\|ADVANCE, bill_id?}` | 201 `{payment_id,status,amount,currency,charged_amount,charged_currency,fx_rate,purpose,bill_id,gateway,order_id,checkout{provider,key_id,order_id}}`; same key or an open order for the same bill/advance → same order. BILL amount = outstanding minus captured-but-unapplied payments; ADVANCE = usage so far minus advances paid this month | 404 bill not found/not yours · 409 nothing to pay / already paid · 503 payments disabled/not configured/breaker open/no fx rate · 502 gateway rejected |
+| `GET /v1/me/payments/advance-due` | — | `{cycle, currency, usage_total, already_paid, amount}` | 401 |
 | `POST /v1/me/payments/{id}/confirm` | `{gateway_payment_id, signature}` | payment (status `PAID`) or `{status: PENDING}` if not captured yet | 400 bad signature · 404 |
-| `GET /v1/me/payments/{id}` | — | `{payment_id,status,amount,currency}` | 404 |
+| `GET /v1/me/payments/{id}?refresh=true\|false` | — | `{payment_id,status,purpose,cycle,amount,currency,charged_*,fx_rate,gateway_status,status_check_delayed,…}`; `refresh=true` asks the gateway's status API unless PAID (stored status if the gateway is down) | 404 |
 | `POST /v1/webhooks/razorpay` | raw body, `X-Razorpay-Signature` | `{ok, settled}` / `{ok, ignored}` | 401 bad signature · 503 not configured |
 | `POST /v1/admin/bill-runs/{cycle}?settle_before=` | admin JWT | `{created, skipped_existing}` | 403, 409 cycle not over |
 | `GET /v1/admin/pipeline` | admin JWT | per-partition offsets and outbox depth | 403 |
@@ -69,7 +71,9 @@ All customer routes require `Authorization: Bearer <JWT>` and are scoped to the 
 | `POST /v1/usage-batches` | headers `Authorization: Bearer <source token>`, `X-Source`; body `UsageBatch{batch_id, source, records[1..5000]}` | **202** `{status: accepted, records, messages}` · **200** `{status: duplicate}` · 401 bad token · 403 source mismatch · **409** batch in flight · **503** + `Retry-After: 5` stream unavailable · 422 validation |
 | `GET /healthz`, `/readyz` (Valkey ping), `/metrics` | | |
 
-`UsageRecord`: `record_id (8–128)`, `subscriber_id`, `country (DE|PL)`, `kind (USAGE|PLAN_CHANGED)`, `usage_type (DATA bytes|VOICE s|SMS count|ROAMING_DATA bytes|ROAMING_VOICE s|INTL_VOICE s)`, `quantity ≥0`, `roaming_zone (required for roaming)`, `addon_code (required for PLAN_CHANGED)`, `event_time (tz-aware, normalised to UTC)`. Billing cycle = `YYYY-MM` of **event time**.
+`UsageRecord`: `record_id (8–128)`, `subscriber_id`, `country (DE|PL)`, `kind (USAGE|PLAN_CHANGED)`, `usage_type (DATA bytes|VOICE s|SMS count|ROAMING_DATA bytes|ROAMING_VOICE s|INTL_VOICE s)`, `quantity ≥0`, `roaming_zone (required for roaming)`, `addon_code (required for PLAN_CHANGED)`, `event_time (tz-aware, normalised to UTC)`. Billing cycle = `YYYY-MM` of **event time** (UTC).
+
+Screening quarantines individual records (rest of the batch accepted): invalid schema, `event_time` > 10 min in the future, unknown add-on code, unknown roaming zone, `quantity > 10¹³`, and `PLAN_CHANGED` from a source that isn't an order source. Each remaining record id is claimed with `SET rec:<id> pending NX EX 300`; a taken claim is a duplicate. After the broker ack the claims become `rec:<id>` for 7 days; if publishing fails they are released so the retry passes.
 
 ## 3. Data model (Autonomous DB, schema SELFCARE)
 
@@ -117,7 +121,7 @@ erDiagram
     varchar16 gateway
     varchar64 gateway_order_id UK
     varchar64 gateway_payment_id
-    varchar16 status "CREATED|PAID|FAILED"
+    varchar16 status "CREATED|PENDING|PAID|FAILED|EXPIRED"
     varchar64 idempotency_key
     timestamptz created_at
     timestamptz updated_at
@@ -125,7 +129,7 @@ erDiagram
   notifications {
     int id PK "identity"
     varchar32 subscriber_id
-    varchar96 alert_id UK "sub:cycle:level"
+    varchar96 alert_id UK "sub:cycle:level:offset"
     varchar32 kind
     varchar200 title
     varchar1000 body
@@ -159,8 +163,9 @@ erDiagram
 | subscribers | auth/CRM seed | PK id | Seeded from `telco_common.demo` when `APP_SEED_DEMO=true`; seed also writes Valkey `prof:` |
 | bills | billing (bill run) | PK `sub:cycle`, UQ `(subscriber_id, cycle)`, IX `ix_bills_sub_cycle` | Insert-if-absent = idempotent bill run; immutable |
 | payments | payments | UQ `gateway_order_id`, UQ `(subscriber_id, idempotency_key)` | `amount/currency` = ledger (bill currency); `charged_*` = what the gateway took |
+| bill_payments | billing | PK `payment_id` | Which payment was credited to which bill (bill payments via `payment-events`, advances at the bill run); makes crediting idempotent |
 | notifications | notifier | UQ `alert_id`, IX `(subscriber_id, created_at)` | UQ makes alert delivery idempotent |
-| explanations | AI narrator | PK cache_key | `sha256(facts, lang, provider, model)` |
+| explanations | AI narrator (`services/ai.py`) | PK cache_key | `sha256(facts, lang, provider, model)`. The bill explanation (`agent/explain_llm.py`) is cached in Valkey instead: `exp:<sha256(sources, lang, model, prompt version, served prompt text, subject)>`, 30 days, so a new Langfuse prompt version never reuses old explanations |
 | outbox | payments → notifier relay | — | Written in the same transaction as settlement; `published_at` set after broker ack |
 | schema_migrations | db.create_schema | — | Forward-only migrations (e.g. `0002_payment_settlement_currency`) |
 
@@ -177,28 +182,30 @@ All per-partition keys carry the hash tag `{pN}` (N = stream partition), so one 
 | `alerts:{pN}` | stream (MAXLEN ~1,000,000) | apply.lua | — | Outbox: `alert_id, subscriber_id, country, cycle, level, used_bytes, allowance_bytes, pct`; consumer group `relay` |
 | `u:{pN}:<sub>:<cycle>` | hash | apply.lua | 400 days | Counters `DATA`, `VOICE`, `SMS`, `INTL_VOICE`, `ROAMING_DATA:<zone>`, `ROAMING_VOICE:<zone>`, `addon:<code>`, `addon_bytes`; flags `alert:<level>` = offset that raised it |
 | `prof:{pN}:<sub>` | hash | core-api seed | — | `plan_code, country, allowance_bytes` |
-| `batch:<batch_id>` | string | collector | `inflight` 120 s → `done` 7 days | Batch idempotency |
-| `rl:login:<sub>` / `rl:login-fail-ip:<ip or /64>` / `rl:ai:<sub>` | counter | core-api | 900 s / 900 s / 86,400 s | Fixed-window limits: 10 attempts per account, 20 failed logins per IP, 20 AI calls per day |
-| `dlq:{pN}` | list (trim 10,000) | aggregator | — | Undecodable (poison) messages |
+| `batch:<source>:<batch_id>` | string | collector | `inflight` 120 s → `done` 7 days | Batch idempotency (batch ids are unique per source only; unscoped keys written before the change are still honoured) |
+| `rec:<record_id>` | string | collector screening | `pending` 300 s → 7 days | Record-level claim (`SET NX`) |
+| `rl:login:<sub>` / `rl:login-fail-ip:<ip or /64>` / `rl:ai:<sub>` / `rl:ai-whatif:<sub>` | counter | core-api | 900 s / 900 s / 86,400 s / 86,400 s | Fixed-window limits: 10 attempts per account, 20 failed logins per public IP (non-public addresses are ignored), 20 bill explanations and 10 what-if explanations per day |
+| `pay-lock:<sub>:<bill_id or advance>` | string | core-api | 15 s | Single flight when starting a payment |
+| `dlq:{pN}` | list (trim 10,000) | aggregator | — | Undecodable (poison) messages and messages that can never apply |
 | `notif:<sub>` | pub/sub channel | notifier → core-api SSE | — | Live notification push |
 
 ### `apply.lua` (one call per stream message)
 1. `offset ≤ GET off:{p}` → return `stale_offset` (crash replay).
 2. `EXISTS seen:{p}:msg` → `SET off:{p}=offset`, return `duplicate_message` (re-published chunk).
-3. For each (subscriber, cycle) group: `HINCRBY` each field; `EXPIRE` 400 days.
+3. For each (subscriber, cycle) group: `HINCRBY` each field with the exact integer string as sent (no `tonumber`, which made doubles and failed on large values mid-message); `EXPIRE` 400 days.
 4. `used = DATA + ROAMING_DATA:EU`; `allowance = prof.allowance_bytes + addon_bytes`.
-5. For each level (from flag `usage-alert-thresholds`): if `pct ≥ level` and `HSETNX alert:<level>` succeeds → `XADD alerts:{p}`. If an add-on raised the allowance and `pct < level` → `HDEL alert:<level>` (re-arm).
+5. For each level (from flag `usage-alert-thresholds`): if `pct ≥ level` and `HSETNX alert:<level>` succeeds → `XADD alerts:{p}` with `alert_id = <sub>:<cycle>:<level>:<offset>` (one id per arming, so a re-armed level alerts again; a replay gives the same id). If an add-on raised the allowance and `pct < level` → `HDEL alert:<level>` (re-arm).
 6. `SET seen:{p}:msg EX 7d`; `SET off:{p}=offset`; return `applied, alerts`.
 
-The consumer seeks to `off:{p}+1` on partition assignment. Broker group offsets are committed only for lag visibility.
+The consumer seeks to `off:{p}+1` on partition assignment. Broker group offsets are committed only for lag visibility. A message that raises anything other than a Valkey outage goes to `dlq:{p}` instead of crashing the pod. A tariff change updates `prof:` (allowance) and, after an upgrade, clears the alert levels the customer is now below (`UsageState.rearm_alerts`).
 
 ## 5. Streams and contracts
 
 | Topic | Partitions | Key / partition | Payload | Consumer groups |
 |---|---|---|---|---|
-| `usage-events` | 4 (fixed) | explicit `crc32(subscriber_id) % 4` | gzip of newline-delimited `UsageRecord` JSON, ≤2,000 records, ≤900 KB; headers `msg_id = sha256(batch_id|partition|chunk)[:32]`, `batch_id` | `usage-aggregator`, `raw-archiver` |
-| `usage-alerts` | 1 | key = subscriber_id; header `alert_id` | `{"alert_id":"<sub>:<cycle>:<level>","subscriber_id","country","cycle","level","used_bytes","allowance_bytes","pct"}` | `notifier` |
-| `payment-events` | 1 | key = subscriber_id | `{"type":"PAYMENT_SUCCEEDED","payment_id","subscriber_id","amount","currency","purpose","bill_id","gateway","gateway_payment_id"}` | (downstream: ERP, analytics) |
+| `usage-events` | 4 (fixed) | explicit `crc32(subscriber_id) % 4` | gzip of newline-delimited `UsageRecord` JSON, ≤2,000 records, ≤900 KB; headers `msg_id = sha256(source:batch_id|partition|chunk)[:32]`, `batch_id` | `usage-aggregator`, `raw-archiver` |
+| `usage-alerts` | 1 | key = subscriber_id; header `alert_id` | `{"alert_id":"<sub>:<cycle>:<level>:<offset>","subscriber_id","country","cycle","level","used_bytes","allowance_bytes","pct"}` | `notifier` |
+| `payment-events` | 1 | key = subscriber_id | `{"type":"PAYMENT_SUCCEEDED","payment_id","subscriber_id","amount","currency","purpose","bill_id","gateway","gateway_payment_id"}` | `billing` (commits only applied events, re-reads a failed one); downstream: ERP, analytics |
 
 Retention: 48 h. Raw archive objects: `raw/usage-events/dt=YYYY-MM-DD/p=<p>/<first>-<last>.jsonl.gz` (flush at 4 MB or 60 s). Archive delivery is at-least-once, and reconciliation dedupes by `record_id`. Notifier skips alerts for cycles earlier than the current month (backfill replay).
 
@@ -218,9 +225,12 @@ Rules:
 - Money is in integer minor units. Per-unit rates are Decimal. Each line rounds half-up.
 - Data is rounded **up to the started MB** (1 MB = 10⁶ B), voice up to the started minute (aggregate seconds).
 - **EU roam-like-at-home:** `ROAMING_DATA:EU` and `ROAMING_VOICE:EU` count against the domestic allowance at no extra charge.
-- Allowance = plan data + Σ add-on MB. Overage is charged only when the policy is `CHARGE`. With `THROTTLE` the network slows down at 100% instead.
+- Unknown roaming zones (normally quarantined at ingest) are priced as the plan's most expensive zone instead of failing.
+- Allowance = plan data + Σ add-on MB. Across a tariff switch, an add-on is charged in the segment it was bought in and its unused volume carries into the following segments. Overage is charged only when the policy is `CHARGE`. With `THROTTLE` the network slows down at 100% instead.
 - VAT = round_half_up(subtotal × rate). Total = subtotal + VAT.
-- The same `rate()` prices the unbilled running total, the issued bill and simulations.
+- The same `rate()` prices the unbilled running total, the issued bill and simulations. Bills and late-usage adjustments use the tariff in force in that month (`plan_at`).
+- A customer who joined during the month and has no earlier bill pays fee and allowances from the join day (`first_billable_day`).
+- **Overdue** = unpaid after the **end** of the due day (due dates are stored as 00:00 UTC). One rule for web pages, PDF, assistant tools and order blocking.
 
 **Explainer (`explainer.py`):**
 - Drivers are line-level deltas between the current and previous bill, sorted by |Δ| amount. Each has a quantity comparison as its detail.
@@ -228,17 +238,19 @@ Rules:
 - Usage changes (data, calls, international calls, non-EU roaming) are reported as a % change.
 - Facts are sentences built only from these numbers. Direction is `UP`, `DOWN`, `SAME` or `FIRST_BILL`.
 
-**AI grounding check (`services/ai.py`):**
-1. Extract every number token from the facts plus usage changes plus the cycle labels.
+**AI grounding check (`agent/explain_llm.py`, `agent/loop.py`):**
+1. Extract every number token from the sources (bill explanation: the cited sources of each item; assistant: all
+   tool results of the turn).
 2. Normalise each token by removing separators. Allow both the full number and its integer part.
-3. Every number in the model's answer must be in that allowed set, or be a single digit.
-4. If any number fails, the answer is discarded and the template is used.
+3. Every number of two or more digits in the answer must be in that allowed set.
+4. If any number fails, the answer is repaired (up to 2 times, the assistant through its tool loop); if it still
+   fails, nothing unverified is shown (bill page: "not available", assistant: an apology).
 
 ## 7. Feature flags (flagd, `deploy/helm/selfcare/values.yaml`)
 
 | Key | Variants (default **bold**) | Safe fallback if flagd is unreachable | Controls |
 |---|---|---|---|
-| `ai-explanations` | **on** / off | `false` | LLM narration at all |
+| `ai-explanations` | **on** / off | `false` | LLM narration at all (bill explanations and what-if simulations) |
 | `ai-provider` | **deepseek** / mistral / selfhosted / template | `deepseek` | Which LLM (per country for GDPR) |
 | `payments-enabled` | **on** / off | `true` | Kill switch for payments |
 | `payment-gateway` | **razorpay** / cashfree | `razorpay` | Gateway adapter (only Razorpay implemented) |
@@ -261,6 +273,7 @@ Every evaluation sends `targetingKey = subscriber`, attribute `country`.
 | Deployment `network-emulator-live` | 1 | Live demo traffic every 60 s |
 | StatefulSet `valkey` (valkey 8.1) + PVC 50Gi `oci-bv` | 1 | AOF everysec, `noeviction`, maxmemory 1gb |
 | Job `db-init` | pre-install/upgrade hook | Creates SELFCARE user |
+| Job `prompt-seed` | post-install/upgrade hook | Publishes the repo prompts to Langfuse (label `production`) when their text changed; never fails a deploy |
 | Job `demo-backfill` | post-install hook | 12-month backfill → bill run (`--wait-quiet-seconds 30`, settle all but the last cycle) |
 | CronJob `bill-run` | `0 2 1 * *` | Close the previous cycle |
 | SecretStore `oci-vault` + ExternalSecrets `selfcare-secrets`, `ocir-pull` (hooks), `selfcare-<third-party>` (from `thirdPartySecrets`) | | Instance-principal auth |
@@ -285,7 +298,7 @@ flowchart LR
 
 | Layer | What | Where |
 |---|---|---|
-| Unit + API | **33 tests**: rating (rounding, VAT, roaming, add-ons, PLN), explainer, codec, partitioning, Lua apply (replay, re-publish, add-on re-arm, cycle rollover), collector publishing, API (auth, IDOR, idempotent payments, dual-path settlement, webhook signature, simulation, INR settlement), AI (grounding, cache, breaker, no PII) | `libs/*/tests`, `services/*/tests` (SQLite + fakeredis) |
+| Unit + API | **138 tests**: rating (rounding, VAT, roaming, add-ons, PLN), explainer, codec, partitioning, Lua apply (replay, re-publish, add-on re-arm, cycle rollover), collector publishing, API (auth, IDOR, idempotent payments, dual-path settlement, webhook signature, simulation, INR settlement), AI (grounding, cache, breaker, no PII) | `libs/*/tests`, `services/*/tests` (SQLite + fakeredis) |
 | In-cluster smoke | 15 checks against live services after each deploy | `core_api.smoke`, `helm test` |
 | Load | 3k and 15k rec/s through the real stream | `deploy/loadtest/job.yaml`, [LOADTEST.md](LOADTEST.md) |
 | Browser e2e | Real login form → every page → Razorpay checkout, desktop + mobile screenshots (being added with Playwright) | `web/e2e` |
