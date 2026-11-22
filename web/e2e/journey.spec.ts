@@ -101,7 +101,7 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   await page.locator('input[type="file"]').setInputFiles({ name: "my-usage.csv", mimeType: "text/csv",
     buffer: Buffer.from("usage_type,quantity,unit,roaming_zone\nDATA,6,GB,\nROAMING_DATA,800,MB,Z3\nVOICE,120,min,\n") });
   await page.getByRole("button", { name: "Analyse" }).click();
-  await expect(page.getByText(/file: my usage\.csv/i)).toBeVisible({ timeout: 45_000 });
+  await expect(page.getByText(/file: my-usage\.csv/i)).toBeVisible({ timeout: 45_000 });   // the real file name (dashes kept)
 
   // Assistant: the agent answers from the spine with citations, verification and a trace
   await page.goto("/assistant");
