@@ -88,6 +88,10 @@ flowchart LR
   ~120 extra fields, ~2 KB. 50M × 2 KB ≈ 100 GB across a Valkey cluster: a sizing decision, not a design
   limit. The hashes already live 13 months, so past months' daily charts cost nothing extra.
   Long-term history beyond 13 months belongs in the raw archive / a columnar store, not in Valkey.
+- **Backfill for usage recorded before day fields existed:** `python -m core_api.backfill_daily [--apply]` rebuilds the
+  missing `<counter>@DD` fields from the raw CDR archive. It fills only the gap (total minus existing days), never touches
+  totals, writes with WATCH/MULTI so a live CDR can't be double counted, and is idempotent. Anything the archive can't
+  explain is reported, never invented. Run on prod on 22 Nov 2026: 74 subscriber-months, 0 unexplained.
 - `GET /v1/me/usage/daily?cycle=` serves the chart (Overview: current month with allowance pace and
   month-end projection; each bill: that month).
 - **Exact pro-rating:** with day detail, each tariff segment is rated on its own tariff, its own
@@ -146,6 +150,20 @@ message) before the up-front degradation kicks in.
   - Consumers resume from their committed offset, and Temporal tasks wait in their queue.
 - **Surge-first:** single pods that serve requests (assistant, collector, order-adapter, flagd) start their replacement first, so there is no gap.
 - **Production:** a node pool with headroom (or the cluster autoscaler) restores surge-first everywhere.
+
+## CDR evidence re-scan
+- "Re-sum my CDRs" re-reads the customer's raw CDRs from Object Storage and reconciles them with Valkey.
+- **Index:** archive objects are immutable, so each is read once to learn which customers it holds
+  (`evidx:{p}:<customer-set hash>` in Valkey, 35 days). Later scans download only the customer's own objects.
+- **Single flight:** concurrent requests for the same evidence wait for the first scan. The BFF gives the call 30 s.
+- **Why:** a cold scan read every object of the partition (about 7 s), longer than the 5 s BFF budget, so it was aborted
+  and counted against the core-api breaker. That was the e2e flake on the bill page.
+
+## Live demo traffic
+`network-emulator live` releases each persona's deterministic CDRs at their own event time (06:00 to 23:59 UTC), so a
+day of live traffic equals exactly one day of the persona's usage. It catches up from midnight on start, and the
+collector drops record ids it has already accepted. (Before 22 Nov it re-sampled 5% of a whole day every minute,
+about 72 days of usage per day, which inflated November.)
 
 ## Bill day
 - The `bill-run` CronJob issues the bills (init container), then **`explain-batch`** runs: it warms every

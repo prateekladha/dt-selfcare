@@ -5,7 +5,7 @@ import { expect, test, type Page } from "@playwright/test";
 // checks what the customer sees. Runs only from the manual `chaos` workflow (CHAOS=1, kubeconfig present).
 // Every deployment is restored in afterAll, and again by the workflow, even if a check fails.
 const PASSWORD = process.env.E2E_PASSWORD ?? "";
-const SHOTS = "e2e-results/screens";
+const SHOTS = "e2e-screens";   // outside outputDir: each playwright run clears e2e-results
 const NS = "selfcare";
 const kubectl = (args: string) => execSync(`kubectl -n ${NS} ${args}`, { stdio: "pipe", timeout: 300_000 }).toString();
 const scale = (deploy: string, n: number) => kubectl(`scale deploy/${deploy} --replicas=${n}`);
