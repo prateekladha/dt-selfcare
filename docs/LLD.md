@@ -23,13 +23,14 @@
 | `STREAM_BOOTSTRAP`, `STREAM_USERNAME`, `STREAM_PASSWORD`, `STREAM_USAGE_TOPIC`, `STREAM_ALERTS_TOPIC`, `STREAM_PARTITIONS` | collector, aggregator, notifier | Kafka-compatible OCI Streaming (SASL_SSL/PLAIN; username `tenancy/user/streampool-ocid`, password = auth token) |
 | `APP_VALKEY_URL` | all Python | `redis://valkey:6379/0` |
 | `APP_DB_DSN`, `APP_DB_USER` (SELFCARE), `APP_DB_PASSWORD` | core-api, notifier, bill-run | ADB TLS connect string, least-privilege app user |
-| `APP_JWT_SECRET`, `APP_DEMO_PASSWORD`, `APP_SEED_DEMO` | core-api | Token signing; demo seed |
+| `APP_JWT_PRIVATE_KEY` (core-api only), `APP_JWT_PUBLIC_KEY` (all services), `APP_REQUIRE_JWT_KEYS` | core-api image | RS256 signing / verify-only; never fall back to a throwaway key in the cluster |
+| `APP_DEMO_PASSWORD`, `APP_SEED_DEMO` | core-api | Demo seed |
 | `APP_SOURCE_TOKENS` | collector | JSON `{source: token}` |
 | `APP_RAZORPAY_KEY_ID/_KEY_SECRET/_WEBHOOK_SECRET` | core-api | Gateway |
 | `APP_DEEPSEEK_API_KEY`, `APP_MISTRAL_API_KEY`, `APP_SELFHOSTED_LLM_URL` | core-api | LLM providers |
 | `APP_ARCHIVE_BUCKET`, `APP_ARCHIVE_NAMESPACE`, `APP_OCI_AUTH=instance_principal` | archiver | Raw archive |
 | `FLAGD_HOST=flagd`, `FLAGD_PORT=8013` | all Python | Feature flags |
-| `CORE_API_URL`, `SESSION_SECRET` | web | Backend URL, cookie signing |
+| `CORE_API_URL`, `SESSION_SECRET` | web | Backend URL, cookie signing (its own `session-secret`, independent of the token keys) |
 | Settings defaults | core-api | `jwt_ttl_s=900`, `ai_daily_limit_per_subscriber=20`, `bill_due_days=14`, `llm_timeout_s=12`, `deepseek_model=deepseek-chat`, `mistral_model=mistral-small-latest` |
 
 ## 2. REST API
@@ -177,7 +178,7 @@ All per-partition keys carry the hash tag `{pN}` (N = stream partition), so one 
 | `u:{pN}:<sub>:<cycle>` | hash | apply.lua | 400 days | Counters `DATA`, `VOICE`, `SMS`, `INTL_VOICE`, `ROAMING_DATA:<zone>`, `ROAMING_VOICE:<zone>`, `addon:<code>`, `addon_bytes`; flags `alert:<level>` = offset that raised it |
 | `prof:{pN}:<sub>` | hash | core-api seed | — | `plan_code, country, allowance_bytes` |
 | `batch:<batch_id>` | string | collector | `inflight` 120 s → `done` 7 days | Batch idempotency |
-| `rl:login:<sub>` / `rl:ai:<sub>` | counter | core-api | 900 s / 86,400 s | Fixed-window rate limits (10 / 20) |
+| `rl:login:<sub>` / `rl:login-fail-ip:<ip or /64>` / `rl:ai:<sub>` | counter | core-api | 900 s / 900 s / 86,400 s | Fixed-window limits: 10 attempts per account, 20 failed logins per IP, 20 AI calls per day |
 | `dlq:{pN}` | list (trim 10,000) | aggregator | — | Undecodable (poison) messages |
 | `notif:<sub>` | pub/sub channel | notifier → core-api SSE | — | Live notification push |
 

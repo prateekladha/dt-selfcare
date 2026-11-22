@@ -16,7 +16,12 @@ class Settings(BaseSettings):
     valkey_url: str = "redis://valkey:6379/0"
     stream_partitions: int = 4
 
-    jwt_secret: str = "change-me"  # from OCI Vault in every real environment
+    # RS256 keys (PEM) from OCI Vault. Only core-api (the token issuer) gets the private key; every other
+    # service gets just the public key. Neither set = a throwaway in-process keypair (tests, local runs).
+    jwt_private_key: str = ""
+    jwt_public_key: str = ""
+    # set in the cluster: never fall back to a throwaway keypair (fail loudly if a key is missing)
+    require_jwt_keys: bool = False
     jwt_ttl_s: int = 900
     public_base_url: str = "http://localhost:8080"
 

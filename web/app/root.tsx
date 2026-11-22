@@ -10,6 +10,7 @@ import {
 } from "react-router";
 
 import type { Route } from "./+types/root";
+import { useNonce } from "~/lib/nonce";
 import "./app.css";
 
 export const links: Route.LinksFunction = () => [
@@ -26,11 +27,12 @@ export const links: Route.LinksFunction = () => [
 ];
 
 export function Layout({ children }: { children: React.ReactNode }) {
+  const nonce = useNonce();
   return (
     <html lang="en">
       <head>
         <meta charSet="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
         <meta name="theme-color" content="#E20074" />
         <title>Self-care</title>
         <Meta />
@@ -38,8 +40,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </head>
       <body>
         {children}
-        <ScrollRestoration />
-        <Scripts />
+        <ScrollRestoration nonce={nonce} />
+        <Scripts nonce={nonce} />
       </body>
     </html>
   );

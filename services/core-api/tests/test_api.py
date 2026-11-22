@@ -122,6 +122,57 @@ def test_auth_required_and_bad_password(env):
     assert client.post("/v1/auth/login", json={"subscriber_id": SUB, "password": "nope"}).status_code == 401
 
 
+def test_failed_logins_are_limited_per_client_ip_across_accounts(env):
+    """Password spraying: one password against many accounts from one IP stops after 20 failures,
+    while other IPs (and the per-account limit) are unaffected; successes don't count."""
+    client, *_ = env
+    spray = {"X-Client-IP": "203.0.113.7"}
+    for i in range(20):
+        r = client.post("/v1/auth/login", headers=spray, json={"subscriber_id": f"49151999{i:04d}", "password": "Summer2026"})
+        assert r.status_code == 401
+    r = client.post("/v1/auth/login", headers=spray, json={"subscriber_id": SUB, "password": "demo-pass-123"})
+    assert r.status_code == 429  # blocked even with the right password: the IP is cooling down
+    ok = client.post("/v1/auth/login", headers={"X-Client-IP": "198.51.100.9"}, json={"subscriber_id": SUB, "password": "demo-pass-123"})
+    assert ok.status_code == 200
+
+
+def test_ipv6_clients_are_limited_per_64_and_garbage_ip_is_ignored():
+    from core_api.routers.auth import client_net
+    assert client_net("2001:db8:1:2::1") == client_net("2001:db8:1:2:ffff::9") == "2001:db8:1:2::/64"
+    assert client_net("203.0.113.7") == "203.0.113.7"
+    assert client_net("not-an-ip") is None and client_net(None) is None
+
+
+def test_tokens_are_rs256_and_a_verifier_only_service_cannot_issue_or_accept_forgeries(monkeypatch):
+    import jwt as pyjwt
+    from core_api import security
+    from core_api.settings import get_settings
+
+    _, pub = security._dev_keypair()
+    token, _ = security.issue_token("4915100000001", "DE")
+    assert pyjwt.get_unverified_header(token)["alg"] == "RS256"
+    # an HS256 token (the old shared-secret scheme, or an alg-confusion attempt) is rejected outright
+    forged = pyjwt.encode({"sub": "4915100000002", "country": "DE", "iss": security.ISSUER, "exp": 9_999_999_999},
+                          "any-shared-secret", algorithm="HS256")
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException):
+        security.decode_token(forged)
+    # a service configured with only the public key verifies tokens but refuses to sign them
+    monkeypatch.setenv("APP_JWT_PUBLIC_KEY", pub)
+    get_settings.cache_clear()
+    try:
+        assert security.decode_token(token).subscriber_id == "4915100000001"
+        with pytest.raises(RuntimeError):
+            security.issue_token("4915100000002", "DE")
+        monkeypatch.setenv("APP_REQUIRE_JWT_KEYS", "true")
+        monkeypatch.delenv("APP_JWT_PUBLIC_KEY")
+        get_settings.cache_clear()
+        with pytest.raises(RuntimeError):  # misconfigured cluster fails loudly, never a throwaway key
+            security.decode_token(token)
+    finally:
+        get_settings.cache_clear()
+
+
 def test_home_snapshot_bills_explanation_and_pdf(env):
     client, engine, state, _ = env
     add_usage(state, SUB, datetime(2026, 9, 10, tzinfo=UTC), [(UsageType.DATA, None, 1_000 * MB)])

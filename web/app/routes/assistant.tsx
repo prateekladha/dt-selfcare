@@ -252,9 +252,9 @@ export default function Assistant() {
         </div>
       )}
       <form onSubmit={(e) => { e.preventDefault(); ask(q); }}
-            className="sticky bottom-20 flex items-center gap-2 rounded-[var(--radius)] border border-[var(--line-strong)] bg-[var(--surface)] p-2 shadow-[var(--shadow-lg)] md:bottom-6">
+            className="chat-composer sticky bottom-20 flex items-center gap-2 rounded-[var(--radius)] border border-[var(--line-strong)] bg-[var(--surface)] p-2 shadow-[var(--shadow-lg)] md:bottom-6">
         <input disabled={assistantDown} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ask about your bills, usage or plan" aria-label="Your question"
-               className="h-11 min-w-0 flex-1 bg-transparent px-3 text-[15px] outline-none" maxLength={400} />
+               className="h-11 min-w-0 flex-1 bg-transparent px-3 text-[16px] outline-none" maxLength={400} />
         <button disabled={busy || assistantDown || q.trim().length < 2} aria-label="Ask" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)] text-white disabled:opacity-40">
           {busy ? <Loader2 size={18} className="animate-spin" /> : <ArrowUp size={18} />}
         </button>

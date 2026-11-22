@@ -3,6 +3,7 @@
 // so request URLs are https://<host> - required for React Router's CSRF origin check on form
 // actions, secure cookies and absolute redirects.
 import { createRequestHandler } from "@react-router/express";
+import { randomBytes } from "node:crypto";
 import compression from "compression";
 import express from "express";
 import morgan from "morgan";
@@ -17,14 +18,21 @@ const app = express();
 app.set("trust proxy", true);
 app.disable("x-powered-by");
 app.use(compression());
-app.use((_, res, next) => {
+app.use((req, res, next) => {
+  // Strict CSP: a script runs only if it carries this request's nonce (React Router's inline hydration
+  // and module scripts get it in entry.server.tsx) or was loaded by such a script ('strict-dynamic':
+  // route chunks, Razorpay checkout). An injected <script> or inline handler has no nonce and is blocked.
+  // 'unsafe-inline' and https: are ignored by every browser that understands nonces / strict-dynamic;
+  // they only keep very old browsers working.
+  const nonce = randomBytes(16).toString("base64");
+  req.headers["x-csp-nonce"] = nonce;   // overwrites anything the client sent
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Strict-Transport-Security", "max-age=31536000");
   res.setHeader("X-App-Version", VERSION);
-  // no script-src yet (SSR inline hydration scripts would need nonces); these directives can't break anything
-  res.setHeader("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
+  res.setHeader("Content-Security-Policy",
+    `script-src 'nonce-${nonce}' 'strict-dynamic' 'unsafe-inline' https:; frame-ancestors 'none'; base-uri 'self'; object-src 'none'`);
   next();
 });
 // CSRF guard for state-changing JSON/resource routes. React Router checks Origin only for its own

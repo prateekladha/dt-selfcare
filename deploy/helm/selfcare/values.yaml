@@ -62,6 +62,7 @@ workloads:
   core-api:
     image: core-api
     command: ["core-api"]
+    signsTokens: true   # issues login tokens: the only workload that gets the JWT private key
     port: 8080
     replicas: 2
     hpa: { min: 2, max: 8, cpu: 70 }
