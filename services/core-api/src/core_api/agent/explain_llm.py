@@ -89,7 +89,10 @@ def _items_problems(out: dict, sources: dict[str, str]) -> list[str]:
 AI_CALLS_PER_SUBSCRIBER_DAY = 20  # fresh (uncached) explanations per customer per day
 
 
-def explain_bill(llm: LLM, r, cur: Bill, prev: Bill | None, lang: str = "en") -> dict:
+def explain_bill(llm: LLM, r, cur: Bill, prev: Bill | None, lang: str = "en", quota: tuple[str, int] | None = None,
+                 subject: str | None = None) -> dict:
+    """quota: (counter name, daily limit) for fresh explanations; default: the customer's bill-explanation quota.
+    subject: what is being explained (default "the YYYY-MM bill"; a simulation says it is a what-if)."""
     lang = lang if lang in LANGS else "en"
     sources = build_sources(cur, prev)
     knowledge_docs = sorted(global_docs(), key=lambda d: d.id)
@@ -99,7 +102,8 @@ def explain_bill(llm: LLM, r, cur: Bill, prev: Bill | None, lang: str = "en") ->
 
     template, prompt_version = get_prompt("explainer-system", SYSTEM)  # versioned in Langfuse
     # the key covers the prompt text actually served: a new prompt version must not reuse old explanations
-    key = "exp:" + hashlib.sha256(json.dumps([sources, lang, llm.model, PROMPT_VERSION, template], sort_keys=True).encode()).hexdigest()
+    key = "exp:" + hashlib.sha256(json.dumps([sources, lang, llm.model, PROMPT_VERSION, template, subject or ""],
+                                             sort_keys=True).encode()).hexdigest()
     cached = r.get(key)
     trace: dict = {"prompt_version": PROMPT_VERSION, "stages": [], "attempts": []}
     if cached:
@@ -109,17 +113,18 @@ def explain_bill(llm: LLM, r, cur: Bill, prev: Bill | None, lang: str = "en") ->
     trace["prompt_version"] = f"{PROMPT_VERSION} ({prompt_version})"
     system = template.replace("{knowledge}", "\n".join(f"[{k}] {v}" for k, v in knowledge.items()))
     user = ("Sources:\n" + "\n".join(f"[{k}] {v}" for k, v in sources.items())
-            + f"\n\nExplain the {cur.cycle} bill. Write in {LANGS[lang]}.")
+            + f"\n\nExplain {subject or f'the {cur.cycle} bill'}. Write in {LANGS[lang]}.")
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     status, out = "UNVERIFIED", {}
     try:
         # per-customer share of the global daily LLM budget: one customer (e.g. scripted what-if uploads,
         # each a new cache key) can't use up the stage cap for everyone else. Cache hits don't count.
-        n = r.incr(f"rl:ai:{cur.subscriber_id}")
+        qkey, qlimit = quota or (f"rl:ai:{cur.subscriber_id}", AI_CALLS_PER_SUBSCRIBER_DAY)
+        n = r.incr(qkey)
         if n == 1:
-            r.expire(f"rl:ai:{cur.subscriber_id}", 86400)
-        if n > AI_CALLS_PER_SUBSCRIBER_DAY:
-            raise BudgetExceeded(f"daily AI limit for this customer ({AI_CALLS_PER_SUBSCRIBER_DAY})")
+            r.expire(qkey, 86400)
+        if n > qlimit:
+            raise BudgetExceeded(f"daily AI limit for this customer ({qlimit})")
         for attempt in range(3):
             res = llm.chat("explain" if attempt == 0 else "repair", messages, json_mode=True)
             trace["stages"].append(res.as_trace())

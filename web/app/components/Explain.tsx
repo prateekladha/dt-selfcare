@@ -110,7 +110,7 @@ export function ExplanationSection({ data, lang, basePath, cycle, heading, showL
 function Unavailable() {
   return (
     <Card className="px-6 py-5">
-      <p className="text-[15px] text-[var(--ink-2)]">The explanation isn't available right now. Your bill breakdown above is complete and exact.</p>
+      <p className="text-[15px] text-[var(--ink-2)]">The written explanation isn't available right now. The amounts above are complete and exact.</p>
     </Card>
   );
 }

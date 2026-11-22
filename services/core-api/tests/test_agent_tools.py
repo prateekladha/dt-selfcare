@@ -394,7 +394,8 @@ def test_may_as_a_verb_is_not_read_as_the_may_bill():
 def test_spine_drops_stale_docs_and_does_not_re_embed_an_unchanged_customer(world):
     from core_api.agent.spine import refresh_subscriber
     from core_api.db import context_docs
-    from sqlalchemy import insert as _insert, select as _select
+    from sqlalchemy import insert as _insert
+    from sqlalchemy import select as _select
     engine, _r, state = world
     emb = HashEmbedder()
     first = refresh_subscriber(engine, state, emb, SUB)

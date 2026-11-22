@@ -80,7 +80,7 @@ def env(monkeypatch):
     import core_api.routers.demo as demo_mod
     import core_api.routers.simulate as sim_mod
     monkeypatch.setattr(demo_mod, "get_usage_state", lambda: state)
-    monkeypatch.setattr(sim_mod, "get_usage_state", lambda: state)
+    monkeypatch.setattr(sim_mod, "get_usage_state", lambda: state, raising=False)
     import core_api.main as main_mod
     monkeypatch.setattr(main_mod, "get_usage_state", lambda: state)
     if not getattr(main_mod.app, "_test_services_mounted", False):  # payments + assistant are separate services
@@ -280,6 +280,7 @@ def test_webhook_rejects_bad_signature(env):
 
 def test_simulate_from_scenario_and_upload(env):
     client, engine, state, _ = env
+    add_usage(state, SUB, datetime(2026, 10, 10, tzinfo=UTC), [(UsageType.DATA, None, 2_000 * MB)])
     issue(engine, state, "2026-10")
     h = login(client)
     assert any(s["key"] == "us-trip-2-weeks" for s in client.get("/v1/me/usage/scenarios", headers=h).json())
@@ -574,3 +575,25 @@ def test_usage_arriving_two_months_late_is_still_billed_once(env):
     import pytest as _pytest
     with _pytest.raises(ValueError):          # November isn't over: nothing more to close
         close_cycle(engine, state, "2099-01")
+
+
+
+def test_scenarios_are_realistic_and_bad_files_get_friendly_errors(env):
+    client, engine, state, _ = env
+    add_usage(state, SUB, datetime(2026, 10, 10, tzinfo=UTC), [(UsageType.DATA, None, 2_500 * MB),
+                                                               (UsageType.VOICE, None, 300 * 60)])
+    issue(engine, state, "2026-10")
+    h = login(client)
+    sim = lambda key: client.post("/v1/me/usage/simulate", data={"scenario": key}, headers=h).json()
+    light = sim("light-month")
+    assert light["bill"]["usage"]["data_mb"] == 1_000      # replaces the month's data (was 2.5 GB + 1 GB on top)
+    trip = sim("us-trip-2-weeks")
+    assert trip["bill"]["usage"]["data_mb"] == 2_500       # a trip adds roaming, not a second month at home
+    up = lambda name, body: client.post("/v1/me/usage/simulate", files={"file": (name, body)}, headers=h)
+    ok = up("de.csv", b"Usage_Type; Quantity; Unit; Roaming_Zone\nDATA;2,5;GB;\n")
+    assert ok.status_code == 200 and ok.json()["bill"]["usage"]["data_mb"] == 2_500   # ';' + decimal comma
+    for name, body in [("x.json", b'{"usage_type": "DATA"}'), ("x.json", b'[{"usage_type": "DATA", "quantity": null, "unit": "GB"}]'),
+                       ("x.csv", b"usage_type,unit,quantity\nDATA,GB\n"), ("x.csv", b"usage_type,quantity,unit\nMMS,1,count\n"),
+                       ("x.csv", b"usage_type,quantity,unit,roaming_zone\nDATA,1,GB,Z3\n"), ("x.csv", "\ufeffé".encode("latin-1", "ignore"))]:
+        r = up(name, body)
+        assert r.status_code == 422 and "Traceback" not in r.text, (name, body, r.text)

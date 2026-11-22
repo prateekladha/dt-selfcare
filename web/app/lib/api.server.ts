@@ -58,6 +58,7 @@ function timeoutFor(path: string) {
   if (path.startsWith("/v1/me/assistant")) return 120_000;
   if (path.includes("/explanation")) return 30_000;
   if (path.endsWith("/evidence")) return 30_000;   // re-reads the raw CDR archive: seconds when cold
+  if (path.endsWith("/usage/simulate")) return 30_000;   // waits for the what-if explanation (LLM)
   return 5_000;
 }
 
