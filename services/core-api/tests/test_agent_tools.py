@@ -476,3 +476,14 @@ def test_every_turn_starts_from_a_fresh_account_snapshot_with_the_catalog(world)
     from core_api.agent.tools import TOOLS
     cat = TOOLS["get_plans_and_addons"].run({}, ctx)
     assert all("PL" not in a["code"] for a in cat["add_ons"]) and cat["largest_plan"]
+
+
+def test_catalog_prices_this_month_for_a_switch_today(world):
+    """Prod: 'what would I pay this month if I switch?' -> 'the tools don't compute a combined total'. The
+    catalog now re-rates the month with the new plan from today (same rating path as the bill)."""
+    from core_api.agent.tools import TOOLS
+    engine, _r, state = world
+    cat = TOOLS["get_plans_and_addons"].run({}, ToolContext(SUB, "DE", engine, state, HashEmbedder()))
+    others = [p for p in cat["plans"] if not p.get("current")]
+    assert others and all(p["this_month_total_if_switched_today"].endswith("EUR") for p in others)
+    assert "today" in cat["rules"]["tariff_change"] and "pro-rated" in cat["rules"]["tariff_change"]
