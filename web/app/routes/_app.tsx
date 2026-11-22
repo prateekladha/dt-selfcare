@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { data, Form, NavLink, Outlet, useNavigation, useRevalidator, useRouteLoaderData } from "react-router";
+import { data, Form, isRouteErrorResponse, NavLink, Outlet, useNavigation, useRevalidator, useRouteLoaderData } from "react-router";
 import { Bell, FlaskConical, Home as HomeIcon, LogOut, MessageSquareText, Receipt, Server } from "lucide-react";
 import { LiveNotifications } from "~/components/LiveNotifications";
 import { Avatar, Logo } from "~/components/ui";
@@ -155,8 +155,19 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
 }
 
 
-/** core-api unavailable and no recent snapshot: a clear, styled message instead of a raw error. */
-export function ErrorBoundary() {
+/** A page that doesn't exist gets "not found" (an unknown bill, payment or URL); anything else here means
+ *  core-api is unavailable with no recent snapshot: a clear, styled message instead of a raw error. */
+export function ErrorBoundary({ error }: { error: unknown }) {
+  if (isRouteErrorResponse(error) && error.status === 404) {
+    return (
+      <main className="mx-auto flex min-h-[70vh] max-w-md flex-col items-center justify-center px-5 text-center">
+        <Logo />
+        <h1 className="mt-8 text-2xl font-extrabold">Page not found</h1>
+        <p className="mt-2 text-[15px] text-[var(--ink-3)]">This page doesn't exist, or it isn't part of your account.</p>
+        <a href="/" className="mt-6 inline-flex h-11 items-center rounded-lg bg-[var(--brand)] px-5 text-sm font-semibold text-white">Go to overview</a>
+      </main>
+    );
+  }
   return (
     <main className="mx-auto flex min-h-[70vh] max-w-md flex-col items-center justify-center px-5 text-center">
       <Logo />

@@ -247,6 +247,22 @@ def test_payment_is_idempotent_and_settles_once_from_both_paths(env):
         assert len(cx.execute(select(outbox)).all()) == 1  # exactly one PAYMENT_SUCCEEDED event
 
 
+def test_payment_result_page_status_asks_the_gateway_not_the_browser(env):
+    """GET /v1/me/payments/{id}?refresh=true backs the /pay/result page: it reconciles with the gateway's
+    status API (a page reload re-checks) and returns what the confirmation page shows."""
+    client, engine, state, gw = env
+    issue(engine, state, "2026-10")
+    h = login(client)
+    p = client.post("/v1/me/payments", json={"purpose": "BILL", "bill_id": f"{SUB}:2026-10"},
+                    headers=h | {"Idempotency-Key": "result-0000001"}).json()
+    before = client.get(f"/v1/me/payments/{p['payment_id']}?refresh=true", headers=h).json()
+    assert before["status"] != "PAID" and before["cycle"] == "2026-10" and before["purpose"] == "BILL"
+    gw.captured.add(p["order_id"])          # the customer paid; no browser callback arrived
+    after = client.get(f"/v1/me/payments/{p['payment_id']}?refresh=true", headers=h).json()
+    assert after["status"] == "PAID" and after["amount"] == p["amount"] and after["created_at"]
+    assert client.get("/v1/me/payments/not-mine-000000", headers=h).status_code == 404
+
+
 def test_second_tab_gets_the_open_order_so_a_bill_cant_be_paid_twice(env):
     client, engine, state, gw = env
     issue(engine, state, "2026-10")

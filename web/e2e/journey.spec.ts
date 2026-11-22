@@ -119,11 +119,15 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   await expect(page.getByText("Your data, layer by layer", { exact: true })).toBeVisible();
   await shot(page, "06-system");
 
-  // Payment: Pay now opens the real Razorpay checkout
+  // Payment: Pay now leads to the payment page, which opens the real Razorpay checkout
   await page.goto("/");
-  const pay = page.getByRole("button", { name: /Pay now/ });
+  const pay = page.getByRole("link", { name: /Pay now/ });
   if (await pay.count()) {
     await pay.first().click();
+    await expect(page).toHaveURL(/\/pay\/bill\/\d{4}-\d{2}$/);
+    await expect(page.getByRole("heading", { name: /^Pay your .* bill$/ })).toBeVisible();
+    await shot(page, "07-pay-page");
+    await page.getByRole("button", { name: /^Pay securely/ }).click();
     await expect(page.frameLocator("iframe.razorpay-checkout-frame").locator("body")).toBeVisible({ timeout: 30_000 });
     await page.waitForTimeout(2500);
     await shot(page, "07-razorpay-checkout");
@@ -150,7 +154,9 @@ test("payment @payment: Razorpay checkout opens for the right order with the cus
   test.setTimeout(90_000);
   await signIn(page, "Paul Becker");
   const created = page.waitForResponse((r) => r.url().includes("/api/pay") && r.request().method() === "POST", { timeout: 30_000 });
-  await page.getByRole("button", { name: /Pay in advance/ }).first().click();
+  await page.getByRole("link", { name: /Pay in advance/ }).first().click();
+  await expect(page).toHaveURL(/\/pay\/advance$/);
+  await page.getByRole("button", { name: /^Pay securely/ }).click();
   const res = await created;
   expect(res.status(), "our payments-service created a gateway order").toBeLessThan(300);
   const order = await res.json();

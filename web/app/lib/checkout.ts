@@ -1,10 +1,7 @@
-import { useDegraded } from "~/routes/_app";
 import { useRef, useState } from "react";
-import { useRevalidator } from "react-router";
-import { CheckCircle2, CreditCard, Loader2 } from "lucide-react";
-import { toast } from "./Toast";
-import { Button } from "./ui";
-import { money } from "~/lib/format";
+import { useNavigate } from "react-router";
+import { toast } from "~/components/Toast";
+import { money } from "./format";
 
 declare global {
   interface Window { Razorpay?: any }
@@ -37,60 +34,45 @@ function describe(purpose: "BILL" | "ADVANCE", p: { amount: number; currency: st
   return `${what}: ${money(p.amount, p.currency)} charged as ${money(p.charged_amount, p.charged_currency)} (1 ${p.currency} = ${p.fx_rate} ${p.charged_currency})`;
 }
 
-/** Tap to pay. One idempotency key per button instance: double taps and retries reuse the same gateway
- *  order, so the customer can never be charged twice for one intent. The button keeps its size in every
- *  state (progress is shown inside it) and messages go to the global toast, so nothing around it moves. */
-export function PayButton({ purpose, billId, label, name, contact, email, variant = "primary", full = false }: { purpose: "BILL" | "ADVANCE"; billId?: string | null; label: string; name: string; contact?: string; email?: string; variant?: "primary" | "secondary"; full?: boolean }) {
+/** The payment page's checkout. One idempotency key per page visit: double taps and retries reuse the same
+ *  gateway order, so the customer can never be charged twice for one intent. Razorpay's checkout opens
+ *  as an overlay on this page (card/UPI details go only to Razorpay); afterwards we go to the result page,
+ *  whose server loader asks the gateway for the real status (the browser callback is only a trigger). */
+export function useCheckout(purpose: "BILL" | "ADVANCE", billId: string | null, customer: { name: string; contact?: string; email?: string }) {
   const idem = useRef<string | null>(null);
-  const paymentsDown = useDegraded("payments");
-  const [state, setState] = useState<"idle" | "busy" | "done">("idle");
-  const revalidator = useRevalidator();
+  const [busy, setBusy] = useState(false);
+  const navigate = useNavigate();
 
-  async function pay() {
-    setState("busy");
+  async function start() {
+    setBusy(true);
     idem.current ??= crypto.randomUUID();
     try {
       const res = await fetch("/api/pay", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ purpose, bill_id: billId, idempotency_key: idem.current }) });
       const p = await res.json();
       if (!res.ok) throw new Error(p.detail ?? "Payment could not be started. Please try again.");
-      if (p.status === "PAID") { setState("done"); toast("This bill is already paid.", "good"); revalidator.revalidate(); return; }
+      if (p.status === "PAID") { navigate(`/pay/result?id=${encodeURIComponent(p.payment_id)}`); return; }
       await loadCheckout();
       const rzp = new window.Razorpay!({
         key: p.checkout.key_id, order_id: p.order_id, amount: p.charged_amount, currency: p.charged_currency,
         name: "Self-care", description: describe(purpose, p),
-        prefill: { name, ...(contact ? { contact } : {}), ...(email ? { email } : {}) },  // skips the gateway's contact prompt
+        prefill: { name: customer.name, ...(customer.contact ? { contact: customer.contact } : {}), ...(customer.email ? { email: customer.email } : {}) },
         theme: { color: "#E20074" },
         handler: async (r: any) => {
-          const c = await fetch("/api/pay/confirm", { method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ payment_id: p.payment_id, gateway_payment_id: r.razorpay_payment_id, signature: r.razorpay_signature }) });
-          const out = await c.json();
-          setState(out.status === "PAID" ? "done" : "idle");
-          toast(out.status === "PAID" ? "Payment received, thank you!" : "Payment received; we're confirming it with the bank.", "good");
+          // trigger only: the signature is verified and the status taken from the gateway's status API
+          await fetch("/api/pay/confirm", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ payment_id: p.payment_id, gateway_payment_id: r.razorpay_payment_id, signature: r.razorpay_signature }) }).catch(() => null);
           idem.current = null;
-          revalidator.revalidate();
+          navigate(`/pay/result?id=${encodeURIComponent(p.payment_id)}`);
         },
-        modal: { ondismiss: () => setState((s) => (s === "done" ? s : "idle")) },
+        modal: { ondismiss: () => setBusy(false) },
       });
       rzp.on("payment.failed", (e: any) => toast(declineText(e.error?.description), "bad"));
       rzp.open();
     } catch (e: any) {
-      setState("idle");
+      setBusy(false);
       toast(e.message ?? "Payment could not be started. Please try again.", "bad");
     }
   }
-
-  if (paymentsDown && state === "idle") {
-    return (
-      <p role="status" className="max-w-[300px] rounded-lg border border-[var(--line-strong)] bg-[var(--chip)] px-3 py-2 text-[13px] text-[var(--ink-2)]">
-        Payments are briefly unavailable. Your bill and due date are not affected; please try again in a few minutes.
-      </p>
-    );
-  }
-  return (
-    <Button onClick={pay} variant={variant} disabled={state !== "idle"} aria-busy={state === "busy"} className={full ? "w-full" : ""}>
-      {state === "busy" ? <Loader2 size={16} className="animate-spin" /> : state === "done" ? <CheckCircle2 size={16} /> : <CreditCard size={16} />}
-      <span>{state === "done" ? "Paid" : label}</span>
-    </Button>
-  );
+  return { start, busy };
 }

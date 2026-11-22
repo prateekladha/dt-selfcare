@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowLeftRight, CheckCircle2, Clock, CreditCard, Loader2, PackagePlus, XCircle } from "lucide-react";
-import { PayButton } from "./PayButton";
+import { PayLink } from "./PayLink";
 import { useRevalidator } from "react-router";
 import { toast } from "./Toast";
 import { Button } from "./ui";
@@ -97,8 +97,8 @@ export function AddDataButton({ country }: { country: string }) {
 
 
 /** Payment prepared by the assistant: the customer pays in the secure checkout (paying IS the approval). */
-export function PaymentCard({ purpose, billId, cycleLabel, amount, overdue, name, contact, email }:
-  { purpose: "BILL" | "ADVANCE"; billId: string | null; cycleLabel: string; amount: string; overdue: boolean; name: string; contact?: string; email?: string }) {
+export function PaymentCard({ purpose, cycle, cycleLabel, amount, overdue }:
+  { purpose: "BILL" | "ADVANCE"; cycle: string; cycleLabel: string; amount: string; overdue: boolean }) {
   return (
     <div className="rounded-[var(--radius)] border border-[var(--line-strong)] bg-[var(--surface)] p-4">
       <div className="flex items-start gap-3">
@@ -108,7 +108,7 @@ export function PaymentCard({ purpose, billId, cycleLabel, amount, overdue, name
           <p className="mt-0.5 text-[13.5px] text-[var(--ink-3)]">{amount} incl. VAT{overdue ? " · overdue" : ""} · paid securely in the checkout</p>
         </div>
       </div>
-      <div className="mt-4"><PayButton purpose={purpose} billId={billId} label={`Pay ${amount}`} name={name} contact={contact} email={email} /></div>
+      <div className="mt-4"><PayLink purpose={purpose} cycle={cycle} label={`Pay ${amount}`} /></div>
     </div>
   );
 }

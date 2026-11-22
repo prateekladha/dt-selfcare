@@ -90,14 +90,26 @@ def confirm(payment_id: str, body: ConfirmIn, p: Principal = Depends(current_pri
 
 @router.get("/v1/me/payments/{payment_id}")
 def status(payment_id: str, refresh: bool = False, p: Principal = Depends(current_principal)) -> dict:
-    row = get_payment(get_engine(), p.subscriber_id, payment_id)
+    """Payment status for the confirmation page. `refresh=true` asks the gateway's status API first (the
+    source of truth) unless the payment is already PAID, so a reload never trusts the browser."""
+    engine = get_engine()
+    row = get_payment(engine, p.subscriber_id, payment_id)
     if row is None:
         raise HTTPException(404, "payment not found")
     if refresh and row.status != "PAID":
-        res = reconcile_order(get_engine(), gateway_for(p.country, p.subscriber_id), row.gateway_order_id, trigger="poll")
-        return res.get("payment") or {}
-    return {"payment_id": row.id, "status": row.status, "amount": row.amount, "currency": row.currency,
-            "gateway_status": row.gateway_status, "check_attempts": row.check_attempts,
+        reconcile_order(engine, gateway_for(p.country, p.subscriber_id), row.gateway_order_id, trigger="poll")
+        row = get_payment(engine, p.subscriber_id, payment_id)
+    cycle = None
+    if row.bill_id:
+        with engine.connect() as cx:
+            cycle = cx.execute(select(bills.c.cycle).where(bills.c.id == row.bill_id)).scalar()
+    created = row.created_at if row.created_at.tzinfo else row.created_at.replace(tzinfo=UTC)
+    return {"payment_id": row.id, "status": row.status, "purpose": row.purpose, "bill_id": row.bill_id,
+            "cycle": cycle or f"{created:%Y-%m}", "amount": row.amount, "currency": row.currency,
+            "charged_amount": row.charged_amount or row.amount, "charged_currency": row.charged_currency or row.currency,
+            "fx_rate": row.fx_rate, "gateway": row.gateway, "gateway_payment_id": row.gateway_payment_id,
+            "gateway_status": row.gateway_status, "created_at": created.isoformat(),
+            "check_attempts": row.check_attempts,
             "next_check_at": row.next_check_at.isoformat() if row.next_check_at else None}
 
 

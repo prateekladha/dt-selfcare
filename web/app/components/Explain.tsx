@@ -1,4 +1,4 @@
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { Await, Link } from "react-router";
 import { BrainCircuit, ChevronDown, Lightbulb, ShieldCheck, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
 import type { Explanation, ExplanationResponse, LlmItem, SourceDoc } from "~/lib/types";
@@ -62,21 +62,44 @@ function Loading() {
  * facts, each item citing numbered sources; plus evidence and the trace of how it was produced. */
 export function ExplanationSection({ data, lang, basePath, cycle, heading, showLanguages = true }:
   { data: Promise<ExplanationResponse> | ExplanationResponse; lang: string; basePath: string; cycle?: string; heading: string; showLanguages?: boolean }) {
+  // Switching language reloads ONLY this section: the other language is fetched from /api/explanation and
+  // kept per language (switching back is instant), and ?lang= is written to the URL with the History API
+  // so a reload keeps it. A route navigation would re-run every loader on the page and redraw it all.
+  const [cur, setCur] = useState(lang);
+  const [byLang, setByLang] = useState<Record<string, Promise<ExplanationResponse> | ExplanationResponse>>({ [lang]: data });
+  useEffect(() => { setCur(lang); setByLang({ [lang]: data }); }, [lang, cycle]);   // navigated to another bill / ?lang=
+  useEffect(() => { setByLang((m) => ({ ...m, [lang]: data })); }, [data]);          // revalidated
+  const pick = (k: string) => {
+    if (k === cur) return;
+    if (!byLang[k] && cycle) {
+      const p = fetch(`/api/explanation/${cycle}?lang=${k}`).then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))));
+      p.catch(() => {});   // handled by <Await errorElement>
+      setByLang((m) => ({ ...m, [k]: p }));
+    }
+    setCur(k);
+    const u = new URL(window.location.href);
+    u.searchParams.set("lang", k);
+    window.history.replaceState(window.history.state, "", u);
+  };
+  const shown = byLang[cur] ?? data;
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <h2 className="display text-[24px] font-extrabold leading-tight">{heading}</h2>
         {showLanguages && (
           <div className="flex rounded-lg bg-[var(--chip)] p-0.5" role="tablist" aria-label="Language">
-            {LANGS.map(([k, l]) => (
+            {LANGS.map(([k, l]) => cycle ? (
+              <button key={k} type="button" onClick={() => pick(k)} role="tab" aria-selected={cur === k}
+                      className={`rounded-md px-3 py-1.5 text-xs font-semibold ${cur === k ? "bg-[var(--surface)] text-[var(--ink)] shadow-sm" : "text-[var(--ink-3)] hover:text-[var(--ink)]"}`}>{l}</button>
+            ) : (
               <Link key={k} to={`${basePath}?lang=${k}`} preventScrollReset replace role="tab" aria-selected={lang === k}
                     className={`rounded-md px-3 py-1.5 text-xs font-semibold ${lang === k ? "bg-[var(--surface)] text-[var(--ink)] shadow-sm" : "text-[var(--ink-3)] hover:text-[var(--ink)]"}`}>{l}</Link>
             ))}
           </div>
         )}
       </div>
-      <Suspense key={lang} fallback={<Loading />}>
-        <Await resolve={data} errorElement={<Unavailable />}>
+      <Suspense key={cur} fallback={<Loading />}>
+        <Await resolve={shown} errorElement={<Unavailable />}>
           {(r) => (r.llm ? <Body r={r} cycle={cycle} /> : <Unavailable />)}
         </Await>
       </Suspense>
