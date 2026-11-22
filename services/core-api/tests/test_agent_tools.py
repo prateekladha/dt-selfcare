@@ -487,3 +487,23 @@ def test_catalog_prices_this_month_for_a_switch_today(world):
     others = [p for p in cat["plans"] if not p.get("current")]
     assert others and all(p["this_month_total_if_switched_today"].endswith("EUR") for p in others)
     assert "today" in cat["rules"]["tariff_change"] and "pro-rated" in cat["rules"]["tariff_change"]
+
+
+def test_answer_written_alongside_a_payment_card_is_kept(world):
+    """Prod (PL): the model explained the bill and prepared the payment in the same turn; the follow-up said
+    only 'the payment is ready below' and the whole explanation was dropped. It is kept now."""
+    engine, r, state = world
+    total = row_to_bill(get_bill_row(engine, SUB, "2026-10")).total
+    explanation = (f"Your October bill is {total / 100:.2f} EUR. Most of it is roaming in zone Z2, 372 MB of data "
+                   "outside the EU, which wasn't there the month before.")
+    llm = scripted_llm(r, [
+        ("tools", [("get_bill", {"cycle": "2026-10"})]),
+        ("text_then_tools", (explanation, [("propose_payment", {"purpose": "bill"})])),
+        ("text", "You can pay it in the secure checkout below."),
+    ])
+    events = collect(run_stream("Why is my bill higher?", ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm), llm, engine))
+    done = events[-1]
+    assert "372 MB" in done["answer"] and "checkout below" in done["answer"]
+    assert done["answer"].index("372 MB") < done["answer"].index("checkout below")   # the answer first
+    assert [e["kind"] for e in events if e["type"] == "proposal"] == ["PAYMENT"]
+    assert "".join(e["text"] for e in events if e["type"] == "token") == done["answer"]
