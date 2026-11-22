@@ -63,6 +63,11 @@ def scripted_llm(r, turns):
             if kind == "tools":
                 calls = [{"index": i, "id": f"call_{i}", "function": {"name": n, "arguments": json.dumps(a)}} for i, (n, a) in enumerate(val)]
                 return sse([{"choices": [{"delta": {"tool_calls": calls}}]}, USAGE])
+            if kind == "text_then_tools":
+                text, tools_ = val
+                calls = [{"index": i, "id": f"call_{i}", "function": {"name": n, "arguments": json.dumps(a)}} for i, (n, a) in enumerate(tools_)]
+                return sse([{"choices": [{"delta": {"content": w + " "}}]} for w in text.split(" ")]
+                           + [{"choices": [{"delta": {"tool_calls": calls}}]}, USAGE])
             words = val.split(" ")
             return sse([{"choices": [{"delta": {"content": w + (" " if i < len(words) - 1 else "")}}]} for i, w in enumerate(words)] + [USAGE])
         content = json.dumps(val) if kind == "json" else val
@@ -229,7 +234,7 @@ def test_answer_from_chat_history_is_repaired_by_looking_the_fact_up_not_dropped
                                 history=[{"q": "current dues?", "a": "October 41.59 EUR, due 15 November 2026"}]))
     done = events[-1]
     attempts = done["trace"]["attempts"]
-    assert attempts[0]["problems"] == ["numbers without citations"]
+    assert "without looking them up" in attempts[0]["problems"][0]
     assert "dropped the facts" in attempts[1]["problems"][0]
     assert done["status"] == "REPAIRED" and "[S1]" in done["answer"] and "don't have" not in done["answer"]
     kinds = [e["type"] for e in events]
@@ -259,19 +264,61 @@ def test_failed_answers_are_not_fed_back_as_conversation_context(world):
     assert [t["q"] for t in hist.recent_turns(engine, sid)] == ["Why higher?"]
 
 
-def test_answer_pointing_to_a_checkout_that_was_never_prepared_is_repaired(world):
+def test_answer_pointing_to_a_checkout_that_was_never_prepared_gets_the_payment_prepared_by_code(world):
     """Prod: 'Please finish the payment in the secure checkout below' with no propose_payment call, so no
-    Pay card was shown. Now that is a verification problem and the repair prepares the payment."""
+    Pay card was shown. Code now prepares the payment itself: no extra LLM round, no rewritten answer."""
     engine, r, state = world
     llm = scripted_llm(r, [
         ("tools", [("list_bills", {"months": 3})]),
-        ("text", "Yes, pay the October bill first [S1]. Please finish the payment in the secure checkout below."),
-        ("tools", [("propose_payment", {"purpose": "bill"})]),
-        ("text", "Yes, pay the October bill first [S1]. Pay it in the secure checkout below [S2]."),
+        ("text", "Yes, pay the October bill first. Please finish the payment in the secure checkout below."),
     ])
     ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
     events = collect(run_stream("should I pay the bill first?", ctx, llm, engine))
-    done = events[-1]
-    assert "nothing was prepared" in done["trace"]["attempts"][0]["problems"][-1]
+    kinds = [e["type"] for e in events]
     assert [e["kind"] for e in events if e["type"] == "proposal"] == ["PAYMENT"]
-    assert done["status"] == "REPAIRED"
+    assert events[-1]["status"] == "VERIFIED" and "repairing" not in kinds and "replace" not in kinds
+
+
+def test_correct_answer_without_citation_markers_is_not_rewritten_sources_are_attached(world):
+    """Prod: 7 of 8 answers were rewritten only because the model left out [S#] markers, so the customer
+    saw a different answer after the 'double-check'. Now code attaches the sources; no repair, no replace."""
+    engine, r, state = world
+    total = row_to_bill(get_bill_row(engine, SUB, "2026-10")).total
+    amount = f"{total / 100:.2f} EUR"
+    llm = scripted_llm(r, [("tools", [("get_bill", {"cycle": "2026-10"})]),
+                           ("text", f"Your October bill comes to {amount}. Most of it is roaming in zone Z2: 372 MB.")])
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
+    events = collect(run_stream("Why is it higher?", ctx, llm, engine))
+    kinds = [e["type"] for e in events]
+    done = events[-1]
+    assert done["status"] == "VERIFIED" and "repairing" not in kinds and "replace" not in kinds
+    assert done["answer"].count("[S1]") == 2 and done["citations"][0]["tool"] == "get_bill"
+
+
+def test_preamble_before_a_tool_call_is_never_streamed_so_nothing_flickers(world):
+    engine, r, state = world
+    llm = scripted_llm(r, [("text_then_tools", ("Let me check your bills.", [("list_bills", {"months": 3})])),
+                           ("text", "Your last three bills are all paid, and nothing is outstanding right now. Anything else?")])
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
+    events = collect(run_stream("Any dues?", ctx, llm, engine))
+    streamed = "".join(e["text"] for e in events if e["type"] == "token")
+    assert "Let me check" not in streamed and "reset" not in [e["type"] for e in events]
+    assert streamed.startswith("Your last three bills")
+
+
+
+def test_figures_given_before_any_lookup_are_never_streamed(world):
+    """With chat history, the model sometimes answers from earlier answers without tools. Such an answer is
+    checked and replaced, so it must not appear on screen first (that was the visible 'answer changes')."""
+    engine, r, state = world
+    total = row_to_bill(get_bill_row(engine, SUB, "2026-10")).total
+    llm = scripted_llm(r, [
+        ("text", "Your October bill is 41.59 EUR and it is overdue since 15 November 2026, please pay it soon."),
+        ("tools", [("get_bill", {"cycle": "2026-10"})]),
+        ("text", f"Your October bill is {total / 100:.2f} EUR."),
+    ])
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
+    events = collect(run_stream("what do I owe?", ctx, llm, engine, history=[{"q": "dues?", "a": "41.59 EUR"}]))
+    streamed = "".join(e["text"] for e in events if e["type"] == "token")
+    assert "41.59" not in streamed and events[-1]["status"] == "REPAIRED"
+    assert f"{total / 100:.2f} EUR" in events[-1]["answer"]

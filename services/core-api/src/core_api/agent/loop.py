@@ -24,42 +24,45 @@ import structlog
 from sqlalchemy import insert
 
 from ..db import agent_traces
-from .agent import _CITE, numbers_in, verify
+from .agent import _CITE, _NUM, _norm, numbers_in
 from .broker import Broker
 from .llm import LLM, BudgetExceeded
 from .tools import TOOLS, ToolContext, declarations
 
 log = structlog.get_logger("agent.loop")
 MAX_TURNS, MAX_TOOL_CALLS = 6, 10
-PROMPT_VERSION = "assistant-tools-v2"
+PROMPT_VERSION = "assistant-tools-v3"
 
-SYSTEM = """You are the billing assistant of a mobile operator. Answer the customer's question about their
-bills, usage, plan, roaming and payments.
+SYSTEM = """You are the customer care assistant of a mobile operator, talking to one of its customers about
+their bills, usage, plan, roaming and payments. Talk like a friendly, competent person at a service desk: warm,
+calm, respectful and clear. Never sound like a system, a report or a developer.
 
-HOW TO WORK
-- Use the tools to fetch facts; never answer from memory. Call several tools if the question needs them.
-- Earlier messages in this chat are context only, not sources: look up again with the tools any fact you
-  state in this answer, even if you mentioned it before.
-- Never ask the customer for permission to look something up, and never say you don't have their details:
-  fetch them with the tools.
-- Every tool result has a "source_label" like S1. After each factual sentence cite the labels it uses, e.g. "... [S2]".
-- Use only numbers that appear in the tool results you cite; keep amounts exactly as written. Don't calculate
-  new numbers (days, differences, totals) unless a tool returned them (e.g. days_overdue).
-- If the tools don't have the answer, say what is missing.
-- If the customer wants more data, first check their current usage (get_current_usage), then you may prepare an
-  add-on with propose_addon; if they want a different tariff, compare fees and data first, then propose_plan_change.
-  Then tell them to approve it below. Never say it is bought, changed or active: it only happens after approval.
-  Add-ons and tariff changes are charged on the next bill (no payment now).
-- If the customer wants to pay, or a bill is overdue, or a purchase was refused because a bill is overdue, prepare
-  the payment with propose_payment and tell them to pay in the secure checkout below. Never say it is paid.
-- For greetings or small talk, reply briefly and offer what you can help with (bills, usage, plan, payments). No tools needed.
+GETTING THE FACTS RIGHT
+- Look facts up with the tools; never answer from memory. Earlier messages in this chat are context only:
+  if you state a fact again, fetch it again in this turn.
+- Use only figures the tools returned, written as they were returned. Don't work out new numbers (days,
+  differences, totals); the tools already give things like days_overdue and outstanding.
+- If something isn't in the tools, say so simply ("I don't have information on that") and offer what you can do.
+  Never describe fees, penalties, reminders, restrictions, deadlines or processes the tools didn't return
+  (e.g. what happens if a bill isn't paid): say you don't have those details and offer our care team.
+- Never ask for permission to look something up, and never say you don't have the customer's details.
+- If they want more data or a different plan, check their usage first, then prepare it (propose_addon /
+  propose_plan_change) and tell them to approve it below. It only happens after they approve; it's charged on
+  the next bill.
+- If they want to pay, or a bill is overdue and paying is the next step, prepare it with propose_payment and
+  tell them they can pay in the secure checkout below. Never say something is paid, bought or changed.
 
-STYLE
-- Lead with the direct answer in one sentence, then the reasons.
-- Use short paragraphs or a bullet list ("- ") for several items. At most 120 words.
-- Write like a person, not a database: dates in words ("15 November 2026"), "unpaid" / "nothing paid yet"
-  rather than "0.00 EUR paid", and never copy field names (due_date, payment_status, days_overdue).
-- Never mention tools, sources, labels, systems or that you are an AI (except the [S#] citations)."""
+HOW TO TALK
+- Answer exactly what was asked, first, in plain words. Usually 2 to 4 short sentences; a short list only when
+  they asked about several things. Don't repeat details you already gave earlier in the chat unless asked.
+- Everyday language: "your October bill of 41.59 EUR is unpaid", "was due on 15 November", "a payment that
+  didn't go through". Never use internal words: status codes (ISSUED, CREATED, EXPIRED), field names, CDRs,
+  "records system", "backend", "running totals", "tool", "source", or that you are an AI.
+- Be human when it matters. If someone is worried, struggling to pay or annoyed, acknowledge it first ("I
+  understand, bills can be stressful"), stay kind and never lecture. Explain their options honestly (paying
+  now, a cheaper plan for the future, an add-on, or talking to our care team), and what happens next, gently.
+- For greetings or small talk, reply briefly and offer help. End with at most one helpful next step or
+  question, only when it's useful."""
 
 STEP_LABELS = {
     "list_bills": "Looking up your bills", "get_bill": "Reading your {cycle} bill", "compare_bills": "Comparing {cycle} with the previous month",
@@ -81,6 +84,50 @@ def _label(tool: str, args: dict) -> str:
 
 
 SESSION_TURNS, SESSION_TTL_S = 6, 24 * 3600
+_HAS_FIGURE = re.compile(r"\d[\d.,]*\d")   # 2+ digit figure (amounts, dates, MB)
+HOLD_CHARS = 80   # ~a sentence: preambles before tool calls are shorter; an answer is visible within ~0.3 s
+def check_numbers(answer: str, labels: dict[str, str]) -> list[str]:
+    """Every figure in the answer must appear in a tool result of THIS turn (earlier answers are not
+    sources). The model doesn't have to place citation markers: attach_sources does that afterwards, so a
+    correct answer is never rewritten just for a missing marker."""
+    body = _CITE.sub("", answer)
+    supported = set().union(*(numbers_in(t) for t in labels.values())) if labels else set()
+    bad = list(dict.fromkeys(t.strip() for t in _NUM.findall(body) if len(_norm(t)) > 1 and _norm(t) not in supported))
+    if bad and not labels:
+        return ["you stated figures without looking them up in this turn: fetch them with the tools"]
+    return [f"the figure {t} is not in what the tools returned" for t in bad]
+
+
+def attach_sources(answer: str, labels: dict[str, str]) -> str:
+    """Citation markers placed by code: after each sentence with figures, the sources that contain them."""
+    if not labels:
+        return _CITE.sub("", answer)
+    nums = {lab: numbers_in(t) for lab, t in labels.items()}
+    order = sorted(labels, key=lambda x: int(x[1:]))
+
+    def cite(sentence: str) -> str:
+        found: list[str] = []
+        for tok in _NUM.findall(sentence):
+            n = _norm(tok)
+            if len(n) < 2:
+                continue
+            lab = next((x for x in order if n in nums[x]), None)
+            if lab and lab not in found:
+                found.append(lab)
+        if not found:
+            return sentence
+        tail = re.search(r"[.!?:]?\s*$", sentence)
+        cut = tail.start() if tail else len(sentence)
+        return sentence[:cut] + " " + "".join(f"[{x}]" for x in found) + sentence[cut:]
+
+    lines = []
+    for line in _CITE.sub("", answer).split("\n"):
+        parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9*\"(])", line)
+        lines.append(" ".join(cite(p) for p in parts))
+    return re.sub(r"[ \t]+\[", " [", "\n".join(lines))
+
+
+PAYMENT_WORDS = re.compile(r"\b(pay|payment|checkout)\b", re.IGNORECASE)
 # "...in the secure checkout below" / "approve it below" (not "you'll pay 10 EUR, below last month")
 POINTS_BELOW = re.compile(r"\b(checkout|approve|approval|card)\b[^.\n]{0,60}\bbelow\b|\bbelow\b[^.\n]{0,30}\b(checkout|card)\b", re.IGNORECASE)
 
@@ -123,14 +170,27 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
         for turn in range(MAX_TURNS):
             allow_tools = turn < MAX_TURNS - 1 and st["calls"] < MAX_TOOL_CALLS
             streamed = False
-            res = None
+            held = ""   # a turn's opening text is held back until it is clearly the answer, so a preamble
+            res = None  # before a tool call ("Let me check your bills...") is never shown and then taken back
             async for kind, val in llm.astream("agent" if stream_tokens else "repair", messages, tools if allow_tools else None):
                 if kind == "token":
-                    if stream_tokens:
-                        streamed = True
+                    if not stream_tokens:
+                        continue
+                    if streamed:
                         yield {"type": "token", "text": val}
+                    else:
+                        held += val
+                        # Until something was looked up in this turn, the whole reply is held: any figures in it would
+                        # come from memory or earlier answers and be checked, rejected and visibly replaced. A reply
+                        # without figures (greeting, clarifying question) is released at the end of the turn.
+                        if len(held) >= HOLD_CHARS and st["calls"] > 0:
+                            streamed = True
+                            yield {"type": "token", "text": held}
                 else:
                     res = val
+            if stream_tokens and not streamed and held and not res.tool_calls and not (st["calls"] == 0 and _HAS_FIGURE.search(held)):
+                streamed = True
+                yield {"type": "token", "text": held}   # a short final answer: release it at once
             trace["stages"].append(res.as_trace())
             if res.tool_calls:
                 if streamed:
@@ -170,14 +230,25 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
         async for ev in tool_loop(stream_tokens=True):
             yield ev
         answer = st["answer"]
-        first_had_numbers = bool(numbers_in(_CITE.sub("", answer)))
+        first_had_numbers = any(len(_norm(t)) > 1 for t in _NUM.findall(_CITE.sub("", answer)))
 
         for attempt in range(3):
-            problems = verify(answer, dict(broker.sources)) if answer else ["empty answer"]
-            if not problems and attempt > 0 and first_had_numbers and not _CITE.search(answer):
+            problems = check_numbers(answer, dict(broker.sources)) if answer else ["empty answer"]
+            if (not problems and attempt > 0 and first_had_numbers
+                    and not any(len(_norm(t)) > 1 for t in _NUM.findall(answer))):
                 # a "repair" that verifies only because it dropped every fact (e.g. "I don't have your
                 # details") is not an answer to the customer's question
                 problems = ["the rewrite dropped the facts the customer asked for; look them up with the tools and state them with citations"]
+            if not st["proposed"] and POINTS_BELOW.search(answer) and PAYMENT_WORDS.search(answer):
+                # the answer sends the customer to the payment checkout: prepare it in code, no extra LLM round
+                out = await asyncio.to_thread(broker.request, "propose_payment", '{"purpose": "bill"}', ctx)
+                r_ = out.result
+                if out.decision == "PROPOSE" and r_.get("proposal"):
+                    st["proposed"] = True
+                    st["calls"] += 1
+                    yield {"type": "proposal", "kind": "PAYMENT", "purpose": r_["purpose"], "bill_id": r_["bill_id"],
+                           "cycle": r_["cycle"], "price": r_["amount"], "overdue": r_.get("overdue", False),
+                           "order_id": f"pay:{r_['purpose']}:{r_['cycle']}", "add_on": "", "extra_data": ""}
             if not st["proposed"] and POINTS_BELOW.search(answer):
                 # the answer sends the customer to a checkout/approval card that was never prepared
                 problems.append("you told the customer to pay or approve below, but nothing was prepared: call "
@@ -191,13 +262,16 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
             yield {"type": "repairing", "problems": problems[:4]}
             messages += [{"role": "assistant", "content": answer},
                          {"role": "user", "content": "Problems: " + "; ".join(problems[:6]) +
-                          ". Answer the customer's question again. Look up every fact you state with the tools now (earlier"
-                          " answers in this chat are not sources), use only numbers from those tool results and cite each"
-                          " with its [S#]. Don't ask the customer anything and don't say you lack their details."}]
+                          ". Answer the customer's question again in the same warm, plain style. Look up every fact you"
+                          " state with the tools now (earlier answers in this chat are not sources) and use only figures"
+                          " from those tool results. Change only what is wrong. Don't ask the customer for permission and"
+                          " don't say you lack their details."}]
             async for ev in tool_loop(stream_tokens=False):  # the repair may call tools (steps are shown)
                 if ev["type"] != "token":
                     yield ev
             answer = st["answer"]
+        if status in ("VERIFIED", "REPAIRED"):
+            answer = attach_sources(answer, dict(broker.sources))
         if trace["attempts"] and len(trace["attempts"]) > 1:
             yield {"type": "replace", "text": answer}  # one replacement with the checked answer
     except BudgetExceeded as e:

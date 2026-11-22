@@ -159,9 +159,15 @@ def t_payments(args: dict, ctx: ToolContext) -> dict:
     with ctx.engine.connect() as cx:
         rows = cx.execute(select(payments).where(payments.c.subscriber_id == ctx.subscriber_id)
                           .order_by(payments.c.created_at.desc()).limit(10)).all()
+    # Only what a customer would recognise as a payment: completed, declined or awaiting the bank. A checkout
+    # that was opened and closed without paying (CREATED / EXPIRED) is not a payment and is left out.
+    words = {"PAID": "paid", "FAILED": "declined, nothing was charged", "PENDING": "waiting for the bank to confirm"}
+    shown = [r for r in rows if r.status in words]
     return {"source": "adb:payments", "payments": [
-        {"date": r.created_at.date().isoformat(), "purpose": r.purpose.lower(), "amount": fmt_money(r.amount, r.currency),
-         "status": r.status, "bill": r.bill_id.split(":")[1] if r.bill_id else None} for r in rows]}
+        {"date": f"{r.created_at.day} {r.created_at:%B %Y}", "for": (f"{_month(r.bill_id.split(':')[1])} bill" if r.bill_id
+                                                                        else "usage paid in advance"),
+         "amount": fmt_money(r.amount, r.currency), "result": words[r.status]} for r in shown],
+        **({} if shown else {"note": "No payments made yet."})}
 
 
 def t_alerts(args: dict, ctx: ToolContext) -> dict:

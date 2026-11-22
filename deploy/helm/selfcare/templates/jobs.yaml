@@ -105,3 +105,26 @@ spec:
           resources: { requests: { cpu: 20m, memory: 64Mi }, limits: { memory: 256Mi } }
           {{- include "selfcare.containerSecurity" . | nindent 10 }}
 {{- end }}
+---
+# Prompt management: publish the reviewed repo prompts to Langfuse as the "production" version when their
+# text changed. Without this, prod kept serving an old Langfuse version and prompt changes in code never
+# reached customers. Never fails a deploy (no keys / Langfuse down -> logged, current version stays).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: prompt-seed
+  annotations: { "helm.sh/hook": post-install,post-upgrade, "helm.sh/hook-weight": "5", "helm.sh/hook-delete-policy": before-hook-creation }
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 120
+  template:
+    spec:
+      restartPolicy: Never
+      {{- include "selfcare.podSecurity" . | nindent 6 }}
+      containers:
+        - name: prompt-seed
+          image: {{ include "selfcare.image" (dict "root" . "name" "core-api") }}
+          command: ["prompt-seed"]
+          env: {{- include "selfcare.env" . | nindent 12 }}
+          resources: { requests: { cpu: 25m, memory: 192Mi }, limits: { memory: 384Mi } }
+          {{- include "selfcare.containerSecurity" . | nindent 10 }}

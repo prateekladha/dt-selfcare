@@ -74,6 +74,11 @@ flowchart LR
   - A rewrite that verifies only because it dropped every fact is rejected.
   - Earlier chat answers are context, not sources. The prompt says so, and only answers that passed verification are fed back as history.
   - Day counts (`days_overdue`, `days_until_due`) come from the tools, so the model never does date maths, which the verifier would rightly reject.
+- **Citations are attached by code, not demanded from the model.** Every figure must appear in a tool result of this turn, and `attach_sources` adds the `[S#]` markers afterwards. Before this, 7 of 8 answers in one conversation were rewritten only because the model left out a marker, and the customer saw the answer change after the "double-check".
+- **No flicker:** a turn's opening text is held back until it is clearly the answer, so a preamble before a tool call is never shown and then reset. Until something has been looked up in this turn, the whole reply is held; any figures in it would come from memory and be replaced.
+- **Payment card by code:** if an answer sends the customer to the checkout and no payment was prepared, code calls `propose_payment`, with no extra model round.
+- **Tone:** the prompt asks for a warm, plain-language care agent, with no status codes, field names or internal terms, and no invented policy (fees, restrictions). Payments tool output is customer-level: paid, declined or awaiting the bank; abandoned checkouts are left out.
+- **Prompts reach prod:** the prompt is served from Langfuse ("production" label). A post-upgrade Helm hook (`prompt-seed`) publishes the repo prompt as a new version whenever its text changed. Before this, prod kept serving an old version and prompt changes in code never applied.
 - **If it still can't be verified,** the answer says so (`UNVERIFIED`). It never substitutes canned text. The deterministic breakdown and CDR evidence on the page are always exact.
 
 ## L3: prompt caching
