@@ -194,6 +194,16 @@ def test_payment_is_idempotent_and_settles_once_from_both_paths(env):
         assert len(cx.execute(select(outbox)).all()) == 1  # exactly one PAYMENT_SUCCEEDED event
 
 
+def test_second_tab_gets_the_open_order_so_a_bill_cant_be_paid_twice(env):
+    client, engine, state, gw = env
+    issue(engine, state, "2026-10")
+    h = login(client)
+    body = {"purpose": "BILL", "bill_id": f"{SUB}:2026-10"}
+    a = client.post("/v1/me/payments", json=body, headers=h | {"Idempotency-Key": "tab-a-0000001"}).json()
+    b = client.post("/v1/me/payments", json=body, headers=h | {"Idempotency-Key": "tab-b-0000001"}).json()
+    assert a["order_id"] == b["order_id"] and gw.orders == 1
+
+
 def test_webhook_rejects_bad_signature(env):
     client, *_ = env
     assert client.post("/v1/webhooks/razorpay", content=b"{}", headers={"X-Razorpay-Signature": "bad"}).status_code == 401

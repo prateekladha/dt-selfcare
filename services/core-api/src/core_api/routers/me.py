@@ -7,8 +7,9 @@ Responses carry `Cache-Control: private, no-store`: personalised data is never c
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from sqlalchemy import select, update
 from telco_common.billing import Bill, data_usage_pct
 from telco_common.catalog import COUNTRIES, get_plan
@@ -21,6 +22,10 @@ from ..deps import get_usage_state, get_valkey
 from ..security import Principal, current_principal
 from ..services.bills import get_bill_row, list_bills, previous_cycle, row_to_bill, unbilled
 from ..services.pdf import render_bill_pdf
+
+# a cycle in a path is a month, or the aliases current/latest: anything else is rejected before any work
+# (an arbitrary string would miss every cache and, for evidence, force a full archive re-scan)
+CYCLE = Path(pattern=r"^(\d{4}-(0[1-9]|1[0-2])|current|latest)$")
 
 router = APIRouter(prefix="/v1/me", tags=["me"])
 NO_STORE = {"Cache-Control": "private, no-store"}
@@ -98,7 +103,7 @@ def _load(p: Principal, cycle: str) -> tuple:
 
 
 @router.get("/bills/{cycle}")
-def bill_detail(cycle: str, response: Response, p: Principal = Depends(current_principal)) -> dict:
+def bill_detail(cycle: Annotated[str, CYCLE], response: Response, p: Principal = Depends(current_principal)) -> dict:
     response.headers.update(NO_STORE)
     row, bill = _load(p, cycle)
     return _bill_summary(row) | {"lines": [x.model_dump() for x in bill.lines], "usage": bill.usage.model_dump(),
@@ -106,7 +111,7 @@ def bill_detail(cycle: str, response: Response, p: Principal = Depends(current_p
 
 
 @router.get("/bills/{cycle}/pdf")
-def bill_pdf(cycle: str, p: Principal = Depends(current_principal)) -> Response:
+def bill_pdf(cycle: Annotated[str, CYCLE], p: Principal = Depends(current_principal)) -> Response:
     from ..db import bill_payments, payments
     from ..services.pdf import InvoiceContext, PaymentEntry
 
@@ -131,7 +136,7 @@ def bill_pdf(cycle: str, p: Principal = Depends(current_principal)) -> Response:
 
 
 @router.get("/bills/{cycle}/explanation")
-def bill_explanation(cycle: str, response: Response, lang: str = Query("en", pattern="^(en|de|pl)$"),
+def bill_explanation(cycle: Annotated[str, CYCLE], response: Response, lang: str = Query("en", pattern="^(en|de|pl)$"),
                      ai: bool = Query(True, description="false = deterministic facts only (fast path for SSR)"),
                      p: Principal = Depends(current_principal)) -> dict:
     response.headers.update(NO_STORE)
@@ -173,11 +178,15 @@ def bill_explanation(cycle: str, response: Response, lang: str = Query("en", pat
 
 
 @router.get("/bills/{cycle}/evidence")
-def bill_evidence(cycle: str, response: Response, p: Principal = Depends(current_principal)) -> dict:
+def bill_evidence(cycle: Annotated[str, CYCLE], response: Response, p: Principal = Depends(current_principal)) -> dict:
     """Raw-CDR evidence for a bill: re-summed from the archive and reconciled with Valkey + the bill."""
     from ..services.evidence import cdr_evidence
 
     response.headers.update(NO_STORE)
+    from ..deps import RateLimiter, get_valkey
+
+    if not RateLimiter(get_valkey()).allow(f"evidence:{p.subscriber_id}", 30, 3600):  # each cold scan reads the archive
+        raise HTTPException(429, "You've checked your records many times this hour. Please try again later.")
     real_cycle = cycle_of(datetime.now(UTC)) if cycle == "current" else cycle
     ev = cdr_evidence(get_usage_state(), p.subscriber_id, real_cycle)
     row = None if cycle == "current" else get_bill_row(get_engine(), p.subscriber_id, cycle)
