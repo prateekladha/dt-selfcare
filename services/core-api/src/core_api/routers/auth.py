@@ -19,10 +19,15 @@ ACCOUNT_ATTEMPTS, IP_FAILURES, WINDOW_S = 10, 20, 900
 
 def client_net(raw: str | None) -> str | None:
     """The caller's address as the web BFF saw it (X-Client-IP, from the ingress' X-Real-Ip).
-    IPv6 is keyed by /64: one customer line gets a whole /64, so a single address is no limit."""
+    IPv6 is keyed by /64: one customer line gets a whole /64, so a single address is no limit.
+    A private/internal address is NOT a client: it means a proxy in front of the ingress (e.g. the
+    OCI load balancer) hid the real address, and keying on it would put every visitor in one bucket,
+    so 20 failures by anyone would lock everyone out. Then only the per-account limit applies."""
     try:
         ip = ipaddress.ip_address((raw or "").strip())
     except ValueError:
+        return None
+    if not ip.is_global:
         return None
     return str(ipaddress.ip_network(f"{ip}/64", strict=False)) if ip.version == 6 else str(ip)
 
