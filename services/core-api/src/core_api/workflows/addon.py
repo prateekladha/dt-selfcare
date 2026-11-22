@@ -20,6 +20,7 @@ from datetime import timedelta
 
 from temporalio import activity, workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError
 
 with workflow.unsafe.imports_passed_through():
     import os
@@ -39,6 +40,10 @@ def legacy_queue(country: str) -> str:
 RETRY = RetryPolicy(initial_interval=timedelta(seconds=2), backoff_coefficient=2.0,
                     maximum_interval=timedelta(minutes=1), maximum_attempts=8)
 # submitting to a legacy system that may be at capacity on bill day: keep backing off for hours
+# After the network CONFIRMED an order, applying it must eventually happen: retry without an attempt cap
+# (a capped retry used to fail the workflow and leave the order SUBMITTED forever, confirmed but never applied).
+APPLY_RETRY = RetryPolicy(initial_interval=timedelta(seconds=2), backoff_coefficient=2.0,
+                          maximum_interval=timedelta(minutes=2), maximum_attempts=0)
 SUBMIT_RETRY = RetryPolicy(initial_interval=timedelta(seconds=2), backoff_coefficient=2.0,
                            maximum_interval=timedelta(minutes=5), non_retryable_error_types=["UnsupportedMarket"])
 
@@ -187,37 +192,56 @@ class _LegacyOrder:
     def __init__(self) -> None:
         self.bss_result: str | None = None
         self.stage = "starting"
+        self.failure: str | None = None
 
     async def _submit_and_wait(self, order_id: str) -> tuple[dict, str | None]:
+        """-> (order info, CONFIRMED | REJECTED | None). Never raises for an activity that ran out of retries:
+        before the network confirmed, such a failure ends the order as FAILED (not charged) instead of leaving
+        it APPROVED/SUBMITTED forever with no notification."""
         opts = {"start_to_close_timeout": timedelta(seconds=30), "retry_policy": RETRY}
         self.stage = "validating"
-        info = await workflow.execute_activity(validate_order, order_id, **opts)
-        legacy = legacy_queue(info.get("country", "DE"))
-        self.stage = "in line for the network system"   # waits in the country's rate-limited task queue
-        bss_id = await workflow.execute_activity(submit_to_bss, order_id, task_queue=legacy,
-                                                 start_to_close_timeout=timedelta(seconds=30),
-                                                 schedule_to_close_timeout=timedelta(hours=12), retry_policy=SUBMIT_RETRY)
+        try:
+            info = await workflow.execute_activity(validate_order, order_id, **opts)
+            legacy = legacy_queue(info.get("country", "DE"))
+            self.stage = "in line for the network system"   # waits in the country's rate-limited task queue
+            bss_id = await workflow.execute_activity(submit_to_bss, order_id, task_queue=legacy,
+                                                     start_to_close_timeout=timedelta(seconds=30),
+                                                     schedule_to_close_timeout=timedelta(hours=12), retry_policy=SUBMIT_RETRY)
+        except ActivityError:
+            self.failure = "not_submitted"
+            return {}, None
         self.stage = "waiting for network system"
         deadline = workflow.now() + timedelta(minutes=30)
+
+        async def ask() -> None:   # event lost / late? ask the adapter; an adapter outage just means "ask again"
+            try:
+                state = await workflow.execute_activity(bss_status, bss_id, task_queue=legacy, **opts)
+            except ActivityError:
+                return
+            if state in TMF_TO_RESULT and self.bss_result is None:
+                self.bss_result = TMF_TO_RESULT[state]
+
         while self.bss_result is None and workflow.now() < deadline:
             try:  # durable wait for the bss-events signal; a worker restart resumes this timer from history
                 await workflow.wait_condition(lambda: self.bss_result is not None, timeout=timedelta(seconds=45))
             except TimeoutError:
-                state = await workflow.execute_activity(bss_status, bss_id, task_queue=legacy, **opts)  # event lost? ask
-                if state in TMF_TO_RESULT:
-                    self.bss_result = TMF_TO_RESULT[state]
+                await ask()
+        if self.bss_result is None:
+            await ask()   # one last check before giving up, so a just-confirmed order isn't reported as failed
         return info, self.bss_result
 
     async def _finish(self, order_id: str, ok: bool, done_text: str) -> str:
-        opts = {"start_to_close_timeout": timedelta(seconds=30), "retry_policy": RETRY}
         if ok:
             self.stage = "completed"
-            await workflow.execute_activity(finish_order, args=[order_id, "COMPLETED", done_text], **opts)
+            await workflow.execute_activity(finish_order, args=[order_id, "COMPLETED", done_text],
+                                            start_to_close_timeout=timedelta(seconds=30), retry_policy=APPLY_RETRY)
             return "COMPLETED"
         self.stage = "compensating"  # rejected or timed out: nothing was applied
-        reason = "The network system rejected the order." if self.bss_result == "REJECTED" else \
-            "The network system didn't confirm in time. You have not been charged."
-        await workflow.execute_activity(finish_order, args=[order_id, "FAILED", reason], **opts)
+        reason = ("The network system rejected the order. You have not been charged." if self.bss_result == "REJECTED"
+                  else "We couldn't process the order right now. You have not been charged; please try again later."
+                  if self.failure else "The network system didn't confirm in time. You have not been charged.")
+        await workflow.execute_activity(finish_order, args=[order_id, "FAILED", reason],
+                                        start_to_close_timeout=timedelta(seconds=30), retry_policy=APPLY_RETRY)
         return "FAILED"
 
 
@@ -225,7 +249,8 @@ class _LegacyOrder:
 class AddonPurchaseWorkflow(_LegacyOrder):
     @workflow.signal
     def bss_callback(self, result: str) -> None:
-        self.bss_result = result
+        if self.bss_result is None:   # first result wins: a later, conflicting callback can't flip the outcome
+            self.bss_result = result
 
     @workflow.query
     def progress(self) -> dict:
@@ -237,7 +262,7 @@ class AddonPurchaseWorkflow(_LegacyOrder):
         if result == "CONFIRMED":
             self.stage = "applying"
             await workflow.execute_activity(apply_addon, args=[order_id, info["subscriber_id"], info["addon_code"]],
-                                            start_to_close_timeout=timedelta(seconds=30), retry_policy=RETRY)
+                                            start_to_close_timeout=timedelta(seconds=30), retry_policy=APPLY_RETRY)
         return await self._finish(order_id, result == "CONFIRMED",
                                   "The add-on is active: your data allowance for this cycle has grown.")
 
@@ -246,7 +271,8 @@ class AddonPurchaseWorkflow(_LegacyOrder):
 class PlanChangeWorkflow(_LegacyOrder):
     @workflow.signal
     def bss_callback(self, result: str) -> None:
-        self.bss_result = result
+        if self.bss_result is None:   # first result wins: a later, conflicting callback can't flip the outcome
+            self.bss_result = result
 
     @workflow.query
     def progress(self) -> dict:
@@ -258,7 +284,7 @@ class PlanChangeWorkflow(_LegacyOrder):
         if result == "CONFIRMED":
             self.stage = "switching tariff"
             await workflow.execute_activity(apply_plan, args=[order_id, info["subscriber_id"], info["addon_code"]],
-                                            start_to_close_timeout=timedelta(seconds=30), retry_policy=RETRY)
+                                            start_to_close_timeout=timedelta(seconds=30), retry_policy=APPLY_RETRY)
         return await self._finish(order_id, result == "CONFIRMED",
                                   "Your new tariff is active from today. This month is pro-rated by day: old tariff until yesterday, new from today.")
 

@@ -90,12 +90,16 @@ async def approve(order_id: str, p: Principal = Depends(current_principal)) -> d
         _credit_check(get_engine(), p.subscriber_id)
     except OrderError as e:
         raise HTTPException(e.status, e.message) from e
+    previous = row.status
     set_status(get_engine(), order_id, "APPROVED", "Approved: processing")
     try:
         wf = PlanChangeWorkflow.run if row.kind == "PLAN" else AddonPurchaseWorkflow.run
         await (await temporal()).start_workflow(wf, order_id, id=order_id, task_queue=TASK_QUEUE)
     except WorkflowAlreadyStartedError:
         pass
+    except Exception as e:  # workflow service unavailable: undo, so the order isn't "processing" forever
+        set_status(get_engine(), order_id, previous, "Not processed yet: please approve again in a moment")
+        raise HTTPException(503, "We couldn't start your order right now. Nothing was charged; please try again.") from e
     return public(get(get_engine(), p.subscriber_id, order_id))
 
 
