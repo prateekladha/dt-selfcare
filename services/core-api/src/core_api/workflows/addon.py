@@ -96,14 +96,15 @@ async def submit_to_bss(order_id: str) -> str:
     r = await adapter_client().request("POST", BASE, json=body)
     if r.status_code == 429:  # legacy at capacity: Temporal backs off and retries
         if activity.info().attempt == 1:  # tell the customer once (their card shows it; emits an order event)
-            set_status(engine, order_id, "APPROVED", QUEUED_TEXT)
+            set_status(engine, order_id, "APPROVED", QUEUED_TEXT, expect=("APPROVED",))   # never regress a later state
         raise ApplicationError("legacy order system at capacity", type="AtCapacity",
                                next_retry_delay=timedelta(seconds=int(r.headers.get("Retry-After", "1")) + 1))
     if r.status_code == 422:
         raise ApplicationError(r.text[:200], type="UnsupportedMarket", non_retryable=True)
     r.raise_for_status()
     bid = r.json()["id"]
-    set_status(engine, order_id, "SUBMITTED", "Waiting for the network system to confirm", bss_order_id=bid)
+    set_status(engine, order_id, "SUBMITTED", "Waiting for the network system to confirm", bss_order_id=bid,
+               expect=("APPROVED", "SUBMITTED"))
     return bid
 
 
@@ -177,7 +178,8 @@ async def finish_order(order_id: str, status: str, detail: str) -> None:
     from ..db import get_engine
     from .orders import set_status
 
-    set_status(get_engine(), order_id, status, detail)
+    # terminal once: a retried finish can't emit a second event, a late write can't undo it
+    set_status(get_engine(), order_id, status, detail, expect=("APPROVED", "SUBMITTED"))
 
 
 ACTIVITIES = [validate_order, apply_addon, apply_plan, finish_order]      # task queue "orders"

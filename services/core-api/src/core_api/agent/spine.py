@@ -15,12 +15,13 @@ from __future__ import annotations
 import array
 import hashlib
 import json
+from calendar import monthrange
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, insert, select, text, update
 from sqlalchemy.engine import Engine
-from telco_common.billing import data_usage_pct, rate
+from telco_common.billing import data_usage_pct
 from telco_common.catalog import ADDONS, COUNTRIES, PLANS, ROAM_LIKE_AT_HOME_ZONE, get_plan
 from telco_common.explainer import explain, fmt_money
 from telco_common.models import cycle_of
@@ -28,7 +29,7 @@ from telco_common.partitioning import partition_for
 from telco_common.usage_state import UsageState
 
 from ..db import context_docs, notifications, payments, subscribers
-from ..services.bills import list_bills, row_to_bill
+from ..services.bills import list_bills, row_to_bill, unbilled
 from .embed import Embedder
 
 
@@ -125,9 +126,12 @@ def subscriber_docs(engine: Engine, state: UsageState, sub_id: str, now: datetim
         roam = ", ".join(f"zone {z} {mb:,} MB" for z, mb in u.roaming_data_mb.items()) or "none"
         docs.append(Doc(f"{sub_id}:bill:{b.cycle}", sub_id, "bill", b.cycle, f"Bill for {_month(b.cycle)}",
                         f"The {_month(b.cycle)} bill totals {_money(b.total, cur)} including {int(float(b.vat_rate) * 100)}% "
-                        f"VAT ({_money(b.vat, cur)}); net {_money(b.subtotal, cur)}. Status {row.status}, paid "
-                        f"{_money(row.amount_paid, cur)}, due {row.due_date.date().isoformat()}. Lines: {lines}. Usage "
-                        f"from CDRs: {u.data_mb:,} MB of {u.data_allowance_mb:,} MB data, {u.voice_min:,} min calls, "
+                        f"VAT ({_money(b.vat, cur)}); net {_money(b.subtotal, cur)}. "
+                        + ("Paid in full. " if row.amount_paid >= row.total else
+                           f"Unpaid: {_money(row.total - row.amount_paid, cur)} outstanding"
+                           + (f" ({_money(row.amount_paid, cur)} paid so far)" if row.amount_paid else "") + ". ")
+                        + f"Due date {_day(row.due_date)}. Lines: {lines}. Usage from the network usage records: "
+                        f"{u.data_mb:,} MB of {u.data_allowance_mb:,} MB data, {u.voice_min:,} min calls, "
                         f"{u.sms:,} SMS, {u.intl_voice_min:,} min international, roaming data outside the EU: {roam}, "
                         f"EU roaming {u.eu_roaming_data_mb:,} MB.", f"adb:bills:{row.id}"))
         ex = explain(b, prev)
@@ -139,13 +143,16 @@ def subscriber_docs(engine: Engine, state: UsageState, sub_id: str, now: datetim
 
     cycle = cycle_of(now)
     counters = state.counters(sub_id, cycle)
-    live = rate(sub_id, cycle, plan, counters)
+    # the same rating path as the home screen and the bill run (tariff changes, mid-month join)
+    live = unbilled(state, sub_id, sub.plan_code, now, engine)
     lu = live.usage
     offset = state.committed_offset(partition_for(sub_id, state.partitions))
     day = now.day
-    proj = int(lu.data_mb / max(day, 1) * 30)
+    proj = int(lu.data_mb / max(day, 1) * monthrange(now.year, now.month)[1])
+    # no clock time in the text: the content hash must change only when the facts change (a per-minute timestamp
+    # re-embedded every customer on every sweep)
     docs.append(Doc(f"{sub_id}:usage:{cycle}", sub_id, "usage_live", cycle, f"Usage so far in {_month(cycle)}",
-                    f"As of {now.strftime('%d %B %Y %H:%M')} UTC (day {day} of the cycle), the CDRs received for "
+                    f"As of {_day(now)} (day {day} of the month), the usage records received for "
                     f"{_month(cycle)} add up to {lu.data_mb:,} MB of {lu.data_allowance_mb:,} MB data "
                     f"({data_usage_pct(plan, counters):.0f}%), {lu.voice_min:,} min calls, {lu.sms:,} SMS, "
                     f"{lu.intl_voice_min:,} min international, EU roaming {lu.eu_roaming_data_mb:,} MB, roaming outside "
@@ -154,18 +161,37 @@ def subscriber_docs(engine: Engine, state: UsageState, sub_id: str, now: datetim
                     f"valkey:u:{{p{partition_for(sub_id, state.partitions)}}}:{sub_id}:{cycle}@offset{offset}"))
     if notes:
         docs.append(Doc(f"{sub_id}:alerts", sub_id, "alerts", None, "Data alerts sent",
-                        " ".join(f"{n.created_at.date().isoformat()}: {n.title}. {n.body}" for n in notes),
+                        " ".join(f"{_day(n.created_at)}: {n.title}. {n.body}" for n in notes),
                         "adb:notifications"))
     if pays:
         docs.append(Doc(f"{sub_id}:payments", sub_id, "payments", None, "Payments",
-                        " ".join(f"{p.created_at.date().isoformat()}: {p.purpose.lower()} payment of "
-                                 f"{_money(p.amount, p.currency)} via {p.gateway}, status {p.status}"
-                                 + (f" (bill {p.bill_id.split(':')[1]})" if p.bill_id else "") + "." for p in pays),
+                        " ".join(f"{_day(p.created_at)}: payment of {_money(p.amount, p.currency)} for "
+                                 + (f"the {_month(p.bill_id.split(':')[1])} bill" if p.bill_id else "usage paid in advance")
+                                 + f": {PAY_WORDS[p.status]}." for p in pays if p.status in PAY_WORDS),
                         "adb:payments"))
     return docs
 
 
-def upsert(engine: Engine, embedder: Embedder, docs: list[Doc]) -> dict:
+PAY_WORDS = {"PAID": "paid", "FAILED": "declined, nothing was charged", "PENDING": "waiting for the bank to confirm"}
+
+
+def _day(d) -> str:
+    return f"{d.day} {d:%B %Y}"
+
+
+def upsert(engine: Engine, embedder: Embedder, docs: list[Doc], _retry: bool = True) -> dict:
+    """Insert or update by content hash. Two writers (assistant + notifier) inserting the same new doc at once
+    collide on the primary key: the loser retries as an update instead of failing the customer's request."""
+    from sqlalchemy.exc import IntegrityError
+    try:
+        return _upsert(engine, embedder, docs)
+    except IntegrityError:
+        if not _retry:
+            raise
+        return upsert(engine, embedder, docs, _retry=False)
+
+
+def _upsert(engine: Engine, embedder: Embedder, docs: list[Doc]) -> dict:
     with engine.connect() as cx:
         existing = dict(cx.execute(select(context_docs.c.id, context_docs.c.content_hash)
                                    .where(context_docs.c.id.in_([d.id for d in docs]))).all())
@@ -190,7 +216,13 @@ def upsert(engine: Engine, embedder: Embedder, docs: list[Doc]) -> dict:
 
 
 def refresh_subscriber(engine: Engine, state: UsageState, embedder: Embedder, sub_id: str) -> dict:
-    return upsert(engine, embedder, subscriber_docs(engine, state, sub_id))
+    docs = subscriber_docs(engine, state, sub_id)
+    res = upsert(engine, embedder, docs)
+    # docs no longer generated (last month's live usage, deleted bills/payments) must not stay searchable
+    with engine.begin() as cx:
+        gone = cx.execute(delete(context_docs).where(context_docs.c.subscriber_id == sub_id,
+                                                     context_docs.c.id.not_in([d.id for d in docs]))).rowcount
+    return res | {"removed": gone}
 
 
 def refresh_global(engine: Engine, embedder: Embedder) -> dict:

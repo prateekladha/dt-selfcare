@@ -389,3 +389,21 @@ def test_may_as_a_verb_is_not_read_as_the_may_bill():
     assert cycle_hint("may I pay in parts?", None, known) is None
     assert cycle_hint("why was my bill in May higher?", None, known) == "2026-05"
     assert cycle_hint("october roaming", None, known) == "2026-10"
+
+
+def test_spine_drops_stale_docs_and_does_not_re_embed_an_unchanged_customer(world):
+    from core_api.agent.spine import refresh_subscriber
+    from core_api.db import context_docs
+    from sqlalchemy import insert as _insert, select as _select
+    engine, _r, state = world
+    emb = HashEmbedder()
+    first = refresh_subscriber(engine, state, emb, SUB)
+    assert first["embedded"] > 0
+    with engine.begin() as cx:   # a doc that is no longer generated (e.g. an old month's live usage)
+        cx.execute(_insert(context_docs).values(id=f"{SUB}:usage:2025-01", subscriber_id=SUB, doc_type="usage_live",
+                                                cycle="2025-01", title="old", body="old", source_ref="x",
+                                                content_hash="x", embedding_json="[]"))
+    again = refresh_subscriber(engine, state, emb, SUB)
+    assert again["embedded"] == 0 and again["removed"] == 1   # nothing changed: no re-embedding; stale doc gone
+    with engine.connect() as cx:
+        assert cx.execute(_select(context_docs.c.id).where(context_docs.c.id == f"{SUB}:usage:2025-01")).first() is None

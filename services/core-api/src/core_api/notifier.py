@@ -7,6 +7,7 @@ Loop 2 - DB outbox relay: rows written in the same transaction as a payment -> `
 from __future__ import annotations
 
 import json
+import os
 import threading
 from datetime import UTC, datetime
 
@@ -84,7 +85,7 @@ def notify_alert(engine, r, alert: dict) -> None:
 
     bump(r, alert["subscriber_id"])  # home read model: rebuild on next read
     r.publish(f"notif:{alert['subscriber_id']}", json.dumps({"kind": kind, "title": title, "body": body}))
-    SPINE_DIRTY.add(alert["subscriber_id"])  # event-driven: re-embed this customer's context now
+    mark_dirty(alert["subscriber_id"])  # event-driven: re-embed this customer's context now
     NOTIFIED.labels(alert["level"]).inc()
     log.info("notified", alert_id=alert["alert_id"], kind=kind)
 
@@ -98,17 +99,35 @@ def notifications_table():
 def outbox_loop(stop: threading.Event) -> None:
     stream = StreamSettings()
     engine = get_engine()
-    p = Producer(stream.client_config() | {"acks": "all"})
+    # idempotent producer: retries can't duplicate or reorder events within a partition
+    p = Producer(stream.client_config() | {"acks": "all", "enable.idempotence": True})
     while not stop.is_set():
-        with engine.connect() as cx:
-            rows = cx.execute(select(outbox).where(outbox.c.published_at.is_(None))
-                              .order_by(outbox.c.id).limit(100)).all()
-        for row in rows:
-            p.produce(row.topic, key=row.event_key, value=row.payload.encode())  # payment-events, order-events
-        if rows and p.flush(10) == 0:
-            with engine.begin() as cx:
-                cx.execute(update(outbox).where(outbox.c.id.in_([x.id for x in rows])).values(published_at=utcnow()))
-            OUTBOX.inc(len(rows))
+        try:
+            with engine.connect() as cx:
+                rows = cx.execute(select(outbox).where(outbox.c.published_at.is_(None))
+                                  .order_by(outbox.c.id).limit(100)).all()
+            acked: list[int] = []
+
+            def delivered(err, _msg, oid: int, acked: list[int] = acked) -> None:   # only a successful delivery counts
+                if err is None:
+                    acked.append(oid)
+                else:
+                    log.warning("outbox_delivery_failed", outbox_id=oid, error=str(err)[:200])
+
+            for row in rows:
+                p.produce(row.topic, key=row.event_key, value=row.payload.encode(),   # payment-events, order-events
+                          on_delivery=lambda err, msg, oid=row.id: delivered(err, msg, oid))
+            if rows:
+                p.flush(10)
+            # flush() returning 0 doesn't mean delivered (a rejected message leaves the queue with an error): mark
+            # exactly the acked rows; the rest are retried next round
+            if acked:
+                with engine.begin() as cx:
+                    cx.execute(update(outbox).where(outbox.c.id.in_(acked)).values(published_at=utcnow()))
+                OUTBOX.inc(len(acked))
+        except Exception as e:  # noqa: BLE001 - a DB blip / full queue must not end the relay
+            log.warning("outbox_relay_failed", error=str(e)[:200])
+            stop.wait(5)
         stop.wait(2)
 
 
@@ -142,6 +161,12 @@ def billing_loop(stop: threading.Event) -> None:
 
 
 SPINE_DIRTY: set[str] = set()
+SPINE_LOCK = threading.Lock()
+
+
+def mark_dirty(sub: str) -> None:
+    with SPINE_LOCK:
+        SPINE_DIRTY.add(sub)
 
 ORDER_TEXT = {
     ("ADDON", "COMPLETED"): "Your data add-on is active", ("ADDON", "FAILED"): "Your add-on order couldn't be completed",
@@ -157,7 +182,7 @@ def project_order_event(engine, r, ev: dict) -> bool:
 
     sub = ev["subscriber_id"]
     bump(r, sub)
-    SPINE_DIRTY.add(sub)
+    mark_dirty(sub)
     title = ORDER_TEXT.get((ev.get("kind"), ev.get("status")))
     if title is None:
         return False
@@ -179,17 +204,24 @@ def orders_loop(stop: threading.Event) -> None:
     c = Consumer(stream.client_config() | {"group.id": "order-projections", "enable.auto.commit": False,
                                            "auto.offset.reset": "earliest"})
     c.subscribe(["order-events"])
+    from confluent_kafka import TopicPartition
+
     while not stop.is_set():
+        failed: set[int] = set()   # like billing: never commit past an event that wasn't projected
         for m in c.consume(num_messages=100, timeout=1.0):
-            if m.error():
+            if m.error() or m.partition() in failed:
                 continue
             try:
                 ev = json.loads(m.value())
                 if project_order_event(engine, r, ev):
                     log.info("order_notified", order=ev["order_id"][-6:], status=ev["status"])
-            except Exception as e:  # noqa: BLE001
+                c.commit(message=m, asynchronous=False)
+            except Exception as e:  # noqa: BLE001 - re-read it (projection is idempotent per order+status)
                 log.warning("order_projection_failed", error=str(e)[:200])
-        c.commit(asynchronous=True)
+                failed.add(m.partition())
+                c.seek(TopicPartition(m.topic(), m.partition(), m.offset()))
+        if failed:
+            stop.wait(2)
     c.close()
 
 
@@ -248,25 +280,33 @@ def spine_loop(stop: threading.Event) -> None:
     from .deps import get_usage_state
 
     engine, state = get_engine(), get_usage_state()
-    emb = get_embedder()
-    refresh_global(engine, emb)
+    emb = None
     last_sweep = 0.0
     import time as _t
 
     while not stop.is_set():
-        due = set(SPINE_DIRTY)
-        SPINE_DIRTY.clear()
-        if _t.monotonic() - last_sweep > 60:
-            with engine.connect() as cx:
-                due |= {r[0] for r in cx.execute(select(subscribers.c.id))}
-            last_sweep = _t.monotonic()
-        for sub in due:
-            try:
-                st = refresh_subscriber(engine, state, emb, sub)
-                if st["embedded"]:
-                    log.info("spine_refreshed", subscriber=sub[-4:], **st)
-            except Exception as e:  # noqa: BLE001
-                log.warning("spine_refresh_failed", error=str(e)[:200])
+        try:
+            if emb is None:   # model load + global docs: retried, not fatal (a DB blip at start ended the thread)
+                emb = get_embedder()
+                refresh_global(engine, emb)
+            with SPINE_LOCK:   # swap, so a mark added meanwhile isn't cleared unseen
+                due = set(SPINE_DIRTY)
+                SPINE_DIRTY.clear()
+            if _t.monotonic() - last_sweep > 60:
+                with engine.connect() as cx:
+                    due |= {r[0] for r in cx.execute(select(subscribers.c.id))}
+                last_sweep = _t.monotonic()
+            for sub in due:
+                if stop.is_set():
+                    break
+                try:
+                    st = refresh_subscriber(engine, state, emb, sub)
+                    if st["embedded"]:
+                        log.info("spine_refreshed", subscriber=sub[-4:], **st)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("spine_refresh_failed", error=str(e)[:200])
+        except Exception as e:  # noqa: BLE001
+            log.warning("spine_loop_failed", error=str(e)[:200])
         stop.wait(5)
 
 
@@ -282,5 +322,14 @@ def main() -> None:
     for t in threads:
         t.start()
     log.info("notifier_started")
+    # Supervision: the liveness probe only sees the metrics port, so a worker thread that died would never be
+    # noticed (no payment events, no order notifications). If one dies, exit and let Kubernetes restart the pod.
+    while not stop.is_set():
+        dead = [t.name for t, f in zip(threads, (alerts_loop, outbox_loop, spine_loop, billing_loop, orders_loop),
+                                       strict=True) if not t.is_alive()]
+        if dead:
+            log.error("worker_thread_died", threads=dead)
+            os._exit(1)
+        stop.wait(5)
     for t in threads:
-        t.join()
+        t.join(timeout=30)
