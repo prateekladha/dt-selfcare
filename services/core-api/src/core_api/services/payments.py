@@ -11,8 +11,9 @@ import json
 import uuid
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 
 from ..db import outbox, payments, utcnow
 from .gateway import PaymentGateway
@@ -58,27 +59,76 @@ def create_payment(engine: Engine, gw: PaymentGateway, subscriber_id: str, idem_
                                   **({"key_id": gw.key_id} if hasattr(gw, "key_id") else {})})
     if amount <= 0:
         raise PaymentError(409, "nothing to pay")
-    if bill_id:  # a second tab/device paying the same bill gets the open order, so the bill can't be paid twice
-        with engine.connect() as cx:
-            open_ = cx.execute(select(payments).where(
-                payments.c.subscriber_id == subscriber_id, payments.c.bill_id == bill_id,
-                payments.c.amount == amount, payments.c.status.in_(("CREATED", "PENDING")))
-                .order_by(payments.c.created_at.desc())).first()
-        if open_:
-            return _public(open_, {"provider": open_.gateway, "order_id": open_.gateway_order_id,
-                                   **({"key_id": gw.key_id} if hasattr(gw, "key_id") else {})})
+    # a second tab/device paying the same bill (or this month's advance) gets the open order, so it can't be
+    # paid twice
+    with engine.connect() as cx:
+        q = select(payments).where(payments.c.subscriber_id == subscriber_id, payments.c.purpose == purpose,
+                                   payments.c.amount == amount, payments.c.status.in_(("CREATED", "PENDING")))
+        q = q.where(payments.c.bill_id == bill_id) if bill_id else q.where(
+            payments.c.bill_id.is_(None), payments.c.created_at >= _month_start())
+        open_ = cx.execute(q.order_by(payments.c.created_at.desc())).first()
+    if open_:
+        return _public(open_, {"provider": open_.gateway, "order_id": open_.gateway_order_id,
+                               **({"key_id": gw.key_id} if hasattr(gw, "key_id") else {})})
     pid = str(uuid.uuid4())
     charged, charged_cur, fx = settlement(amount, currency, settle or {})
     order = gw.create_order(charged, charged_cur, receipt=pid, notes={
         "payment_id": pid, "purpose": purpose, "bill_amount": f"{amount} {currency}", **({"fx": fx} if fx else {})})
-    with engine.begin() as cx:
-        cx.execute(insert(payments).values(
-            id=pid, subscriber_id=subscriber_id, purpose=purpose, bill_id=bill_id, amount=amount,
-            currency=currency, charged_amount=charged, charged_currency=charged_cur, fx_rate=fx,
-            gateway=gw.name, gateway_order_id=order.order_id, status="CREATED",
-            idempotency_key=idem_key))
-        row = cx.execute(select(payments).where(payments.c.id == pid)).one()
+    try:
+        with engine.begin() as cx:
+            cx.execute(insert(payments).values(
+                id=pid, subscriber_id=subscriber_id, purpose=purpose, bill_id=bill_id, amount=amount,
+                currency=currency, charged_amount=charged, charged_currency=charged_cur, fx_rate=fx,
+                gateway=gw.name, gateway_order_id=order.order_id, status="CREATED",
+                idempotency_key=idem_key))
+            row = cx.execute(select(payments).where(payments.c.id == pid)).one()
+    except IntegrityError:   # the same tap arrived twice at once: the first one's order is the answer
+        with engine.connect() as cx:
+            row = cx.execute(select(payments).where(payments.c.subscriber_id == subscriber_id,
+                                                    payments.c.idempotency_key == idem_key)).one()
+        return _public(row, {"provider": row.gateway, "order_id": row.gateway_order_id,
+                             **({"key_id": gw.key_id} if hasattr(gw, "key_id") else {})})
     return _public(row, order.checkout)
+
+
+def _month_start():
+    from datetime import UTC, datetime
+    n = datetime.now(UTC)
+    return datetime(n.year, n.month, 1, tzinfo=UTC)
+
+
+def paid_not_applied(engine: Engine, bill_id: str) -> int:
+    """PAID payments for a bill that billing hasn't applied yet (in flight via payment-events)."""
+    from ..db import bill_payments
+    with engine.connect() as cx:
+        return int(cx.execute(select(func.coalesce(func.sum(payments.c.amount), 0)).where(
+            payments.c.bill_id == bill_id, payments.c.status == "PAID",
+            payments.c.id.not_in(select(bill_payments.c.payment_id)))).scalar_one())
+
+
+def advance_paid_this_month(engine: Engine, subscriber_id: str) -> int:
+    """PAID advances for the current month not yet credited to a bill."""
+    from ..db import bill_payments
+    with engine.connect() as cx:
+        return int(cx.execute(select(func.coalesce(func.sum(payments.c.amount), 0)).where(
+            payments.c.subscriber_id == subscriber_id, payments.c.purpose == "ADVANCE", payments.c.status == "PAID",
+            payments.c.created_at >= _month_start(), payments.c.id.not_in(select(bill_payments.c.payment_id)))).scalar_one())
+
+
+def apply_missing(engine: Engine, older_than_s: int = 120) -> int:
+    """Safety net for the billing consumer: PAID bill payments that never reached their bill (lost event) are
+    applied directly. Idempotent: bill_payments is keyed by payment."""
+    from datetime import UTC, datetime, timedelta
+
+    from ..db import bill_payments
+    from .billing_ledger import apply_payment_event
+    cutoff = datetime.now(UTC) - timedelta(seconds=older_than_s)
+    with engine.connect() as cx:
+        rows = cx.execute(select(payments).where(payments.c.status == "PAID", payments.c.bill_id.is_not(None),
+                                                 payments.c.updated_at < cutoff,
+                                                 payments.c.id.not_in(select(bill_payments.c.payment_id)))).all()
+    return sum(apply_payment_event(engine, {"type": "PAYMENT_SUCCEEDED", "payment_id": r.id, "bill_id": r.bill_id,
+                                            "amount": r.amount}) for r in rows)
 
 
 def mark_paid(engine: Engine, order_id: str, gateway_payment_id: str) -> tuple[bool, dict | None]:
@@ -165,12 +215,18 @@ def reconcile_order(engine: Engine, gw, order_id: str, trigger: str, now=None, e
         new_status = "EXPIRED" if st.state in ("NO_ATTEMPT", "ATTEMPTED") else "FAILED"
         next_at = None if new_status == "EXPIRED" else now + timedelta(seconds=next_delay_s(attempt, strategy, cap=6 * 3600))
     else:
-        new_status = "FAILED" if st.state == "FAILED" else ("PENDING" if st.state == "ATTEMPTED" else row.status)
+        # AUTHORIZED but the capture didn't go through yet: the money is held, so it is PENDING (not CREATED,
+        # which would later read "nothing was charged"); the reconciler keeps trying to capture it
+        new_status = ("FAILED" if st.state == "FAILED" else
+                      "PENDING" if st.state in ("ATTEMPTED", "AUTHORIZED") else row.status)
         next_at = now + timedelta(seconds=next_delay_s(attempt, strategy))
+    # The customer's page (poll) and the browser callback only refresh the status: they must not push the
+    # reconciler's next check back (15 page polls used to move it ~1 h out)
+    sched = {} if trigger in ("poll", "browser") else {"check_attempts": attempt, "next_check_at": next_at}
     with engine.begin() as cx:
         cx.execute(update(payments).where(payments.c.id == row.id, payments.c.status != "PAID").values(
-            status=new_status, gateway_status=st.order_status or st.state.lower(), check_attempts=attempt,
-            last_checked_at=now, next_check_at=next_at, updated_at=utcnow()))
+            status=new_status, gateway_status=st.order_status or st.state.lower(),
+            last_checked_at=now, updated_at=utcnow(), **sched))
         fresh = cx.execute(select(payments).where(payments.c.id == row.id)).one()
     return {"result": new_status.lower(), "payment": _public(fresh), "gateway": st.attempts,
             "next_check_at": next_at.isoformat() if next_at else None}
@@ -179,11 +235,14 @@ def reconcile_order(engine: Engine, gw, order_id: str, trigger: str, now=None, e
 def due_for_check(engine: Engine, now, limit: int = 50) -> list[str]:
     """Non-final payments whose next check is due (or never scheduled). After an outage everything
     overdue is due at once, so statuses catch up as soon as the system is back."""
+    from datetime import timedelta
+
     from sqlalchemy import or_
 
     with engine.connect() as cx:
         rows = cx.execute(select(payments.c.gateway_order_id).where(
             payments.c.status.not_in(list(FINAL)), payments.c.gateway_order_id.is_not(None),
+            payments.c.created_at > now - timedelta(days=7),   # stop polling week-old failed orders
             or_(payments.c.next_check_at.is_(None), payments.c.next_check_at <= now))
             .order_by(payments.c.created_at).limit(limit)).all()
     return [r[0] for r in rows]

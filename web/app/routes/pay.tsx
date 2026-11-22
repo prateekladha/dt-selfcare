@@ -19,10 +19,12 @@ type BillDetail = { id: string; cycle: string; total: number; subtotal: number; 
  *  then one button that opens the gateway's secure checkout. */
 export async function loader({ request, params }: Route.LoaderArgs) {
   const cycle = params.cycle;
-  if (cycle === undefined) return { bill: null };
+  if (cycle === undefined) {   // advance: only the part of this month's usage not already paid in advance
+    return { bill: null, advance: await api<{ amount: number; already_paid: number; usage_total: number }>(request, "/v1/me/payments/advance-due") };
+  }
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(cycle)) throw new Response("Not found", { status: 404 });  // never forwarded raw
   try {
-    return { bill: await api<BillDetail>(request, `/v1/me/bills/${cycle}`) };
+    return { bill: await api<BillDetail>(request, `/v1/me/bills/${cycle}`), advance: null };
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) throw new Response("Not found", { status: 404 });
     throw e;
@@ -30,7 +32,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
 }
 
 export default function PayPage({ loaderData }: Route.ComponentProps) {
-  const { bill } = loaderData;
+  const { bill, advance } = loaderData;
   const { home } = useSnapshot();
   const loc = home.subscriber.locale;
   const paymentsDown = useDegraded("payments");
@@ -39,12 +41,12 @@ export default function PayPage({ loaderData }: Route.ComponentProps) {
     { name: home.subscriber.name, contact: `+${home.subscriber.id}`, email: home.subscriber.email });
 
   const cur = bill?.currency ?? home.unbilled.currency;
-  const amount = bill ? bill.outstanding : home.unbilled.total;
+  const amount = bill ? bill.outstanding : (advance?.amount ?? home.unbilled.total);
   const lines = bill?.lines ?? home.unbilled.lines;
   const subtotal = bill?.subtotal ?? home.unbilled.subtotal;
   const vat = bill?.vat ?? home.unbilled.vat;
   const total = bill?.total ?? home.unbilled.total;
-  const alreadyPaid = bill ? bill.total - bill.outstanding : 0;
+  const alreadyPaid = bill ? bill.total - bill.outstanding : (advance?.already_paid ?? 0);
   const overdue = !!bill && amount > 0 && new Date(bill.due_date) < new Date(home.as_of);
   const month = cycleLabel(bill?.cycle ?? home.unbilled.cycle, loc);
   const back = bill ? `/bills/${bill.cycle}` : "/bills/current";

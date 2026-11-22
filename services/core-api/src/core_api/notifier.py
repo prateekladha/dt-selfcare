@@ -115,16 +115,23 @@ def billing_loop(stop: threading.Event) -> None:
     c = Consumer(stream.client_config() | {"group.id": "billing", "enable.auto.commit": False,
                                            "auto.offset.reset": "earliest"})
     c.subscribe(["payment-events"])
+    from confluent_kafka import TopicPartition
+
     while not stop.is_set():
+        failed: set[int] = set()   # partitions with a failed event: nothing after it is processed or committed
         for m in c.consume(num_messages=100, timeout=1.0):
-            if m.error():
+            if m.error() or m.partition() in failed:
                 continue
             try:
                 if apply_payment_event(engine, json.loads(m.value())):
                     log.info("payment_applied_to_bill")
-            except Exception as e:  # noqa: BLE001
+                c.commit(message=m, asynchronous=False)   # commit only what was applied
+            except Exception as e:  # noqa: BLE001 - e.g. DB down: re-read this event, never skip a payment
                 log.warning("payment_apply_failed", error=str(e)[:200])
-        c.commit(asynchronous=True)
+                failed.add(m.partition())
+                c.seek(TopicPartition(m.topic(), m.partition(), m.offset()))
+        if failed:
+            stop.wait(2)
     c.close()
 
 
@@ -195,13 +202,34 @@ def reconcile_loop(stop: threading.Event) -> None:
         return
     gw = Razorpay(s.razorpay_key_id, s.razorpay_key_secret, s.razorpay_webhook_secret)
     engine = get_engine()
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from .db import payments
+    from .services.payments import apply_missing, next_delay_s
+
     while not stop.is_set():
         try:
-            for order_id in due_for_check(engine, datetime.now(UTC)):
+            due = due_for_check(engine, datetime.now(UTC))
+        except Exception as e:  # noqa: BLE001
+            log.warning("reconcile_failed", error=str(e)[:200])
+            due = []
+        for order_id in due:   # one bad order must not stop the others from being checked
+            try:
                 res = reconcile_order(engine, gw, order_id, trigger="reconciler")
                 log.info("payment_reconciled", order=order_id[-6:], result=res["result"])
-        except Exception as e:  # noqa: BLE001 - keep reconciling; next tick retries
-            log.warning("reconcile_failed", error=str(e)[:200])
+            except Exception as e:  # noqa: BLE001 - back this order off instead of retrying it first every tick
+                log.warning("reconcile_failed", order=order_id[-6:], error=str(e)[:200])
+                with engine.begin() as cx:
+                    cx.execute(update(payments).where(payments.c.gateway_order_id == order_id).values(
+                        check_attempts=payments.c.check_attempts + 1,
+                        next_check_at=datetime.now(UTC) + timedelta(seconds=next_delay_s(3))))
+        try:
+            if n := apply_missing(engine):   # safety net: captured bill payments that never reached the bill
+                log.warning("payments_applied_by_sweep", count=n)
+        except Exception as e:  # noqa: BLE001
+            log.warning("apply_missing_failed", error=str(e)[:200])
         stop.wait(15)
 
 

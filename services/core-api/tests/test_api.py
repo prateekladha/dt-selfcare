@@ -486,3 +486,58 @@ def test_daily_usage_endpoint_adds_up_to_totals(env):
     assert today["data_mb"] >= 1_500 and today["roaming_mb"] >= 300
     assert j["totals"]["data_mb"] == sum(d["data_mb"] for d in j["days"])
     assert client.get("/v1/me/usage/daily?cycle=2999-01", headers=h).status_code == 422
+
+
+def test_paying_again_before_the_first_payment_reaches_the_bill_is_refused(env):
+    """Captured but not yet applied to the bill (billing consumer behind): a fresh payment-page visit used to
+    create a new order for the full amount."""
+    client, engine, state, gw = env
+    issue(engine, state, "2026-10")
+    h = login(client)
+    p = client.post("/v1/me/payments", json={"purpose": "BILL", "bill_id": f"{SUB}:2026-10"},
+                    headers=h | {"Idempotency-Key": "visit-1-000001"}).json()
+    gw.captured.add(p["order_id"])
+    assert client.get(f"/v1/me/payments/{p['payment_id']}?refresh=true", headers=h).json()["status"] == "PAID"
+    again = client.post("/v1/me/payments", json={"purpose": "BILL", "bill_id": f"{SUB}:2026-10"},
+                        headers=h | {"Idempotency-Key": "visit-2-000001"})
+    assert again.status_code == 409 and gw.orders == 1
+
+
+def test_lost_payment_event_is_applied_by_the_sweep():
+    """The billing consumer used to commit past a failed event: the payment was PAID but the bill never knew."""
+    import json as _json
+    from datetime import UTC, datetime, timedelta
+
+    from core_api.db import bills, create_schema, payments
+    from core_api.services.payments import apply_missing
+    from sqlalchemy import create_engine, insert, select
+    from sqlalchemy.pool import StaticPool
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    create_schema(engine)
+    old = datetime.now(UTC) - timedelta(minutes=10)
+    with engine.begin() as cx:
+        cx.execute(insert(bills).values(id="s1:2026-10", subscriber_id="s1", cycle="2026-10", plan_code="DE-M", currency="EUR",
+                                        subtotal=100, vat=19, total=119, amount_paid=0, status="ISSUED", issued_at=old,
+                                        due_date=old, payload=_json.dumps({}), rated_counters="{}"))
+        cx.execute(insert(payments).values(id="p1", subscriber_id="s1", purpose="BILL", bill_id="s1:2026-10", amount=119,
+                                           currency="EUR", gateway="razorpay", gateway_order_id="o1", status="PAID",
+                                           idempotency_key="k-00000001", updated_at=old))
+    assert apply_missing(engine) == 1 and apply_missing(engine) == 0      # applied once
+    with engine.connect() as cx:
+        assert cx.execute(select(bills.c.status)).scalar_one() == "PAID"
+
+
+def test_advance_is_charged_only_for_usage_not_already_paid(env):
+    client, engine, state, gw = env
+    from datetime import UTC, datetime
+    add_usage(state, SUB, datetime.now(UTC), [(UsageType.DATA, None, 100 * MB)])
+    h = login(client)
+    due = client.get("/v1/me/payments/advance-due", headers=h).json()
+    first = client.post("/v1/me/payments", json={"purpose": "ADVANCE"}, headers=h | {"Idempotency-Key": "adv-1-000001"}).json()
+    gw.captured.add(first["order_id"])
+    client.get(f"/v1/me/payments/{first['payment_id']}?refresh=true", headers=h)
+    after = client.get("/v1/me/payments/advance-due", headers=h).json()
+    assert first["amount"] == due["amount"] and after["already_paid"] == first["amount"] and after["amount"] == 0
+    again = client.post("/v1/me/payments", json={"purpose": "ADVANCE"}, headers=h | {"Idempotency-Key": "adv-2-000001"})
+    assert again.status_code == 409   # used to charge the full month-to-date amount a second time

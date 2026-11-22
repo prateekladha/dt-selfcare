@@ -10,7 +10,7 @@ import argparse
 import json
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import insert, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from telco_common.billing import Bill, BillLine, LineCategory, rate, rate_segments
@@ -18,7 +18,7 @@ from telco_common.catalog import get_plan
 from telco_common.models import cycle_of
 from telco_common.usage_state import UsageState
 
-from ..db import bills, payments, subscribers
+from ..db import bill_payments, bills, payments, subscribers
 from .plan_history import segments
 
 
@@ -62,7 +62,7 @@ def rate_cycle(state: UsageState, sub_id: str, cycle: str, plan_code: str, count
 
 def close_cycle(engine: Engine, state: UsageState, cycle: str, settle_before: str | None = None,
                 due_days: int = 14) -> dict[str, int]:
-    start, end = cycle_bounds(cycle)
+    _start, end = cycle_bounds(cycle)
     if end > datetime.now(UTC):
         raise ValueError(f"cycle {cycle} is not over yet")
     issued_at = end
@@ -97,10 +97,13 @@ def close_cycle(engine: Engine, state: UsageState, cycle: str, settle_before: st
                     late_counters = now_prev
             bill = rate_cycle(state, sub_id, cycle, plan_code, counters, segments(engine, sub_id, cycle, plan_code),
                               adjustments)
-            advance = cx.execute(select(func.coalesce(func.sum(payments.c.amount), 0)).where(
+            # Advance payments: every PAID advance up to the end of this cycle that no bill has credited yet. Keyed
+            # by payment (bill_payments), so one that settled late (PENDING at bill run) is credited by the next run
+            # instead of being lost, and none is ever credited twice.
+            adv = cx.execute(select(payments.c.id, payments.c.amount).where(
                 payments.c.subscriber_id == sub_id, payments.c.purpose == "ADVANCE", payments.c.status == "PAID",
-                payments.c.created_at >= start, payments.c.created_at < end)).scalar_one()
-            paid = min(int(advance), bill.total)
+                payments.c.created_at < end, payments.c.id.not_in(select(bill_payments.c.payment_id)))).all()
+            paid = min(sum(int(a.amount) for a in adv), bill.total)
             if settle_before is not None and cycle < settle_before:
                 paid = bill.total  # historical import: earlier invoices settled by direct debit
             try:
@@ -110,6 +113,8 @@ def close_cycle(engine: Engine, state: UsageState, cycle: str, settle_before: st
                     amount_paid=paid, status="PAID" if paid >= bill.total else "ISSUED",
                     issued_at=issued_at, due_date=issued_at + timedelta(days=due_days),
                     payload=bill.model_dump_json(), rated_counters=json.dumps(counters)))
+                for a in adv:   # mark the advances as credited to this bill
+                    cx.execute(insert(bill_payments).values(payment_id=a.id, bill_id=f"{sub_id}:{cycle}", amount=int(a.amount)))
                 if late_counters is not None:  # the adjustment now accounts for those late CDRs
                     cx.execute(update(bills).where(bills.c.id == prev_row.id).values(rated_counters=json.dumps(late_counters)))
                 created += 1
