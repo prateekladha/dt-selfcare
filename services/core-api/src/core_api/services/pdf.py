@@ -4,8 +4,10 @@ Pure: the caller gathers everything into an `InvoiceContext` (bill, previous bil
 this module only lays it out. No network, no clock: the same context always renders the same bytes
 (reportlab invariant mode), so a re-download matches the invoice the customer saw on bill day.
 
-Text uses the standard Helvetica fonts (WinAnsi encoding), so characters outside that encoding (e.g. the
-Polish "ł") are transliterated and PLN amounts are written with the ISO code.
+Text uses an EMBEDDED TrueType font (Bitstream Vera, shipped inside reportlab), so every viewer draws exactly
+the glyphs and widths laid out here. The standard Helvetica is not embedded: viewers substitute their own
+font, and its "€" overlapped the following digit. Characters the font lacks (e.g. some Polish letters) are
+transliterated; PLN amounts are written with the ISO code.
 """
 from __future__ import annotations
 
@@ -90,17 +92,49 @@ class InvoiceContext:
 
 # ---------------------------------------------------------------- formatting helpers
 
+def _register_fonts() -> tuple[str, str]:
+    import os
+
+    import reportlab
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    d = os.path.join(os.path.dirname(reportlab.__file__), "fonts")
+    pdfmetrics.registerFont(TTFont("BillSans", os.path.join(d, "Vera.ttf")))
+    pdfmetrics.registerFont(TTFont("BillSans-Bold", os.path.join(d, "VeraBd.ttf")))
+    pdfmetrics.registerFontFamily("BillSans", normal="BillSans", bold="BillSans-Bold", italic="BillSans", boldItalic="BillSans-Bold")
+    return "BillSans", "BillSans-Bold"
+
+
+REGULAR, BOLD = _register_fonts()
+
+# ...and make it reportlab's base font too: the canvas/page preamble and any style without an explicit
+# fontName would otherwise reference the (non-embedded) Helvetica.
+from reportlab import rl_config
+
+rl_config.canvas_basefontname = REGULAR
+
+
+def _table_style(cmds: list) -> TableStyle:
+    """Tables default to Helvetica for any cell without an explicit FONTNAME: start every table with ours."""
+    return TableStyle([("FONTNAME", (0, 0), (-1, -1), REGULAR), *cmds])
+
+
+def _has_glyph(ch: str) -> bool:
+    from reportlab.pdfbase import pdfmetrics
+    return ord(ch) in pdfmetrics.getFont(REGULAR).face.charToGlyph
+
+
 _TRANSLIT = str.maketrans({"ł": "l", "Ł": "L", "đ": "d", "Đ": "D", "ø": "o", "Ø": "O", "ß": "ss"})
 
 
 def safe(text: object) -> str:
-    """Fit text into WinAnsi (cp1252) for the standard fonts; keeps umlauts/€/–, strips other diacritics."""
+    """Keep every character the embedded font can draw (umlauts, €, –, ł...); transliterate the rest."""
     out = []
     for ch in str(text):
-        try:
-            ch.encode("cp1252")
+        if ch in "\n\t" or _has_glyph(ch):
             out.append(ch)
-        except UnicodeEncodeError:
+        else:
             ch = ch.translate(_TRANSLIT)
             base = unicodedata.normalize("NFKD", ch).encode("cp1252", "ignore").decode("cp1252")
             out.append(base or "?")
@@ -163,21 +197,21 @@ def status_of(ctx: InvoiceContext) -> tuple[str, colors.Color]:
 # ---------------------------------------------------------------- styles
 
 def _styles() -> dict[str, ParagraphStyle]:
-    base = ParagraphStyle("base", fontName="Helvetica", fontSize=9, leading=12.5, textColor=INK)
+    base = ParagraphStyle("base", fontName=REGULAR, bulletFontName=REGULAR, fontSize=9, leading=12.5, textColor=INK)
     s = {
         "base": base,
         "small": ParagraphStyle("small", parent=base, fontSize=8, leading=10.5, textColor=MUTED),
         "label": ParagraphStyle("label", parent=base, fontSize=7.5, leading=10, textColor=MUTED),
-        "brand": ParagraphStyle("brand", parent=base, fontName="Helvetica-Bold", fontSize=22, leading=26,
+        "brand": ParagraphStyle("brand", parent=base, fontName=BOLD, fontSize=22, leading=26,
                                 textColor=MAGENTA),
-        "title": ParagraphStyle("title", parent=base, fontName="Helvetica-Bold", fontSize=20, leading=24,
+        "title": ParagraphStyle("title", parent=base, fontName=BOLD, fontSize=20, leading=24,
                                 alignment=TA_RIGHT),
-        "h2": ParagraphStyle("h2", parent=base, fontName="Helvetica-Bold", fontSize=11.5, leading=15,
+        "h2": ParagraphStyle("h2", parent=base, fontName=BOLD, fontSize=11.5, leading=15,
                              spaceBefore=14, spaceAfter=6),
         "cell": ParagraphStyle("cell", parent=base, fontSize=8.8, leading=11.5),
         "cell_r": ParagraphStyle("cell_r", parent=base, fontSize=8.8, leading=11.5, alignment=TA_RIGHT),
         "bullet": ParagraphStyle("bullet", parent=base, leftIndent=12, bulletIndent=2, spaceAfter=3),
-        "big": ParagraphStyle("big", parent=base, fontName="Helvetica-Bold", fontSize=22, leading=26,
+        "big": ParagraphStyle("big", parent=base, fontName=BOLD, fontSize=22, leading=26,
                               textColor=INK),
     }
     return s
@@ -196,13 +230,13 @@ def _header(ctx: InvoiceContext, st) -> list:
     right = [Paragraph("Invoice", st["title"]),
              Paragraph(f"No. {_x(ctx.invoice_number)}", ParagraphStyle("r", parent=st["small"], alignment=TA_RIGHT))]
     top = Table([[left, right]], colWidths=[CONTENT_W * 0.5, CONTENT_W * 0.5])
-    top.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+    top.setStyle(_table_style([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
                              ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
                              ("LINEBELOW", (0, 0), (-1, 0), 2, MAGENTA)]))
 
     def meta(label: str, value: str, colour=INK, bold=False) -> list:
         vs = ParagraphStyle("v", parent=st["base"], textColor=colour,
-                            fontName="Helvetica-Bold" if bold else "Helvetica")
+                            fontName=BOLD if bold else REGULAR)
         return [Paragraph(_x(label.upper()), st["label"]), Paragraph(_x(value).replace("\n", "<br/>"), vs)]
 
     cells = [
@@ -212,9 +246,9 @@ def _header(ctx: InvoiceContext, st) -> list:
         meta("Due date", fmt_date(ctx.due_date), bold=True),
         meta("Status", status, colour=status_colour, bold=True),
     ]
-    widths = [0.25, 0.14, 0.26, 0.14, 0.21]
+    widths = [0.25, 0.14, 0.27, 0.18, 0.16]
     row = Table([cells], colWidths=[CONTENT_W * w for w in widths])
-    row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+    row.setStyle(_table_style([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
                              ("RIGHTPADDING", (0, 0), (-1, -1), 6), ("TOPPADDING", (0, 0), (-1, -1), 10)]))
     return [top, row, Spacer(1, 14)]
 
@@ -259,13 +293,13 @@ def _customer_and_summary(ctx: InvoiceContext, st) -> Table:
         rows.append(["vs previous month", "first invoice"])
     rows = [[safe(c) if isinstance(c, str) else c for c in r] for r in rows]
     summary = Table(rows, colWidths=[CONTENT_W * 0.24, CONTENT_W * 0.22])
-    summary.setStyle(TableStyle([
+    summary.setStyle(_table_style([
         ("BACKGROUND", (0, 0), (-1, -1), MAGENTA_TINT),
         ("SPAN", (0, 0), (1, 0)), ("SPAN", (0, 1), (1, 1)), ("SPAN", (0, 2), (1, 2)),
-        ("FONTNAME", (0, 3), (-1, -1), "Helvetica"), ("FONTSIZE", (0, 3), (-1, -1), 8.8),
+        ("FONTNAME", (0, 3), (-1, -1), REGULAR), ("FONTSIZE", (0, 3), (-1, -1), 8.8),
         ("TEXTCOLOR", (0, 3), (-1, -1), INK), ("ALIGN", (1, 3), (1, -1), "RIGHT"),
         ("LINEABOVE", (0, 3), (-1, 3), 0.6, colors.HexColor("#F3B6D3")),
-        ("FONTNAME", (0, 5), (-1, 5), "Helvetica-Bold"), ("FONTNAME", (0, 7), (-1, 7), "Helvetica-Bold"),
+        ("FONTNAME", (0, 5), (-1, 5), BOLD), ("FONTNAME", (0, 7), (-1, 7), BOLD),
         ("LINEABOVE", (0, 5), (-1, 5), 0.4, colors.HexColor("#F3B6D3")),
         ("LINEABOVE", (0, 8), (-1, 8), 0.4, colors.HexColor("#F3B6D3")),
         ("TEXTCOLOR", (0, 8), (-1, 8), MUTED),
@@ -274,7 +308,7 @@ def _customer_and_summary(ctx: InvoiceContext, st) -> Table:
         ("TOPPADDING", (0, 1), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -2), 3),
     ]))
     outer = Table([[cust, summary]], colWidths=[CONTENT_W * 0.54, CONTENT_W * 0.46])
-    outer.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+    outer.setStyle(_table_style([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0),
                                ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
     return outer
 
@@ -313,7 +347,7 @@ def _charges(ctx: InvoiceContext, st) -> list:
     widths = [CONTENT_W * w for w in (0.49, 0.15, 0.19, 0.17)]
     data: list[list] = [head]
     style = [
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("FONTNAME", (0, 0), (-1, 0), BOLD), ("FONTSIZE", (0, 0), (-1, 0), 8),
         ("TEXTCOLOR", (0, 0), (-1, 0), MUTED), ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK),
         ("ALIGN", (1, 0), (-1, -1), "RIGHT"), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("FONTSIZE", (0, 1), (-1, -1), 8.8), ("TOPPADDING", (0, 0), (-1, -1), 4),
@@ -334,7 +368,7 @@ def _charges(ctx: InvoiceContext, st) -> list:
         r = len(data)
         data.append([Paragraph(f"Subtotal {_x(CATEGORY_TITLES.get(cat, cat.value).lower())}",
                                ParagraphStyle("st", parent=st["cell"], textColor=MUTED)), "", "", safe(money(sub, cur))])
-        style += [("FONTNAME", (3, r), (3, r), "Helvetica-Bold"), ("BOTTOMPADDING", (0, r), (-1, r), 8)]
+        style += [("FONTNAME", (3, r), (3, r), BOLD), ("BOTTOMPADDING", (0, r), (-1, r), 8)]
     if not present:
         data.append([Paragraph("No charges in this billing period.", st["cell"]), "", "", safe(money(0, cur))])
     vat_pct = f"{float(b.vat_rate) * 100:g}%"
@@ -343,10 +377,10 @@ def _charges(ctx: InvoiceContext, st) -> list:
              ["", "", f"VAT {vat_pct}", safe(money(b.vat, cur))],
              ["", "", "Total incl. VAT", safe(money(b.total, cur))]]
     style += [("LINEABOVE", (2, r0), (-1, r0), 0.8, INK), ("TOPPADDING", (0, r0), (-1, r0), 7),
-              ("FONTNAME", (2, -1), (-1, -1), "Helvetica-Bold"), ("FONTSIZE", (2, -1), (-1, -1), 10),
+              ("FONTNAME", (2, -1), (-1, -1), BOLD), ("FONTSIZE", (2, -1), (-1, -1), 10),
               ("LINEABOVE", (2, -1), (-1, -1), 0.4, RULE), ("TEXTCOLOR", (2, -1), (-1, -1), MAGENTA)]
     t = Table(data, colWidths=widths, repeatRows=1)
-    t.setStyle(TableStyle(style))
+    t.setStyle(_table_style(style))
     return [_h2("Itemised charges", st), t]
 
 
@@ -389,8 +423,8 @@ def _usage(ctx: InvoiceContext, st) -> list:
                      "Paid to providers"])
     rows = [[safe(c) for c in r] for r in rows]
     t = Table(rows, colWidths=[CONTENT_W * w for w in (0.35, 0.21, 0.19, 0.25)], repeatRows=1)
-    t.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, 0), 8),
+    t.setStyle(_table_style([
+        ("FONTNAME", (0, 0), (-1, 0), BOLD), ("FONTSIZE", (0, 0), (-1, 0), 8),
         ("TEXTCOLOR", (0, 0), (-1, 0), MUTED), ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK),
         ("FONTSIZE", (0, 1), (-1, -1), 8.8), ("TEXTCOLOR", (0, 1), (-1, -1), INK),
         ("TEXTCOLOR", (3, 1), (3, -1), MUTED), ("ALIGN", (1, 0), (2, -1), "RIGHT"),
@@ -456,11 +490,11 @@ def _payments(ctx: InvoiceContext, st) -> list:
     rows.append(["", "", "Total paid", money(ctx.amount_paid, cur)])
     rows = [[safe(c) for c in r] for r in rows]
     t = Table(rows, colWidths=[CONTENT_W * w for w in (0.18, 0.34, 0.3, 0.18)])
-    t.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, 0), 8),
+    t.setStyle(_table_style([
+        ("FONTNAME", (0, 0), (-1, 0), BOLD), ("FONTSIZE", (0, 0), (-1, 0), 8),
         ("TEXTCOLOR", (0, 0), (-1, 0), MUTED), ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK),
         ("FONTSIZE", (0, 1), (-1, -1), 8.8), ("ALIGN", (3, 0), (3, -1), "RIGHT"),
-        ("LINEBELOW", (0, 1), (-1, -2), 0.25, RULE), ("FONTNAME", (2, -1), (-1, -1), "Helvetica-Bold"),
+        ("LINEBELOW", (0, 1), (-1, -2), 0.25, RULE), ("FONTNAME", (2, -1), (-1, -1), BOLD),
         ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
     ]))
@@ -480,7 +514,7 @@ def _how_to_pay(ctx: InvoiceContext, st) -> list:
             Paragraph("Questions about a charge? The Self-care app shows the usage records behind every line "
                       "under <b>Bills &gt; Evidence</b>.", st["small"])]
     box = Table([[body]], colWidths=[CONTENT_W])
-    box.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), PANEL), ("LINEBEFORE", (0, 0), (0, -1), 3, MAGENTA),
+    box.setStyle(_table_style([("BACKGROUND", (0, 0), (-1, -1), PANEL), ("LINEBEFORE", (0, 0), (0, -1), 3, MAGENTA),
                              ("LEFTPADDING", (0, 0), (-1, -1), 12), ("RIGHTPADDING", (0, 0), (-1, -1), 12),
                              ("TOPPADDING", (0, 0), (-1, -1), 10), ("BOTTOMPADDING", (0, 0), (-1, -1), 10)]))
     return [Spacer(1, 16), KeepTogether([box])]
@@ -495,6 +529,7 @@ def _canvas_factory(ctx: InvoiceContext):
         """Two-pass page numbering: collect page states, then draw 'Page X of Y' on each at save()."""
 
         def __init__(self, *args, **kwargs):
+            kwargs.setdefault("initialFontName", REGULAR)   # the canvas default would be Helvetica
             super().__init__(*args, **kwargs)
             self._pages: list[dict] = []
 
@@ -516,17 +551,17 @@ def _canvas_factory(ctx: InvoiceContext):
             self.setStrokeColor(RULE)
             self.setLineWidth(0.5)
             self.line(MARGIN_X, y + 9, PAGE_W - MARGIN_X, y + 9)
-            self.setFont("Helvetica", 7.5)
+            self.setFont(REGULAR, 7.5)
             self.setFillColor(MUTED)
             self.drawString(MARGIN_X, y, f"Self-care  ·  Invoice {invoice_no}")
             self.drawRightString(PAGE_W - MARGIN_X, y, f"Page {self._pageNumber} of {total}")
             self.drawString(MARGIN_X, y - 10, f"Amounts in {currency}; VAT included as shown. Charges are computed "
                                               "from network usage records (CDRs) rated against your tariff.")
             if self._pageNumber > 1:
-                self.setFont("Helvetica-Bold", 9)
+                self.setFont(BOLD, 9)
                 self.setFillColor(MAGENTA)
                 self.drawString(MARGIN_X, PAGE_H - 12 * mm, "Self-care")
-                self.setFont("Helvetica", 8)
+                self.setFont(REGULAR, 8)
                 self.setFillColor(MUTED)
                 self.drawRightString(PAGE_W - MARGIN_X, PAGE_H - 12 * mm, f"Invoice {invoice_no} (continued)")
             self.restoreState()

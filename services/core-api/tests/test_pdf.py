@@ -1,4 +1,4 @@
-"""Bill PDF: rendered from a pure InvoiceContext; text is checked in uncompressed content streams."""
+"""Bill PDF: rendered from a pure InvoiceContext; text is checked as a PDF viewer extracts it."""
 import re
 from datetime import UTC, datetime, timedelta
 
@@ -10,16 +10,11 @@ DE_SUB, PL_SUB = "4915100000002", "48600000001"
 
 
 def text_of(pdf: bytes) -> str:
-    """Concatenate the literal strings of all text operators (works with compress=False)."""
-    raw = pdf.decode("cp1252", errors="replace")  # standard fonts use WinAnsi
-    parts = re.findall(r"\((?:\\.|[^\\)])*\)\s*Tj", raw)
-    out = []
-    for p in parts:
-        s = p[1:p.rindex(")")]
-        s = re.sub(r"\\([()\\])", r"\1", s)
-        s = re.sub(r"\\(\d{3})", lambda m: bytes([int(m.group(1), 8)]).decode("cp1252", errors="replace"), s)
-        out.append(s)
-    return "\n".join(out)
+    """Text as a viewer extracts it (the font is embedded, so text is glyph-encoded with a ToUnicode map)."""
+    from io import BytesIO
+
+    from pypdf import PdfReader
+    return "\n".join(page.extract_text() for page in PdfReader(BytesIO(pdf)).pages)
 
 
 def ctx_for(bill, prev=None, paid=0, payments=(), name="Jonas Weber", country="DE", email="jonas@example.com"):
@@ -59,7 +54,7 @@ def test_polish_bill_without_previous_bill_or_payments():
     pdf = render_bill_pdf(ctx_for(bill, name="Zofia Now\u0105k-\u0141ukasz", country="PL", email=None),
                           compress=False)
     text = check_pdf(pdf)
-    for s in [f"{PL_SUB}:2026-10", "Zofia Nowak-Lukasz", "+48 600 000 001", "Poland", "VAT 23%", "PLN",
+    for s in [f"{PL_SUB}:2026-10", "Zofia Nowak-Łukasz", "+48 600 000 001", "Poland", "VAT 23%", "PLN",
               "Roaming data, zone Z3", "International calls", "No payments yet", "first invoice", "Due",
               "Page 1 of", "Amounts in PLN"]:
         assert s in text, s
@@ -122,3 +117,12 @@ def test_endpoint_includes_ledger_payments(monkeypatch):
     assert ctx.previous_bill is None and ctx.amount_paid == 500 and ctx.outstanding == bill.total - 500
     assert [(p.amount, p.reference, p.method) for p in ctx.payments] == [(500, "pay_XYZ123", "In-app (razorpay)")]
     assert "pay_XYZ123" in text_of(render_bill_pdf(ctx, compress=False))
+
+
+def test_font_is_embedded_so_viewers_draw_the_euro_sign_exactly_as_laid_out():
+    """The standard Helvetica isn't embedded: viewers substituted their own font and the € overlapped the
+    first digit. The bill embeds a TrueType font, and € plus its amount survive text extraction."""
+    plan = get_plan("DE-FLEX")
+    pdf = render_bill_pdf(ctx_for(rate(DE_SUB, "2026-10", plan, {"DATA": 500 * MB})), compress=False)
+    assert b"/FontFile2" in pdf and b"/Helvetica" not in pdf
+    assert re.search(r"€\d", text_of(pdf))
