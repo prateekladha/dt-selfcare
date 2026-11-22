@@ -17,7 +17,8 @@ import jsonschema
 
 from .tools import TOOLS, ToolContext
 
-RESULT_CHARS = 3500  # L4 item-level budget per tool result (~900 tokens)
+RESULT_CHARS = 8000  # L4 item-level budget per tool result (~2k tokens); tools keep their output well below it
+# (a cut result used to lose facts mid-JSON: the model missed them and the checker rejected correct figures)
 
 
 @dataclass

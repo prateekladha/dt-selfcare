@@ -55,7 +55,10 @@ def overdue_bill(engine: Engine, subscriber_id: str):
 def _credit_check(engine: Engine, subscriber_id: str) -> None:
     b = overdue_bill(engine, subscriber_id)
     if b is not None:
-        raise OrderError(402, f"Your {b.cycle} bill is overdue. Please pay it first; then you can buy add-ons or change tariff.")
+        from calendar import month_name
+        month = f"{month_name[int(b.cycle[5:])]} {b.cycle[:4]}"
+        raise OrderError(402, f"Not possible yet: the {month} bill is overdue. Once it is paid, add-ons and tariff "
+                              "changes can be ordered again.")
 
 
 def expired(row) -> bool:

@@ -84,11 +84,10 @@ function Answer({ t }: { t: Turn }) {
                            amount={p.price} overdue={!!p.overdue} />
             : <OrderCard key={p.order_id} orderId={p.order_id} title={p.add_on} extra={p.extra_data} price={`${p.price} + VAT`} kind={p.kind === "PLAN" ? "PLAN" : "ADDON"} />)}</div>
         )}
-        {t.status && t.status !== "CONVERSATIONAL" && (
+        {ok && (   // only checked answers carry the badge; apologies and error messages don't need one
           <p className="mt-4 flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
-            <ShieldCheck size={13} className={ok ? "text-[var(--good)]" : "text-[var(--warn)]"} />
-            {ok ? (t.status === "REPAIRED" ? "Checked against your records (corrected once)" : "Checked against your records") : "Couldn't be fully checked"}
-            {items.length > 0 && <> · tap a number to see its source</>}
+            <ShieldCheck size={13} className="text-[var(--good)]" />
+            Checked against your records{items.length > 0 && <> · tap a number to see its source</>}
           </p>
         )}
       </div>
@@ -255,7 +254,10 @@ export default function Assistant() {
           else if (ev.type === "step_done") patch((t) => ({ ...t, steps: t.steps.map((s, i) => (i === t.steps.length - 1 ? { ...s, done: true, ok: ev.ok } : s)) }));
           else if (ev.type === "proposal") patch((t) => ({ ...t, proposals: [...(t.proposals ?? []), ev] }));
           else if (ev.type === "replace") patch((t) => ({ ...t, text: ev.text }));
-          else if (ev.type === "done") { patch((t) => ({ ...t, text: ev.answer, status: ev.status, citations: ev.citations ?? [], trace: ev.trace })); loadChats(); }
+          else if (ev.type === "done") {   // the answer is complete: free the input now (the chat title may still follow)
+            patch((t) => ({ ...t, text: ev.answer, status: ev.status, citations: ev.citations ?? [], trace: ev.trace }));
+            setBusy(false); loadChats();
+          }
         }
       }
     } catch {

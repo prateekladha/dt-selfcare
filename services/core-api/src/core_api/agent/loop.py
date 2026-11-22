@@ -25,7 +25,7 @@ from sqlalchemy import insert
 
 from ..db import agent_traces
 from .agent import _CITE, _NUM, _norm, numbers_in
-from .broker import Broker
+from .broker import RESULT_CHARS, Broker
 from .llm import LLM, BudgetExceeded
 from .tools import TOOLS, ToolContext, declarations
 
@@ -55,8 +55,9 @@ GETTING THE FACTS RIGHT
   propose_plan_change) and tell them to approve it below. It only happens after they approve; it's charged on
   the next bill.
 - If they want to pay, or a bill is overdue and paying is the next step, prepare it with propose_payment and
-  say it's ready in the secure checkout below (don't ask whether they'd like it prepared). Never say something
-  is paid, bought or changed.
+  say it plainly as a fact: "You can pay it in the secure checkout below." Never phrase it as an offer or a
+  question ("I can get a payment ready if you'd like"): it is already there. Never say something is paid,
+  bought or changed.
 
 HOW TO TALK
 - Answer exactly what was asked, first, in plain words. Usually 2 to 4 short sentences; a short list only when
@@ -182,6 +183,21 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
     messages.append({"role": "user", "content": f"Today is {today}. Reply in {'German' if lang == 'de' else 'Polish' if lang == 'pl' else 'English'}.\n\n{question}"})
     answer, status = "", "UNVERIFIED"
     st = {"calls": 0, "answer": "", "proposed": False}
+    cards: dict[str, dict] = {}   # kind -> approval card; sent only with the final answer, never twice
+
+    def add_card(r_: dict) -> None:
+        st["proposed"] = True
+        if r_.get("payment"):
+            cards["PAYMENT"] = {"type": "proposal", "kind": "PAYMENT", "purpose": r_["purpose"], "bill_id": r_["bill_id"],
+                                "cycle": r_["cycle"], "price": r_["amount"], "overdue": r_.get("overdue", False),
+                                "order_id": f"pay:{r_['purpose']}:{r_['cycle']}", "add_on": "", "extra_data": ""}
+        elif "new_tariff" in r_:
+            cards["PLAN"] = {"type": "proposal", "kind": "PLAN", "order_id": r_["order_id"], "add_on": r_["new_tariff"],
+                             "extra_data": f"{r_['current_tariff']} → {r_['new_tariff']} · data {r_['data']}",
+                             "price": r_["monthly_fee"].split(" -> ")[-1] + " / month"}
+        else:
+            cards["ADDON"] = {"type": "proposal", "kind": "ADDON", "order_id": r_["order_id"], "add_on": r_["add_on"],
+                              "extra_data": r_["extra_data"], "price": r_["price"]}
 
     async def tool_loop(stream_tokens: bool):
         """LLM turns with tools until the model answers in text; the answer lands in st["answer"]."""
@@ -191,7 +207,9 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
             streamed = False
             held = ""   # a turn's opening text is held back until it is clearly the answer, so a preamble
             res = None  # before a tool call ("Let me check your bills...") is never shown and then taken back
-            async for kind, val in llm.astream("agent" if stream_tokens else "repair", messages, tools if allow_tools else None):
+            # repairs are full tool loops too, so they share the agent stage's budget (the small "repair" cap
+            # would otherwise turn repaired answers into budget messages); trace attempts tell them apart
+            async for kind, val in llm.astream("agent", messages, tools if allow_tools else None):
                 if kind == "token":
                     if not STREAM_DRAFTS or not stream_tokens:
                         continue   # drafts are never shown: only the final, checked answer is (see deliver)
@@ -227,20 +245,8 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                     out = await asyncio.to_thread(broker.request, c["name"], c["arguments"] or "{}", ctx)
                     yield {"type": "step_done", "tool": c["name"], "ok": out.decision != "DENY" and "error" not in out.result}
                     if out.decision == "PROPOSE" and out.result.get("proposal"):  # human-in-the-loop approval card
-                        st["proposed"] = True
-                        r_ = out.result
-                        if r_.get("payment"):
-                            yield {"type": "proposal", "kind": "PAYMENT", "purpose": r_["purpose"], "bill_id": r_["bill_id"],
-                                   "cycle": r_["cycle"], "price": r_["amount"], "overdue": r_.get("overdue", False),
-                                   "order_id": f"pay:{r_['purpose']}:{r_['cycle']}", "add_on": "", "extra_data": ""}
-                        elif "new_tariff" in r_:
-                            yield {"type": "proposal", "kind": "PLAN", "order_id": r_["order_id"], "add_on": r_["new_tariff"],
-                                   "extra_data": f"{r_['current_tariff']} → {r_['new_tariff']} · data {r_['data']}",
-                                   "price": r_["monthly_fee"].split(" -> ")[-1] + " / month"}
-                        else:
-                            yield {"type": "proposal", "kind": "ADDON", "order_id": r_["order_id"], "add_on": r_["add_on"],
-                                   "extra_data": r_["extra_data"], "price": r_["price"]}
-                    messages.append({"role": "tool", "tool_call_id": c["id"], "content": json.dumps(out.result, default=str)[:3800]})
+                        add_card(out.result)   # held: sent with the final answer, one per kind
+                    messages.append({"role": "tool", "tool_call_id": c["id"], "content": json.dumps(out.result, default=str)[:RESULT_CHARS]})
                 continue
             st["answer"] = res.text
             return
@@ -284,24 +290,24 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
             if not st["proposed"] and POINTS_BELOW.search(answer) and PAYMENT_WORDS.search(answer):
                 # the answer sends the customer to the payment checkout: prepare it in code, no extra LLM round
                 out = await asyncio.to_thread(broker.request, "propose_payment", '{"purpose": "bill"}', ctx)
-                r_ = out.result
-                if out.decision == "PROPOSE" and r_.get("proposal"):
-                    st["proposed"] = True
-                    st["calls"] += 1
-                    yield {"type": "proposal", "kind": "PAYMENT", "purpose": r_["purpose"], "bill_id": r_["bill_id"],
-                           "cycle": r_["cycle"], "price": r_["amount"], "overdue": r_.get("overdue", False),
-                           "order_id": f"pay:{r_['purpose']}:{r_['cycle']}", "add_on": "", "extra_data": ""}
+                st["calls"] += 1
+                if out.decision == "PROPOSE" and out.result.get("proposal"):
+                    add_card(out.result)
 
     except BudgetExceeded as e:
-        status, answer = "BUDGET", "I can't answer right now because today's assistant budget has been used. Please try again tomorrow."
+        status, answer = "BUDGET", ("I'm sorry, I can't answer right now. Please try again a little later; your bills, "
+                                    "usage and payments are all available in the app in the meantime.")
         trace.setdefault("degraded", []).append(str(e))
     except Exception as e:  # noqa: BLE001
         log.warning("agent_failed", error=str(e)[:300])
-        status, answer = "ERROR", "Something went wrong while answering. Please try again."
+        status, answer = "ERROR", "I'm sorry, something went wrong on my side. Could you try asking again?"
         trace.setdefault("degraded", []).append(f"{type(e).__name__}: {e}"[:300])
 
     if status == "UNVERIFIED":
         answer = "I'm sorry, I couldn't put together an answer I can stand behind. Could you ask it a little differently?"
+    if status in ("VERIFIED", "REPAIRED", "CONVERSATIONAL"):
+        for card in cards.values():    # the approval cards that belong to the final answer
+            yield card
     async for ev in deliver(answer):   # the facts are all in and checked: now the answer is written out
         yield ev
     cited = sorted(set(_CITE.findall(answer)) & set(broker.sources), key=lambda x: int(x[1:]))

@@ -326,3 +326,37 @@ def test_figures_given_before_any_lookup_are_never_streamed(world):
     streamed = "".join(e["text"] for e in events if e["type"] == "token")
     assert "41.59" not in streamed and events[-1]["status"] == "REPAIRED"
     assert f"{total / 100:.2f} EUR" in events[-1]["answer"]
+
+
+def test_approval_cards_come_with_the_final_answer_once_never_from_a_discarded_draft(world):
+    """A draft prepared the payment, the repair prepared it again: the card used to be sent twice (same key,
+    duplicated card) and before the answer was final. Now one card, sent with the final answer."""
+    engine, r, state = world
+    total = row_to_bill(get_bill_row(engine, SUB, "2026-09")).total
+    llm = scripted_llm(r, [
+        ("tools", [("propose_payment", {"purpose": "bill"})]),
+        ("text", "Your bill is 999 EUR. You can pay it in the secure checkout below."),     # wrong figure
+        ("tools", [("propose_payment", {"purpose": "bill"})]),
+        ("text", f"Your bill is {total / 100:.2f} EUR. You can pay it in the secure checkout below."),
+    ])
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
+    events = collect(run_stream("pay my bill", ctx, llm, engine))
+    kinds = [e["type"] for e in events]
+    assert kinds.count("proposal") == 1
+    assert kinds.index("proposal") > max(i for i, k in enumerate(kinds) if k == "step_done")   # after all lookups
+    assert events[-1]["status"] == "REPAIRED"
+
+
+def test_long_tool_results_are_not_cut_for_the_checker():
+    """Results were cut at 3,500 characters: figures past the cut were 'not in the tool results'."""
+    from core_api.agent.broker import RESULT_CHARS, Broker
+    from core_api.agent.loop import check_numbers
+    from core_api.agent.tools import TOOLS, Tool
+    long = {"source": "x", "rows": [f"row {i}: {1000 + i}.50 EUR" for i in range(150)]}   # ~4k chars
+    TOOLS["_long"] = Tool("_long", "test", {"type": "object"}, lambda a, c: long)
+    try:
+        b = Broker(["_long"])
+        b.request("_long", "{}", ToolContext(SUB, "DE", None, None, None))
+        assert len(b.sources["S1"]) < RESULT_CHARS and check_numbers("The last one is 1149.50 EUR.", b.sources) == []
+    finally:
+        del TOOLS["_long"]
