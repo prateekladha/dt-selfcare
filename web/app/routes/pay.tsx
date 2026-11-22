@@ -4,7 +4,7 @@ import { PaymentsDown } from "~/components/PayLink";
 import { Button, Card, LinkButton, Pill } from "~/components/ui";
 import { ApiError, api, PRIVATE } from "~/lib/api.server";
 import { useCheckout } from "~/lib/checkout";
-import { cycleLabel, dateLabel, money } from "~/lib/format";
+import { cycleLabel, dateLabel, money, isOverdue } from "~/lib/format";
 import type { Line } from "~/lib/types";
 import { useDegraded, useSnapshot } from "./_app";
 import type { Route } from "./+types/pay";
@@ -47,7 +47,7 @@ export default function PayPage({ loaderData }: Route.ComponentProps) {
   const vat = bill?.vat ?? home.unbilled.vat;
   const total = bill?.total ?? home.unbilled.total;
   const alreadyPaid = bill ? bill.total - bill.outstanding : (advance?.already_paid ?? 0);
-  const overdue = !!bill && amount > 0 && new Date(bill.due_date) < new Date(home.as_of);
+  const overdue = !!bill && amount > 0 && isOverdue(bill.due_date, home.as_of);
   const month = cycleLabel(bill?.cycle ?? home.unbilled.cycle, loc);
   const back = bill ? `/bills/${bill.cycle}` : "/bills/current";
 

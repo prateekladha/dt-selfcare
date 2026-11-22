@@ -6,7 +6,7 @@ from __future__ import annotations
 from calendar import monthrange
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from telco_common.billing import data_usage_pct, rate
@@ -229,7 +229,7 @@ def t_propose_payment(args: dict, ctx: ToolContext) -> dict:
         due = b.due_date if b.due_date.tzinfo else b.due_date.replace(tzinfo=UTC)
         return {"source": f"adb:bills:{b.cycle}", "proposal": True, "payment": True, "purpose": "BILL", "bill_id": b.id,
                 "cycle": b.cycle, "amount": fmt_money(b.total - b.amount_paid, b.currency),
-                "overdue": due < datetime.now(UTC), **_due(b.due_date, b.total, b.amount_paid),
+                "overdue": due + timedelta(days=1) <= datetime.now(UTC),   # after the end of the due day **_due(b.due_date, b.total, b.amount_paid),
                 "status": "waiting for the customer to pay in the secure checkout"}
     sub = _sub(ctx)
     cur = unbilled(ctx.state, ctx.subscriber_id, sub.plan_code, engine=ctx.engine)

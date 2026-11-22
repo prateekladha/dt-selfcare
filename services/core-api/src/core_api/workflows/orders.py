@@ -42,13 +42,13 @@ OFFER_TTL_H = 24  # a proposal (and a declined one the customer may still accept
 
 def overdue_bill(engine: Engine, subscriber_id: str):
     """Credit control: an issued bill past its due date and not fully paid blocks new purchases."""
-    from datetime import UTC, datetime
+    from datetime import UTC, datetime, timedelta
 
     from ..db import bills
 
     with engine.connect() as cx:
         return cx.execute(select(bills).where(bills.c.subscriber_id == subscriber_id, bills.c.status != "PAID",
-                                              bills.c.due_date < datetime.now(UTC), bills.c.total > bills.c.amount_paid)
+                                              bills.c.due_date <= datetime.now(UTC) - timedelta(days=1), bills.c.total > bills.c.amount_paid)
                           .order_by(bills.c.cycle)).first()
 
 
