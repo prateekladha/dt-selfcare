@@ -251,7 +251,8 @@ sequenceDiagram
   B->>W: GET /pay/result?id=<payment>
   W->>API: GET /v1/me/payments/{id}?refresh=true → gateway status API (stored status if gateway down)
   RZ->>API: webhook payment.captured (HMAC body) → same mark_paid → no-op if already PAID
-  Note over API: outbox relay → payment-events → billing consumer → bill_payments + bill.amount_paid<br/>(reconciler sweep apply_missing as safety net)
+  API->>DB: bill_payments + bill.amount_paid in the same request (bill shows paid at once)
+  Note over API: outbox relay → payment-events → notifications; billing consumer is an idempotent no-op<br/>(reconciler sweep apply_missing as last safety net)
 ```
 
 ### (e) AI explanation with guardrails
