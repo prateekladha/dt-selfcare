@@ -87,9 +87,12 @@ a load generator.
    cached on a CDN. Formatting is locale-pinned and in UTC, so server and client render identically.
 9. **Payments settle exactly once.** An idempotency key per page visit, server-side capture
    confirmation, and the browser callback, the webhook and the reconciler all end in the same conditional
-   `UPDATE … WHERE status<>'PAID'`. The payment and its outbox event go in the same transaction; billing
-   applies the event to the bill through the `bill_payments` ledger (PK = payment id), with a reconciler
-   sweep as a safety net.
+   `UPDATE … WHERE status<>'PAID'`. The payment and its outbox event go in the same transaction, and the bill
+   is credited in the same request through the `bill_payments` ledger (PK = payment id), so it shows paid at
+   once; the event's billing consumer is then a no-op, with a reconciler sweep as a last safety net.
+10. **An order is "active" only when the meter says so.** An add-on travels collector → stream → aggregator
+   like any network event; the workflow completes the order only after the aggregator's marker for that
+   message exists (written in the same Lua call as the counters): read-your-writes, ~4 s from approval.
 
 ### Scaling to 50M subscribers / 10 countries
 | Component | How it scales | Bottleneck we avoid |
