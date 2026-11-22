@@ -68,12 +68,6 @@ function Bars({ usage, metric, unit, pace, W, H }: { usage: DailyUsage; metric: 
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label={`Daily ${metric === "data_mb" ? "data" : metric === "voice_min" ? "call minutes" : "SMS"} usage`}>
         {[0.5, 1].map((f) => <line key={f} x1={padL} x2={W - padR} y1={y(max * f / 1.15)} y2={y(max * f / 1.15)} stroke="var(--grid)" />)}
         <line x1={padL} x2={W - padR} y1={y(0)} y2={y(0)} stroke="var(--line-strong)" />
-        {pace !== null && (
-          <>
-            <line x1={padL} x2={W - padR} y1={y(pace)} y2={y(pace)} stroke="var(--ink-3)" strokeDasharray="2 4" />
-            <text x={W - padR - 2} y={y(pace) - 6} textAnchor="end" className="fill-[var(--ink-3)] text-[11px] font-medium">Allowance pace {unit(Math.round(pace))}/day</text>
-          </>
-        )}
         {Array.from({ length: n }, (_, i) => {
           const d = i + 1;
           const x = padL + i * step + (step - barW) / 2;
@@ -94,6 +88,13 @@ function Bars({ usage, metric, unit, pace, W, H }: { usage: DailyUsage; metric: 
             </g>
           );
         })}
+        {pace !== null && (
+          <>
+            <line x1={padL} x2={W - padR} y1={y(pace)} y2={y(pace)} stroke="var(--ink-3)" strokeDasharray="2 4" />
+            <text x={W - padR - 2} y={y(pace) - 6} textAnchor="end" stroke="var(--surface)" strokeWidth={4} paintOrder="stroke" strokeLinejoin="round"
+                  className="fill-[var(--ink-3)] text-[11px] font-medium">Allowance pace {unit(Math.round(pace))}/day</text>
+          </>
+        )}
       </svg>
       {day && hover !== null && (
         <div className="pointer-events-none absolute z-10 -translate-x-1/2 rounded-lg bg-[var(--ink)] px-3 py-2 text-xs text-[var(--surface)] shadow-[var(--shadow-lg)]"
