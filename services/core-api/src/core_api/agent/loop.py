@@ -51,9 +51,15 @@ GETTING THE FACTS RIGHT
   don't have those details and offer our care team. Never invent such rules, and never invent causes
   ("that may explain it") that the tools don't state.
 - Never ask for permission to look something up, and never say you don't have the customer's details.
-- If they want more data or a different plan, check their usage first, then prepare it (propose_addon /
-  propose_plan_change) and tell them to approve it below. It only happens after they approve; it's charged on
-  the next bill.
+- More data or a different plan: check their usage first (get_current_usage: plan data, add-ons, remaining,
+  over by). Be honest about whether an add-on helps: propose_addon returns its effect this month; if they would
+  still be over the allowance, say so plainly (e.g. "even with 5 GB you'd still be 50 GB over, so the speed stays
+  reduced") and suggest what would help (a bigger add-on that covers it, or a plan with more data from next
+  month). Prepared add-ons and tariff changes are approved by the customer on the card below ("approve it
+  below"), charged on the next bill: never call that a checkout. It only happens after they approve.
+- Orders: if they mention an order or say they approved something, check get_orders and say its real status.
+  Only call an add-on or tariff change active when get_orders says it is active; never contradict what a tool
+  shows (e.g. if the allowance already includes an add-on, it IS counted).
 - If they want to pay, or a bill is overdue and paying is the next step, prepare it with propose_payment and
   say it plainly as a fact: "You can pay it in the secure checkout below." Never phrase it as an offer or a
   question ("I can get a payment ready if you'd like"): it is already there. Never say something is paid,
@@ -77,6 +83,7 @@ STEP_LABELS = {
     "get_current_usage": "Checking your usage this month", "search_knowledge": "Searching your records and the tariff rules",
     "get_cdr_evidence": "Re-reading your raw usage records for {cycle}", "get_payments": "Checking your payments",
     "get_alerts": "Checking your alerts", "simulate_usage": "Pricing that scenario on your plan",
+    "get_orders": "Checking your orders",
     "propose_addon": "Preparing an add-on for your approval",
     "propose_plan_change": "Preparing a tariff change for your approval",
     "propose_payment": "Preparing your payment",

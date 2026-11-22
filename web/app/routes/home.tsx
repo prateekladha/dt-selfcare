@@ -9,7 +9,7 @@ import { TrendChart } from "~/components/TrendChart";
 import { DailyUsageChart, type DailyUsage } from "~/components/DailyUsageChart";
 import { Card, CardHeader, LinkButton, Pill } from "~/components/ui";
 import { api, streamed, PRIVATE } from "~/lib/api.server";
-import { cycleLabel, dateLabel, mbToGb, money } from "~/lib/format";
+import { cycleLabel, dateLabel, firstSentence, mbToGb, money } from "~/lib/format";
 import type { ExplanationResponse } from "~/lib/types";
 import { useSnapshot } from "./_app";
 import type { Route } from "./+types/home";
@@ -59,7 +59,12 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
             {(r) => r.llm?.summary ? (
               <Link to={`/bills/${last}`} className="group flex items-center gap-4 rounded-[var(--radius)] border border-[var(--brand)]/25 bg-[var(--brand-bg)] px-5 py-4 transition-colors hover:border-[var(--brand)]">
                 <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--brand)] text-white"><Sparkles size={18} /></span>
-                <p className="text-[15px] leading-snug text-[var(--ink)]">{r.llm.summary.replace(/\s*\[[DGS]\d{1,2}\]/g, "").split(/(?<=\.)\s/)[0]}</p>
+                <p className="text-[15px] leading-snug text-[var(--ink)]">
+                  {firstSentence(r.llm.summary)}
+                  {/* it explains the latest bill; say whether that bill is settled so a paid bill doesn't read as a reminder */}
+                  {!d.due || d.due.cycle !== last && (home.outstanding.unpaid_bills ?? 1) <= 1
+                    ? <span className="ml-2 inline-flex align-middle"><Pill tone="good" icon={<CheckCircle2 size={13} />}>Paid</Pill></span> : null}
+                </p>
                 <span className="ml-auto hidden shrink-0 items-center gap-1 text-sm font-bold text-[var(--brand-ink)] sm:flex">See why <ArrowRight size={16} className="transition-transform group-hover:translate-x-0.5" /></span>
               </Link>
             ) : null}

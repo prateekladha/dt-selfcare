@@ -42,3 +42,18 @@ export const FLAGS: Record<string, string> = { DE: "🇩🇪", PL: "🇵🇱" };
 export function isOverdue(dueDate: string, asOf: string | Date = new Date()): boolean {
   return new Date(dueDate).getTime() + 86_400_000 <= new Date(asOf).getTime();
 }
+
+
+/** First sentence of an AI summary for a one-line teaser. Doesn't stop at abbreviations ("incl.", "inkl.", "z.B.",
+ * "e.g.", "approx.") or decimals ("41.59"), which used to cut "Your bill is 41.59 EUR incl. VAT ..." at "incl.". */
+export function firstSentence(text: string): string {
+  const t = text.replace(/\s*\[[DGS]\d{1,2}\]/g, "").trim();
+  const abbr = /(?:\b(?:incl|inkl|exkl|excl|approx|ca|bzw|vs|etc|e\.g|i\.e|z\.B|u\.a|d\.h|ok|nr|no|tj|np|zł|ok)\.)$/i;
+  const re = /[.!?](?=\s+\p{Lu}|\s*$)/gu;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(t))) {
+    const head = t.slice(0, m.index + 1);
+    if (!abbr.test(head)) return head;
+  }
+  return t;
+}
