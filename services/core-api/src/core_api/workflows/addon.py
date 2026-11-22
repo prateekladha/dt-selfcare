@@ -128,7 +128,13 @@ async def _publish_record(order_id: str, rec: dict) -> str:
                          headers={"Authorization": f"Bearer {token}", "X-Source": src},
                          json={"batch_id": f"{src}:order:{order_id}", "source": src, "records": [rec]})
     r.raise_for_status()
-    return r.json().get("status", "accepted")
+    body = r.json()
+    # 202 isn't enough: a quarantined record (e.g. sent under a source not allowed to send add-ons during a rollout)
+    # never reaches the meter. Fail so the activity retries instead of reporting an add-on that wasn't applied.
+    if body.get("status") == "accepted" and (body.get("quarantined_count") or not body.get("records")):
+        reasons = "; ".join(q.get("reason", "") for q in body.get("quarantined", [])[:3])
+        raise RuntimeError(f"add-on record not accepted by the collector: {reasons or 'no records accepted'}")
+    return body.get("status", "accepted")
 
 
 @activity.defn
