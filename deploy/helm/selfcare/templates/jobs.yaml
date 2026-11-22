@@ -127,6 +127,10 @@ spec:
         - name: prompt-seed
           image: {{ include "selfcare.image" (dict "root" . "name" "core-api") }}
           command: ["prompt-seed"]
-          env: {{- include "selfcare.env" . | nindent 12 }}
+          env:
+            {{- include "selfcare.env" . | nindent 12 }}
+            - { name: HOME, value: /tmp }   # read-only root fs: the Langfuse client needs a writable home/tmp
           resources: { requests: { cpu: 25m, memory: 192Mi }, limits: { memory: 384Mi } }
           {{- include "selfcare.containerSecurity" . | nindent 10 }}
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+      volumes: [{ name: tmp, emptyDir: {} }]
