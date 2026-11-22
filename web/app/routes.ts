@@ -22,6 +22,7 @@ export default [
   route("api/events", "routes/api.events.ts"),
   route("api/sample.csv", "routes/api.sample.ts"),
   route("api/evidence/:cycle", "routes/api.evidence.ts"),
+  route("api/explanation/:cycle", "routes/api.explanation.ts"),
   route("api/ask", "routes/api.ask.ts"),
   route("api/ask/stream", "routes/api.ask-stream.ts"),
   route("api/orders", "routes/api.orders.ts"),
