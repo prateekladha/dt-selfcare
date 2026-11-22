@@ -71,9 +71,11 @@ def build_snapshot(engine, sub_id: str) -> dict:
 
     from .plan_history import segments
 
-    seg = segments(engine, sub_id, cycle_of(datetime.now(UTC)), sub.plan_code)
+    cycle = cycle_of(datetime.now(UTC))
+    seg = segments(engine, sub_id, cycle, sub.plan_code)
     return {"sub": {"id": sub.id, "name": sub.name, "email": sub.email, "country": sub.country, "plan_code": sub.plan_code},
             "plan_segments": [[p.code, d] for p, d in seg] if seg else None,  # tariff changes this cycle
+            "segments_cycle": cycle,   # the month they belong to: a snapshot from the 31st mustn't split the 1st
             "bills": [bill_summary(b) for b in list_bills(engine, sub_id, 12)],
             "notes": [{"id": n.id, "kind": n.kind, "title": n.title, "body": n.body,
                        "created_at": n.created_at.isoformat(), "read": n.read_at is not None} for n in notes]}

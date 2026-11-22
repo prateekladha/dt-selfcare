@@ -557,3 +557,20 @@ def test_a_month_is_billed_on_the_tariff_in_force_then_not_todays(env):
     assert plan_at(engine, SUB, datetime(2026, 11, 1, tzinfo=UTC), "DE-M") == "DE-FLEX"   # October: FLEX
     assert plan_at(engine, SUB, datetime(2026, 12, 1, tzinfo=UTC), "DE-M") == "DE-M"      # November: M
     assert plan_at(engine, "4915100000004", datetime(2026, 11, 1, tzinfo=UTC), "DE-S") == "DE-S"   # no history
+
+
+def test_usage_arriving_two_months_late_is_still_billed_once(env):
+    """Only the previous month used to be checked: a September record arriving after the October bill run
+    was never billed."""
+    _client, engine, state, _ = env
+    from core_api.services.bills import close_cycle, get_bill_row, row_to_bill
+    add_usage(state, SUB, datetime(2026, 8, 10, tzinfo=UTC), [(UsageType.DATA, None, 1_000 * MB)])
+    close_cycle(engine, state, "2026-08")
+    close_cycle(engine, state, "2026-09")
+    add_usage(state, SUB, datetime(2026, 8, 28, tzinfo=UTC), [(UsageType.ROAMING_DATA, "Z2", 100 * MB)])  # August, late
+    close_cycle(engine, state, "2026-10")
+    oct_lines = {x.code: x for x in row_to_bill(get_bill_row(engine, SUB, "2026-10")).lines}
+    assert oct_lines["ADJ:2026-08"].amount == 199
+    import pytest as _pytest
+    with _pytest.raises(ValueError):          # November isn't over: nothing more to close
+        close_cycle(engine, state, "2099-01")

@@ -65,8 +65,13 @@ def home(response: Response, p: Principal = Depends(current_principal)) -> dict:
     plan = get_plan(sub["plan_code"])
     state = get_usage_state()
     now = datetime.now(UTC)
-    seg = [(get_plan(c), d) for c, d in snap["plan_segments"]] if snap.get("plan_segments") else None
-    current = unbilled(state, sub["id"], sub["plan_code"], now, seg=seg)
+    from telco_common.models import cycle_of
+
+    if snap.get("segments_cycle") == cycle_of(now):   # cached tariff split of THIS month
+        seg = [(get_plan(c), d) for c, d in snap["plan_segments"]] if snap.get("plan_segments") else None
+        current = unbilled(state, sub["id"], sub["plan_code"], now, seg=seg)
+    else:   # snapshot from last month (or older format): look the split up for this month
+        current = unbilled(state, sub["id"], sub["plan_code"], now)
     counters = state.counters(sub["id"], current.cycle)
     last = history[-1] if history else None
     return {

@@ -76,6 +76,10 @@ def test_apply_plan_records_history_once_and_bill_run_prorates(world):
     from telco_common.usage_state import UsageState
 
     engine, r = world
+    from core_api.db import subscribers
+    from sqlalchemy import update
+    with engine.begin() as cx:   # an existing customer (joined long ago): no join-month pro-rating here
+        cx.execute(update(subscribers).values(created_at=datetime(2025, 1, 1, tzinfo=UTC)))
     asyncio.run(apply_plan("ord-1", SUB, "DE-M"))
     asyncio.run(apply_plan("ord-1", SUB, "DE-M"))             # retried activity: no second history row
     with engine.connect() as cx:
@@ -128,3 +132,32 @@ def test_exact_split_uses_each_tariffs_own_days_including_late_cdrs():
     assert len(over) == 1 and over[0].quantity == 2_000 and "Mobile Flex" in over[0].label
     assert st.daily(SUB, "2026-09")[5][str(UsageType.DATA)] == 1_500 * MB
     assert st.counters(SUB, "2026-09")[str(UsageType.DATA)] == 8_000 * MB   # totals exclude per-day fields
+
+
+
+def test_unused_addon_volume_carries_into_the_next_tariff_segment():
+    """DE-S (throttled) for days 1-14 with a 5 GB add-on barely used, then DE-FLEX (charged overage): the
+    add-on's unused volume must cover FLEX usage instead of being forfeited at the switch."""
+    from telco_common.billing import rate_segments
+    from telco_common.catalog import MB, get_plan
+    seg = [(get_plan("DE-S"), 14), (get_plan("DE-FLEX"), 16)]
+    used_s = {"DATA": 1_000 * MB, "addon:DE-DATA-5GB": 1}         # far below DE-S share + 5 GB
+    used_flex = {"DATA": 4_000 * MB}                               # FLEX share is ~1.6 GB -> 2.4 GB over
+    with_carry = rate_segments(SUB, "2026-11", seg, [used_s, used_flex])
+    assert not [x for x in with_carry.lines if "DATA_OVERAGE" in x.code]   # covered by the carried add-on
+
+
+def test_customer_who_joined_mid_month_pays_only_their_days(world):
+    from core_api.db import subscribers
+    from core_api.services.bills import first_billable_day, rate_cycle
+    from sqlalchemy import update
+    from telco_common.usage_state import UsageState
+    engine, r = world
+    with engine.begin() as cx:
+        cx.execute(update(subscribers).values(created_at=datetime(2026, 9, 21, 10, tzinfo=UTC)))
+    assert first_billable_day(engine, SUB, "2026-09") == 21
+    assert first_billable_day(engine, SUB, "2026-10") == 1              # later months: full month
+    full = rate_cycle(UsageState(r, 4), SUB, "2026-09", "DE-M", {}, None)
+    part = rate_cycle(UsageState(r, 4), SUB, "2026-09", "DE-M", {}, None, first_day=21)
+    fee = lambda b: sum(x.amount for x in b.lines if x.category == "PLAN")
+    assert fee(part) == round(fee(full) * 10 / 30)                      # 10 of 30 days

@@ -129,8 +129,10 @@ def prorated_plan(segments: list[tuple[Plan, int]]) -> tuple[Plan, list[BillLine
 
 
 def rate(subscriber_id: str, cycle: str, plan: Plan, counters: dict[str, int],
-         adjustments: list[BillLine] | None = None, segments: list[tuple[Plan, int]] | None = None) -> Bill:
-    """segments: tariff history within the cycle (see prorated_plan); None/one segment = whole cycle on `plan`."""
+         adjustments: list[BillLine] | None = None, segments: list[tuple[Plan, int]] | None = None,
+         extra_allowance_mb: int = 0) -> Bill:
+    """segments: tariff history within the cycle (see prorated_plan); None/one segment = whole cycle on `plan`.
+    extra_allowance_mb: add-on volume carried in from an earlier tariff segment of the same cycle."""
     if segments and len(segments) > 1:
         plan, fee_lines = prorated_plan(segments)
     else:
@@ -153,7 +155,7 @@ def rate(subscriber_id: str, cycle: str, plan: Plan, counters: dict[str, int],
     eu_voice_s = roam_voice.get(ROAM_LIKE_AT_HOME_ZONE, 0)
 
     data_bytes = plain.get(UsageType.DATA, 0) + eu_bytes
-    allowance_mb = plan.data_mb + addon_mb
+    allowance_mb = plan.data_mb + addon_mb + extra_allowance_mb
     data_mb = _ceil_div(data_bytes, MB)
     over_mb = max(0, data_mb - allowance_mb)
     if over_mb and plan.overage_policy == OveragePolicy.CHARGE:
@@ -246,20 +248,29 @@ def rate(subscriber_id: str, cycle: str, plan: Plan, counters: dict[str, int],
 
 
 def rate_segments(subscriber_id: str, cycle: str, segments: list[tuple[Plan, int]],
-                  seg_counters: list[dict[str, int]], adjustments: list[BillLine] | None = None) -> Bill:
+                  seg_counters: list[dict[str, int]], adjustments: list[BillLine] | None = None,
+                  month_days: int | None = None, first_day: int = 1) -> Bill:
     """Exact pro-rating when per-day usage is known: each tariff segment is rated on ITS OWN tariff with
     its own pro-rated fee and allowances, on the usage of its own days (late CDRs included, by event day).
-    Add-ons count in the segment they were bought in."""
-    total_days = sum(d for _, d in segments)
+    An add-on is charged in the segment it was bought in, and its UNUSED volume carries into the following
+    segments (a tariff switch after buying an add-on used to forfeit what was left of it).
+    month_days / first_day: a customer who joined mid-month pays only the days from `first_day`."""
+    total_days = month_days or sum(d for _, d in segments)
     lines: list[BillLine] = []
-    day = 1
+    day = first_day
     many = len(segments) > 1
+    carry_mb = 0
     for i, ((p, days), counters) in enumerate(zip(segments, seg_counters, strict=True)):
         def share(v: int | None, days: int = days) -> int | None:
             return None if v is None else int((Decimal(v) * days / total_days).quantize(Decimal(1), ROUND_HALF_UP))
         scaled = replace(p, monthly_fee=share(p.monthly_fee), data_mb=share(p.data_mb),
                          voice_min=share(p.voice_min), sms=share(p.sms))
-        seg_bill = rate(subscriber_id, cycle, scaled, counters)
+        seg_bill = rate(subscriber_id, cycle, scaled, counters, extra_allowance_mb=carry_mb)
+        # unused add-on volume -> next segment (the segment's own plan share is used first, then add-ons)
+        _, _, seg_addons = split_counters(counters)
+        addon_avail = carry_mb + sum(get_addon(c).data_mb * n for c, n in seg_addons.items())
+        used_mb = seg_bill.usage.data_mb
+        carry_mb = max(0, min(addon_avail, (scaled.data_mb or 0) + addon_avail - used_mb))
         span = f"{_day_label(cycle, day)}–{_day_label(cycle, day + days - 1)}"
         for ln in seg_bill.lines:
             if ln.code == "PLAN_FEE":
