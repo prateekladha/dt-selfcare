@@ -36,7 +36,7 @@ test("@outage payments down: Pay is replaced by a clear notice; core-api down: l
   // every BFF pod should have served (and remembered) this customer once: requests are spread over pods
   const webPods = Number(kubectl("get deploy web -o jsonpath={.status.readyReplicas}").trim() || "2");
   for (let i = 0; i < webPods * 5; i++) await page.reload();
-  await expect(page.getByRole("link", { name: /Pay (now|in advance)/ }).first()).toBeVisible();
+  await expect(page.getByRole("link", { name: /Pay (now|in advance|.+ bill)/ }).first()).toBeVisible();
   await shot(page, "1-normal");
 
   // ---- payments-service down ----
@@ -54,14 +54,14 @@ test("@outage payments down: Pay is replaced by a clear notice; core-api down: l
   expect(codes.every((c) => c >= 500), `pay attempts during outage: ${codes.join(",")}`).toBe(true);
   await page.reload();
   await expect(page.getByText("Payments are briefly unavailable").first()).toBeVisible();   // one notice per Pay button
-  await expect(page.getByRole("link", { name: /Pay (now|in advance)/ })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /Pay (now|in advance|.+ bill)/ })).toHaveCount(0);
   await shot(page, "2-payments-down");
 
   scale("payments-service", 2);
   kubectl("rollout status deploy/payments-service --timeout=240s");
   await page.waitForTimeout(21_000);   // breaker reset timeout -> half-open: Pay is offered again
   await page.reload();
-  await expect(page.getByRole("link", { name: /Pay (now|in advance)/ }).first()).toBeVisible();
+  await expect(page.getByRole("link", { name: /Pay (now|in advance|.+ bill)/ }).first()).toBeVisible();
   await shot(page, "3-payments-back");
 
   // ---- core-api down ----

@@ -19,6 +19,12 @@ export const sessions = createCookieSessionStorage<{ token: string; refresh: str
   },
 });
 
+/** Rotated session cookies per request. A refresh rotates the refresh token (the old one dies after a 30 s
+ *  grace), so EVERY response that refreshed must send the new cookie back, not just page loads; the root
+ *  middleware (root.tsx) attaches it to resource-route responses too (API, PDF, SSE, orders...). */
+const rotated = new WeakMap<Request, string>();
+export const rotatedCookie = (request: Request) => rotated.get(request);
+
 function expiresSoon(jwt: string, skewS = 120): boolean {
   try {
     const payload = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString());
@@ -50,7 +56,9 @@ export async function freshToken(request: Request, force = false): Promise<{ tok
   const pair = await res.json();
   session.set("token", pair.access_token);
   session.set("refresh", pair.refresh_token);
-  return { token: pair.access_token, setCookie: await sessions.commitSession(session) };
+  const setCookie = await sessions.commitSession(session);
+  rotated.set(request, setCookie);
+  return { token: pair.access_token, setCookie };
 }
 
 export async function requireToken(request: Request): Promise<string> {

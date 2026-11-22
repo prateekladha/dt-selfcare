@@ -27,10 +27,16 @@ export default function ChangePlan({ loaderData }: Route.ComponentProps) {
 
   async function choose(code: string) {
     setBusy(code);
-    const r = await fetch("/api/orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ plan_code: code }) });
-    const j = await r.json();
-    setBusy(null);
-    if (r.ok) setProposal(j); else toast(j.detail ?? "Couldn't prepare the tariff change", "bad");
+    setProposal(null);   // a new choice replaces an earlier (declined / expired / completed) proposal
+    try {
+      const r = await fetch("/api/orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ plan_code: code }) });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) setProposal(j); else toast(j.detail ?? "Couldn't prepare the tariff change", "bad");
+    } catch {
+      toast("We can't reach the service right now. Please try again in a moment.", "bad");
+    } finally {
+      setBusy(null);   // never leave every button disabled
+    }
   }
 
   return (
@@ -55,7 +61,7 @@ export default function ChangePlan({ loaderData }: Route.ComponentProps) {
                 <h2 className="text-lg font-bold">{p.name}</h2>
                 {isCurrent && <Pill tone="brand" icon={<Check size={13} />}>Your tariff</Pill>}
               </div>
-              <p className="mt-2 text-[28px] font-extrabold leading-none">{money(p.monthly_fee, currency)}<span className="text-sm font-medium text-[var(--ink-3)]"> / month</span></p>
+              <p className="mt-2 text-[28px] font-extrabold leading-none">{money(p.monthly_fee, currency)}<span className="text-sm font-medium text-[var(--ink-3)]"> / month + VAT</span></p>
               <ul className="mt-4 space-y-1.5 text-[14px] text-[var(--ink-2)]">
                 <li>{gb(p.data_mb)} data</li>
                 <li>{p.voice_min == null ? "Unlimited calls" : `${p.voice_min} minutes`}</li>
@@ -64,7 +70,7 @@ export default function ChangePlan({ loaderData }: Route.ComponentProps) {
               </ul>
               <div className="mt-auto pt-5">
                 {!isCurrent && (
-                  <button type="button" onClick={() => choose(p.code)} disabled={busy !== null || proposal !== null}
+                  <button type="button" onClick={() => choose(p.code)} disabled={busy !== null}
                           className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-[var(--brand)] px-4 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50">
                     {busy === p.code && <Loader2 size={15} className="animate-spin" />} Switch to {p.name}
                   </button>

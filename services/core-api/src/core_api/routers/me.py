@@ -79,8 +79,10 @@ def home(response: Response, p: Principal = Depends(current_principal)) -> dict:
                   "version": state.committed_offset_for(sub["id"]), **current.usage.model_dump()},
         "unbilled": {"cycle": current.cycle, "currency": current.currency, "subtotal": current.subtotal,
                      "vat": current.vat, "total": current.total, "lines": [x.model_dump() for x in current.lines]},
+        # the OLDEST unpaid bill comes first (it's the one that is or becomes overdue); the amount covers all
         "outstanding": {"amount": sum(b["outstanding"] for b in history), "currency": current.currency,
-                        "bill_id": next((b["id"] for b in reversed(history) if b["outstanding"] > 0), None)},
+                        "bill_id": next((b["id"] for b in history if b["outstanding"] > 0), None),
+                        "unpaid_bills": sum(1 for b in history if b["outstanding"] > 0)},
         "last_bill": last,
         "trend": history,
         "notifications": snap["notes"],

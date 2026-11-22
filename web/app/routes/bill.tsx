@@ -6,7 +6,7 @@ import { Link } from "react-router";
 import { DeltaPill, ExplanationSection } from "~/components/Explain";
 import { PayLink } from "~/components/PayLink";
 import { Card, CardHeader, LinkButton, Pill } from "~/components/ui";
-import { api, streamed, PRIVATE } from "~/lib/api.server";
+import { ApiError, api, streamed, PRIVATE } from "~/lib/api.server";
 import { cycleLabel, dateLabel, money } from "~/lib/format";
 import type { ExplanationResponse, Line } from "~/lib/types";
 import { useSnapshot } from "./_app";
@@ -18,17 +18,27 @@ export const meta = ({ params }: Route.MetaArgs) => [{ title: `${params.cycle ==
 type BillDetail = { id: string; cycle: string; total: number; subtotal: number; vat: number; vat_rate: string; currency: string;
   status: string; outstanding: number; due_date: string; issued_at: string; lines: Line[]; plan_code: string };
 
-const GROUPS: [string, string][] = [["PLAN", "Plan"], ["ADDON", "Add-ons"], ["OVERAGE", "Beyond your allowance"], ["ROAMING", "Roaming"], ["INTERNATIONAL", "International"]];
+// Every line category the rating engine produces; anything new lands in "Other" instead of vanishing (lines
+// missing here made the breakdown add up to less than the total printed under it).
+const GROUPS: [string, string][] = [["PLAN", "Plan"], ["ADDON", "Add-ons"], ["OVERAGE", "Beyond your allowance"], ["ROAMING", "Roaming"],
+  ["INTERNATIONAL", "International"], ["MESSAGING", "Messaging"], ["THIRD_PARTY", "Third-party services"], ["ADJUSTMENT", "Adjustments"]];
+const KNOWN = new Set(GROUPS.map(([c]) => c));
 
 export async function loader({ request, params }: Route.LoaderArgs) {
   const asked = new URL(request.url).searchParams.get("lang") ?? "en";
   const lang = ["en", "de", "pl"].includes(asked) ? asked : "en";
   const cycle = params.cycle;
   if (!/^(\d{4}-(0[1-9]|1[0-2])|current)$/.test(cycle)) throw new Response("Not found", { status: 404 });  // never forwarded raw into an API path
-  const [facts, bill] = await Promise.all([
-    api<ExplanationResponse>(request, `/v1/me/bills/${cycle}/explanation?ai=false`),
-    cycle === "current" ? Promise.resolve(null) : api<BillDetail>(request, `/v1/me/bills/${cycle}`),
-  ]);
+  let facts: ExplanationResponse, bill: BillDetail | null;
+  try {
+    [facts, bill] = await Promise.all([
+      api<ExplanationResponse>(request, `/v1/me/bills/${cycle}/explanation?ai=false`),
+      cycle === "current" ? Promise.resolve(null) : api<BillDetail>(request, `/v1/me/bills/${cycle}`),
+    ]);
+  } catch (e) {   // a month with no bill (not issued yet / before your history) is "not found", not an outage
+    if (e instanceof ApiError && e.status === 404) throw new Response("Not found", { status: 404 });
+    throw e;
+  }
   const narrative = streamed(api<ExplanationResponse>(request, `/v1/me/bills/${cycle}/explanation?lang=${lang}`));  // LLM, streamed
   const daily = streamed(api<DailyUsage>(request, `/v1/me/usage/daily${cycle === "current" ? "" : `?cycle=${cycle}`}`));  // streamed
   return { facts, narrative, daily, bill, lang, cycle };
@@ -87,15 +97,15 @@ export default function BillPage({ loaderData }: Route.ComponentProps) {
           <Card>
             <CardHeader title="Breakdown" subtitle="Before VAT unless stated" />
             <div className="px-6 pb-6 pt-3">
-              {GROUPS.map(([cat, label]) => {
-                const items = lines.filter((l) => l.category === cat);
+              {[...GROUPS, ["OTHER", "Other"] as [string, string]].map(([cat, label]) => {
+                const items = lines.filter((l) => (cat === "OTHER" ? !KNOWN.has(l.category) : l.category === cat));
                 if (!items.length) return null;
                 return (
                   <div key={cat} className="border-b border-[var(--line)] py-3 last:border-0">
                     <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)]">{label}</p>
                     {items.map((l) => (
                       <div key={l.code} className="flex items-baseline justify-between gap-3 py-1 text-sm">
-                        <span>{l.label}<span className="ml-1.5 text-[var(--ink-3)]">{l.quantity.toLocaleString(loc)} {l.unit}</span></span>
+                        <span>{l.label}<span className="ml-1.5 text-[var(--ink-3)]">{l.quantity.toLocaleString("en-GB")} {l.unit}</span></span>
                         <span className="tabular font-semibold">{money(l.amount, cur, loc)}</span>
                       </div>
                     ))}

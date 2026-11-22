@@ -56,7 +56,7 @@ export default function Insights({ loaderData, actionData }: Route.ComponentProp
     <div className="space-y-6">
       <div>
         <h1 className="display text-[34px] font-extrabold">Try your usage</h1>
-        <p className="mt-1 max-w-[720px] text-[15px] text-[var(--ink-3)]">Scenarios are added on top of your real usage from last month (computed from your CDRs) and priced on your plan ({home.plan.name}). Or upload a usage file. Your real bill is never affected.</p>
+        <p className="mt-1 max-w-[720px] text-[15px] text-[var(--ink-3)]">Scenarios are added on top of your real usage from last month (from your network usage records) and priced on your plan ({home.plan.name}). Or upload a usage file. Your real bill is never affected.</p>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-5">
@@ -109,7 +109,7 @@ export default function Insights({ loaderData, actionData }: Route.ComponentProp
               <div>
                 <p className="text-sm font-semibold text-[var(--ink-3)]">Estimated bill · {r.source.replace(/^scenario:/, "").replace(/^upload:/, "file: ").replace(/-/g, " ")}</p>
                 <p className="display tabular mt-1 text-[44px] font-extrabold leading-none">{money(r.bill.total, r.bill.currency, loc)}</p>
-                <p className="mt-2 text-[13px] text-[var(--ink-3)]">incl. VAT{r.baseline && r.compared_to ? <> · your actual {cycleLabel(r.compared_to, loc)} usage (from your CDRs) plus this scenario</> : r.compared_to && <> · compared with your {cycleLabel(r.compared_to, loc)} bill</>}</p>
+                <p className="mt-2 text-[13px] text-[var(--ink-3)]">incl. VAT{r.baseline && r.compared_to ? <> · your actual {cycleLabel(r.compared_to, loc)} usage (from your network usage records) plus this scenario</> : r.compared_to && <> · compared with your {cycleLabel(r.compared_to, loc)} bill</>}</p>
               </div>
               <DeltaPill ex={r.explanation} locale={loc} />
             </div>

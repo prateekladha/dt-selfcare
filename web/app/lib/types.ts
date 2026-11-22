@@ -43,7 +43,7 @@ export type Home = {
   usage: { cycle: string; data_pct: number; version: number | null; data_mb: number; data_allowance_mb: number; voice_min: number; sms: number;
            intl_voice_min: number; roaming_data_mb: Record<string, number>; roaming_voice_min: Record<string, number>; eu_roaming_data_mb: number };
   unbilled: { cycle: string; currency: string; subtotal: number; vat: number; total: number; lines: Line[] };
-  outstanding: { amount: number; currency: string; bill_id: string | null };
+  outstanding: { amount: number; currency: string; bill_id: string | null; unpaid_bills?: number };
   last_bill: BillSummary | null;
   trend: BillSummary[];
   notifications: { id: number; kind: string; title: string; body: string; created_at: string; read: boolean }[];

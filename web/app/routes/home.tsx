@@ -74,10 +74,13 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
             action={d.due ? <Pill tone={d.overdue ? "bad" : "warn"}>{d.overdue ? "Overdue" : `Due ${dateLabel(d.due.due_date, loc)}`}</Pill> : <Pill tone="good" icon={<CheckCircle2 size={13} />}>Paid</Pill>} />
           <div className="flex flex-1 flex-col px-6 pb-6 pt-4">
             <p className="display tabular text-[40px] font-extrabold leading-none">{money(home.outstanding.amount, home.outstanding.currency, loc)}</p>
-            <p className="mt-2 text-[13px] text-[var(--ink-3)]">{d.due ? `${cycleLabel(d.due.cycle, loc)} bill, including VAT · ${d.overdue ? "was due" : "due"} ${dateLabel(d.due.due_date, loc)}` : "You're all paid up. Nice."}</p>
+            <p className="mt-2 text-[13px] text-[var(--ink-3)]">{d.due ? ((home.outstanding.unpaid_bills ?? 1) > 1
+                ? `${home.outstanding.unpaid_bills} unpaid bills, including VAT · the ${cycleLabel(d.due.cycle, loc)} bill ${d.overdue ? "was due" : "is due"} ${dateLabel(d.due.due_date, loc)}`
+                : `${cycleLabel(d.due.cycle, loc)} bill, including VAT · ${d.overdue ? "was due" : "due"} ${dateLabel(d.due.due_date, loc)}`)
+              : "You're all paid up. Nice."}</p>
             <div className="mt-auto pt-6">
               <div className="flex flex-wrap gap-2">
-                {d.due && home.features.payments && <PayLink purpose="BILL" cycle={d.due.cycle} label="Pay now" />}
+                {d.due && home.features.payments && <PayLink purpose="BILL" cycle={d.due.cycle} label={(home.outstanding.unpaid_bills ?? 1) > 1 ? `Pay ${cycleLabel(d.due.cycle, loc)} bill` : "Pay now"} />}
                 {home.last_bill && <LinkButton to={`/bills/${home.last_bill.cycle}`} variant="secondary"><Receipt size={16} /> View bill</LinkButton>}
               </div>
               {home.last_bill && <a href={`/bills/${home.last_bill.cycle}/pdf`} target="_blank" rel="noopener" className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-[var(--ink-2)] underline-offset-4 hover:underline"><FileText size={15} /> View PDF</a>}

@@ -10,6 +10,20 @@ import {
 } from "react-router";
 
 import type { Route } from "./+types/root";
+import { rotatedCookie } from "~/lib/session.server";
+
+/** Any request whose token was refreshed sends the rotated session cookie back (resource routes included),
+ *  unless the route already set it. Without this, the next click used the dead refresh token -> signed out. */
+export const middleware: Route.MiddlewareFunction[] = [
+  async ({ request }, next) => {
+    const res = (await next()) as Response;
+    const cookie = rotatedCookie(request);
+    if (cookie && res instanceof Response && !(res.headers.get("Set-Cookie") ?? "").includes("__session=")) {
+      try { res.headers.append("Set-Cookie", cookie); } catch { /* immutable response: nothing to add to */ }
+    }
+    return res;
+  },
+];
 import { useNonce } from "~/lib/nonce";
 import "./app.css";
 

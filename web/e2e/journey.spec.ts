@@ -121,7 +121,7 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
 
   // Payment: Pay now leads to the payment page, which opens the real Razorpay checkout
   await page.goto("/");
-  const pay = page.getByRole("link", { name: /Pay now/ });
+  const pay = page.getByRole("link", { name: /^Pay (now|.+ bill)$/ });
   if (await pay.count()) {
     await pay.first().click();
     await expect(page).toHaveURL(/\/pay\/bill\/\d{4}-\d{2}$/);
