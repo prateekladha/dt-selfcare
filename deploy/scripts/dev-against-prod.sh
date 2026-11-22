@@ -15,8 +15,13 @@ forward() {  # keep a port-forward alive (they drop on pod restarts / idle)
 }
 forward core-api 18080 & P1=$!
 forward payments-service 18081 & P2=$!
-forward assistant-service 18082 & P3=$!
-trap 'kill $P1 $P2 $P3 2>/dev/null; pkill -f "port-forward svc/(core-api|payments-service|assistant-service)" 2>/dev/null || true' EXIT
+if [[ -n "${PREVIEW_ASSISTANT:-}" ]]; then   # unmerged agent code: see deploy/preview/assistant-preview.sh
+  ( while true; do kubectl -n "$NS" port-forward pod/assistant-preview 18082:8080 >/dev/null 2>&1 || true; sleep 1; done ) & P3=$!
+  echo "assistant -> PREVIEW pod (working-copy agent code)"
+else
+  forward assistant-service 18082 & P3=$!
+fi
+trap 'kill $P1 $P2 $P3 2>/dev/null; pkill -f "port-forward (svc/(core-api|payments-service|assistant-service)|pod/assistant-preview)" 2>/dev/null || true' EXIT
 
 for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:18080/readyz && break; sleep 1; done
 echo "prod services forwarded: core-api :18080, payments :18081, assistant :18082"
