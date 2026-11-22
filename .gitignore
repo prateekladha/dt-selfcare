@@ -19,3 +19,4 @@ backend.hcl
 # playwright
 web/e2e-results
 web/e2e-report
+web/e2e-screens
