@@ -74,7 +74,7 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
             action={d.due ? <Pill tone={d.overdue ? "bad" : "warn"}>{d.overdue ? "Overdue" : `Due ${dateLabel(d.due.due_date, loc)}`}</Pill> : <Pill tone="good" icon={<CheckCircle2 size={13} />}>Paid</Pill>} />
           <div className="flex flex-1 flex-col px-6 pb-6 pt-4">
             <p className="display tabular text-[40px] font-extrabold leading-none">{money(home.outstanding.amount, home.outstanding.currency, loc)}</p>
-            <p className="mt-2 text-[13px] text-[var(--ink-3)]">{d.due ? `${cycleLabel(d.due.cycle, loc)} bill, including VAT` : "You're all paid up. Nice."}</p>
+            <p className="mt-2 text-[13px] text-[var(--ink-3)]">{d.due ? `${cycleLabel(d.due.cycle, loc)} bill, including VAT · ${d.overdue ? "was due" : "due"} ${dateLabel(d.due.due_date, loc)}` : "You're all paid up. Nice."}</p>
             <div className="mt-auto pt-6">
               <div className="flex flex-wrap gap-2">
                 {d.due && home.features.payments && <PayButton purpose="BILL" billId={d.due.id} label="Pay now" name={home.subscriber.name} contact={`+${home.subscriber.id}`} email={home.subscriber.email} />}

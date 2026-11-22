@@ -116,6 +116,8 @@ export default function Assistant() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  busyRef.current = busy;
   const [sessionId, setSessionId] = useState<string | null>(null);  // follow-up questions keep context
   const [chats, setChats] = useState<{ id: string; title: string; updated_at: string; turns: number }[]>([]);
   const [drawer, setDrawer] = useState(false);
@@ -162,18 +164,47 @@ export default function Assistant() {
     else window.history.replaceState(window.history.state, "", url);
   }, [sessionId]);
   const endRef = useRef<HTMLDivElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   // Follow the answer while it streams, like a chat app: keep the end of the conversation just above the
-  // sticky question box. Stop following as soon as the customer scrolls up to read; resume if they
-  // scroll back to the bottom. Scrolls are instant (a smooth scroll would be mistaken for the user).
+  // sticky question box (measured, so it works with the phone keyboard open or closed and the tab bar shown
+  // or hidden). Only the customer's own gesture stops it (swipe/wheel/key up): scroll events caused by the
+  // browser itself (keyboard closing, URL bar resizing) must not. Back at the bottom, following resumes.
   const follow = useRef(false);
-  const toEnd = () => endRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
+  // Where the box's top sits once it is stuck to the bottom (NOT its current spot: until it sticks it
+  // scrolls with the page, and measuring against it would overshoot to the very end of the page).
+  const boxTop = () => {
+    const f = formRef.current;
+    if (!f) return undefined;
+    return window.innerHeight - (parseFloat(getComputedStyle(f).bottom) || 0) - f.offsetHeight;
+  };
+  const toEnd = () => {
+    const end = endRef.current?.getBoundingClientRect().bottom, top = boxTop();
+    if (end === undefined || top === undefined) return;
+    const d = end - (top - 16);
+    if (d > 1) window.scrollBy({ top: d, behavior: "auto" });
+  };
   useEffect(() => {
+    let touchY = 0;
+    const away = () => { follow.current = false; };
+    const onWheel = (e: WheelEvent) => { if (e.deltaY < 0) away(); };
+    const onTouchStart = (e: TouchEvent) => { touchY = e.touches[0]?.clientY ?? 0; };
+    const onTouchMove = (e: TouchEvent) => { if ((e.touches[0]?.clientY ?? 0) > touchY + 6) away(); };  // finger down = page up
+    const onKey = (e: KeyboardEvent) => { if (["PageUp", "ArrowUp", "Home"].includes(e.key) && !(e.target instanceof HTMLInputElement)) away(); };
     const onScroll = () => {
-      const fromBottom = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight);
-      follow.current = fromBottom < 160;
+      const end = endRef.current?.getBoundingClientRect().bottom, top = boxTop();
+      if (busyRef.current && end !== undefined && top !== undefined && end - top < 40) follow.current = true;
     };
+    window.addEventListener("wheel", onWheel, { passive: true });
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
+    window.addEventListener("keydown", onKey);
     window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
+    return () => {
+      window.removeEventListener("wheel", onWheel); window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove); window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll);
+    };
   }, []);
   useEffect(() => { if (follow.current) toEnd(); }, [turns]);
   const patch = (fn: (t: Turn) => Turn) => setTurns((ts) => ts.map((t, i) => (i === ts.length - 1 ? fn(t) : t)));
@@ -181,6 +212,8 @@ export default function Assistant() {
   async function ask(question: string) {
     if (question.trim().length < 2 || busy) return;
     setBusy(true); setQ("");
+    // phones: close the keyboard so the answer has the screen (after the tap has registered)
+    if (window.matchMedia("(max-width: 767px)").matches) inputRef.current?.blur();
     follow.current = true;   // a new question always brings the conversation end into view
     setTurns((ts) => [...ts, { q: question, text: "", steps: [], citations: [] }]);
     try {
@@ -279,7 +312,7 @@ export default function Assistant() {
             <Card className="overflow-hidden"><Answer t={t} /></Card>
           </div>
         ))}
-        <div ref={endRef} className="scroll-mb-[170px] md:scroll-mb-[110px]" />
+        <div ref={endRef} />
       </div>
 
       {assistantDown && (
@@ -287,11 +320,13 @@ export default function Assistant() {
           The assistant is briefly unavailable. Your bills, usage and payments work as normal; please try again in a few minutes.
         </div>
       )}
-      <form onSubmit={(e) => { e.preventDefault(); ask(q); }}
-            className="chat-composer sticky bottom-20 flex items-center gap-2 rounded-[var(--radius)] border border-[var(--line-strong)] bg-[var(--surface)] p-2 shadow-[var(--shadow-lg)] md:bottom-6">
-        <input disabled={assistantDown} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ask about your bills, usage or plan" aria-label="Your question"
+      <form ref={formRef} onSubmit={(e) => { e.preventDefault(); ask(q); }}
+            className="chat-composer sticky bottom-20 z-10 flex items-center gap-2 rounded-[var(--radius)] border border-[var(--line-strong)] bg-[var(--surface)] p-2 shadow-[var(--shadow-lg)] md:bottom-6">
+        <input ref={inputRef} disabled={assistantDown} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ask about your bills, usage or plan" aria-label="Your question"
                className="h-11 min-w-0 flex-1 bg-transparent px-3 text-[16px] outline-none" maxLength={400} />
-        <button disabled={busy || assistantDown || q.trim().length < 2} aria-label="Ask" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)] text-white disabled:opacity-40">
+        {/* pointerdown would move focus off the field first: on phones that hides the keyboard, the tab bar
+            comes back, the box jumps and the tap lands elsewhere (send needed two taps). Keep the focus. */}
+        <button disabled={busy || assistantDown || q.trim().length < 2} aria-label="Ask" onPointerDown={(e) => e.preventDefault()} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)] text-white disabled:opacity-40">
           {busy ? <Loader2 size={18} className="animate-spin" /> : <ArrowUp size={18} />}
         </button>
       </form>
