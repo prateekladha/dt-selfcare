@@ -26,7 +26,7 @@ from telco_common.models import RawBatch
 from telco_common.streaming import StreamSettings
 
 from .publisher import build_messages, publish
-from .screening import quarantine, remember, screen
+from .screening import quarantine, release, remember, screen
 
 BATCHES = Counter("collector_batches_total", "Batches received", ["result"])
 RECORDS = Counter("collector_records_total", "Records accepted")
@@ -41,6 +41,21 @@ class Settings(BaseSettings):
     # JSON map source -> token, e.g. {"pgw-fra-01": "…"}; mounted as a secret.
     source_tokens: str = "{}"
     batch_done_ttl_s: int = 7 * 24 * 3600
+    # Add-on purchases (PLAN_CHANGED) come from the order workflow, never from network elements. With a dedicated
+    # order token (Vault: order-source-token) core-api sends them as source "core-orders" and ONLY that source may
+    # send them; without it (older setup) the fallback list below applies.
+    order_source_token: str = ""
+    order_sources: str = "emu-mediation-01"
+
+
+ORDER_SOURCE = "core-orders"
+
+
+def order_sources() -> set[str]:
+    """Who may send add-on events: only the dedicated order source once its token is configured."""
+    if S.settings.order_source_token:
+        return {ORDER_SOURCE}
+    return {s.strip() for s in S.settings.order_sources.split(",") if s.strip()}
 
 
 class State:
@@ -64,6 +79,8 @@ def _poll_loop() -> None:
 async def lifespan(_: FastAPI):
     S.settings, S.stream = Settings(), StreamSettings()
     S.tokens = json.loads(S.settings.source_tokens)
+    if S.settings.order_source_token:
+        S.tokens[ORDER_SOURCE] = S.settings.order_source_token
     S.r = valkey.Valkey.from_url(S.settings.valkey_url, socket_timeout=3)
     S.producer = Producer(S.stream.client_config() | {
         "acks": "all", "linger.ms": 10, "compression.type": "none",  # payload already gzip
@@ -108,9 +125,11 @@ def readyz() -> dict:
 async def ingest(batch: RawBatch, response: Response, source: str = Depends(authenticate)) -> dict:
     if batch.source != source:
         raise HTTPException(403, "batch.source does not match authenticated source")
-    key = f"batch:{batch.batch_id}"
+    # batch ids are only unique per source: two network elements may both number a batch "000184213"
+    key = f"batch:{source}:{batch.batch_id}"
+    legacy = f"batch:{batch.batch_id}"   # keys written before scoping (7-day TTL): still honoured
     status = await run_in_threadpool(S.r.get, key)
-    if status == b"done":
+    if status == b"done" or await run_in_threadpool(S.r.get, legacy) == b"done":
         BATCHES.labels("duplicate").inc()
         response.status_code = 200
         return {"status": "duplicate", "batch_id": batch.batch_id}
@@ -118,17 +137,26 @@ async def ingest(batch: RawBatch, response: Response, source: str = Depends(auth
         BATCHES.labels("inflight").inc()
         raise HTTPException(409, "batch is being processed; retry later")
 
-    sc = await run_in_threadpool(screen, batch.records, S.r)
+    if source not in order_sources():
+        # add-on purchases come from the order workflow; a network source can't grant allowance
+        raw = [x for x in batch.records if not (isinstance(x, dict) and x.get("kind") == "PLAN_CHANGED")]
+        refused = [{"index": i, "record_id": x.get("record_id"), "reason": "add-on events are not accepted from this source"}
+                   for i, x in enumerate(batch.records) if isinstance(x, dict) and x.get("kind") == "PLAN_CHANGED"]
+    else:
+        raw, refused = batch.records, []
+    sc = await run_in_threadpool(screen, raw, S.r)
+    sc.quarantined.extend(refused)
     await run_in_threadpool(quarantine, source, batch.batch_id, sc.quarantined, S.r)
     msgs = []
     if sc.valid:
         try:
-            msgs = build_messages(batch.batch_id, sc.valid, S.stream.partitions)
+            msgs = build_messages(f"{source}:{batch.batch_id}", sc.valid, S.stream.partitions)   # source-scoped msg ids
             with PUBLISH_SECONDS.time():
                 errors = await run_in_threadpool(publish, S.producer, S.stream.usage_topic, batch.batch_id, msgs)
         except BufferError:
             errors = ["producer queue full"]
         if errors:
+            await run_in_threadpool(release, sc.valid, S.r)   # let the retry through
             await run_in_threadpool(S.r.delete, key)
             BATCHES.labels("failed").inc()
             log.warning("publish_failed", batch_id=batch.batch_id, errors=errors[:3])

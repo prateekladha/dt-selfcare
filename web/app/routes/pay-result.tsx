@@ -53,7 +53,7 @@ export default function PayResult({ loaderData }: Route.ComponentProps) {
   const view = p.status === "PAID"
     ? { icon: <CheckCircle2 size={28} />, tone: "text-[var(--good)]", title: "Payment received", body: `Thank you. Your ${what} is paid.` }
     : p.status === "FAILED" || p.status === "EXPIRED"
-      ? { icon: <XCircle size={28} />, tone: "text-[var(--bad)]", title: "Payment didn't go through", body: "Nothing was charged. You can try again with another card or UPI app." }
+      ? { icon: <XCircle size={28} />, tone: "text-[var(--bad)]", title: "Payment didn't go through", body: "Nothing was charged; if your bank put an amount on hold, it releases it automatically. You can try again with another card or UPI app." }
       : { icon: <Clock size={28} />, tone: "text-[var(--warn)]", title: "Confirming your payment",
           body: gaveUp ? "Your bank hasn't confirmed it yet. You don't need to pay again: we keep checking and update your bill as soon as it's confirmed."
                        : "We're waiting for your bank to confirm. This page updates by itself; please don't pay again." };

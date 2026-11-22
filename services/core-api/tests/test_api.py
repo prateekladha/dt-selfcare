@@ -80,7 +80,7 @@ def env(monkeypatch):
     import core_api.routers.demo as demo_mod
     import core_api.routers.simulate as sim_mod
     monkeypatch.setattr(demo_mod, "get_usage_state", lambda: state)
-    monkeypatch.setattr(sim_mod, "get_usage_state", lambda: state)
+    monkeypatch.setattr(sim_mod, "get_usage_state", lambda: state, raising=False)
     import core_api.main as main_mod
     monkeypatch.setattr(main_mod, "get_usage_state", lambda: state)
     if not getattr(main_mod.app, "_test_services_mounted", False):  # payments + assistant are separate services
@@ -181,7 +181,7 @@ def test_home_snapshot_bills_explanation_and_pdf(env):
     add_usage(state, SUB, datetime(2026, 10, 10, tzinfo=UTC), [(UsageType.DATA, None, 2_000 * MB),
                                                                (UsageType.ROAMING_DATA, "Z2", 500 * MB)])
     add_usage(state, SUB, datetime.now(UTC), [(UsageType.DATA, None, 2_600 * MB)])
-    assert issue(engine, state, "2026-09", settle_before="2026-10") == {"created": N_DEMO, "skipped_existing": 0}
+    assert issue(engine, state, "2026-09", settle_before="2026-10") == {"created": N_DEMO, "skipped_existing": 0, "failed": 0}
     assert issue(engine, state, "2026-10")["created"] == N_DEMO
     assert issue(engine, state, "2026-10")["skipped_existing"] == N_DEMO  # bill run is idempotent
 
@@ -280,6 +280,7 @@ def test_webhook_rejects_bad_signature(env):
 
 def test_simulate_from_scenario_and_upload(env):
     client, engine, state, _ = env
+    add_usage(state, SUB, datetime(2026, 10, 10, tzinfo=UTC), [(UsageType.DATA, None, 2_000 * MB)])
     issue(engine, state, "2026-10")
     h = login(client)
     assert any(s["key"] == "us-trip-2-weeks" for s in client.get("/v1/me/usage/scenarios", headers=h).json())
@@ -486,3 +487,113 @@ def test_daily_usage_endpoint_adds_up_to_totals(env):
     assert today["data_mb"] >= 1_500 and today["roaming_mb"] >= 300
     assert j["totals"]["data_mb"] == sum(d["data_mb"] for d in j["days"])
     assert client.get("/v1/me/usage/daily?cycle=2999-01", headers=h).status_code == 422
+
+
+def test_paying_again_before_the_first_payment_reaches_the_bill_is_refused(env):
+    """Captured but not yet applied to the bill (billing consumer behind): a fresh payment-page visit used to
+    create a new order for the full amount."""
+    client, engine, state, gw = env
+    issue(engine, state, "2026-10")
+    h = login(client)
+    p = client.post("/v1/me/payments", json={"purpose": "BILL", "bill_id": f"{SUB}:2026-10"},
+                    headers=h | {"Idempotency-Key": "visit-1-000001"}).json()
+    gw.captured.add(p["order_id"])
+    assert client.get(f"/v1/me/payments/{p['payment_id']}?refresh=true", headers=h).json()["status"] == "PAID"
+    again = client.post("/v1/me/payments", json={"purpose": "BILL", "bill_id": f"{SUB}:2026-10"},
+                        headers=h | {"Idempotency-Key": "visit-2-000001"})
+    assert again.status_code == 409 and gw.orders == 1
+
+
+def test_lost_payment_event_is_applied_by_the_sweep():
+    """The billing consumer used to commit past a failed event: the payment was PAID but the bill never knew."""
+    import json as _json
+    from datetime import UTC, datetime, timedelta
+
+    from core_api.db import bills, create_schema, payments
+    from core_api.services.payments import apply_missing
+    from sqlalchemy import create_engine, insert, select
+    from sqlalchemy.pool import StaticPool
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    create_schema(engine)
+    old = datetime.now(UTC) - timedelta(minutes=10)
+    with engine.begin() as cx:
+        cx.execute(insert(bills).values(id="s1:2026-10", subscriber_id="s1", cycle="2026-10", plan_code="DE-M", currency="EUR",
+                                        subtotal=100, vat=19, total=119, amount_paid=0, status="ISSUED", issued_at=old,
+                                        due_date=old, payload=_json.dumps({}), rated_counters="{}"))
+        cx.execute(insert(payments).values(id="p1", subscriber_id="s1", purpose="BILL", bill_id="s1:2026-10", amount=119,
+                                           currency="EUR", gateway="razorpay", gateway_order_id="o1", status="PAID",
+                                           idempotency_key="k-00000001", updated_at=old))
+    assert apply_missing(engine) == 1 and apply_missing(engine) == 0      # applied once
+    with engine.connect() as cx:
+        assert cx.execute(select(bills.c.status)).scalar_one() == "PAID"
+
+
+def test_advance_is_charged_only_for_usage_not_already_paid(env):
+    client, _engine, state, gw = env
+    from datetime import UTC, datetime
+    add_usage(state, SUB, datetime.now(UTC), [(UsageType.DATA, None, 100 * MB)])
+    h = login(client)
+    due = client.get("/v1/me/payments/advance-due", headers=h).json()
+    first = client.post("/v1/me/payments", json={"purpose": "ADVANCE"}, headers=h | {"Idempotency-Key": "adv-1-000001"}).json()
+    gw.captured.add(first["order_id"])
+    client.get(f"/v1/me/payments/{first['payment_id']}?refresh=true", headers=h)
+    after = client.get("/v1/me/payments/advance-due", headers=h).json()
+    assert first["amount"] == due["amount"] and after["already_paid"] == first["amount"] and after["amount"] == 0
+    again = client.post("/v1/me/payments", json={"purpose": "ADVANCE"}, headers=h | {"Idempotency-Key": "adv-2-000001"})
+    assert again.status_code == 409   # used to charge the full month-to-date amount a second time
+
+
+def test_a_month_is_billed_on_the_tariff_in_force_then_not_todays(env):
+    """A switch on the 1st before the bill run used to re-price the closed month on the new tariff."""
+    from datetime import UTC, datetime
+
+    from core_api.db import plan_changes
+    from core_api.services.bills import plan_at
+    from sqlalchemy import insert
+    _client, engine, _state, _gw = env
+    with engine.begin() as cx:
+        cx.execute(insert(plan_changes).values(order_id="o-1", subscriber_id=SUB, from_plan="DE-FLEX", to_plan="DE-M",
+                                               effective_at=datetime(2026, 11, 1, 0, 30, tzinfo=UTC)))
+    assert plan_at(engine, SUB, datetime(2026, 11, 1, tzinfo=UTC), "DE-M") == "DE-FLEX"   # October: FLEX
+    assert plan_at(engine, SUB, datetime(2026, 12, 1, tzinfo=UTC), "DE-M") == "DE-M"      # November: M
+    assert plan_at(engine, "4915100000004", datetime(2026, 11, 1, tzinfo=UTC), "DE-S") == "DE-S"   # no history
+
+
+def test_usage_arriving_two_months_late_is_still_billed_once(env):
+    """Only the previous month used to be checked: a September record arriving after the October bill run
+    was never billed."""
+    _client, engine, state, _ = env
+    from core_api.services.bills import close_cycle, get_bill_row, row_to_bill
+    add_usage(state, SUB, datetime(2026, 8, 10, tzinfo=UTC), [(UsageType.DATA, None, 1_000 * MB)])
+    close_cycle(engine, state, "2026-08")
+    close_cycle(engine, state, "2026-09")
+    add_usage(state, SUB, datetime(2026, 8, 28, tzinfo=UTC), [(UsageType.ROAMING_DATA, "Z2", 100 * MB)])  # August, late
+    close_cycle(engine, state, "2026-10")
+    oct_lines = {x.code: x for x in row_to_bill(get_bill_row(engine, SUB, "2026-10")).lines}
+    assert oct_lines["ADJ:2026-08"].amount == 199
+    import pytest as _pytest
+    with _pytest.raises(ValueError):          # November isn't over: nothing more to close
+        close_cycle(engine, state, "2099-01")
+
+
+
+def test_scenarios_are_realistic_and_bad_files_get_friendly_errors(env):
+    client, engine, state, _ = env
+    add_usage(state, SUB, datetime(2026, 10, 10, tzinfo=UTC), [(UsageType.DATA, None, 2_500 * MB),
+                                                               (UsageType.VOICE, None, 300 * 60)])
+    issue(engine, state, "2026-10")
+    h = login(client)
+    sim = lambda key: client.post("/v1/me/usage/simulate", data={"scenario": key}, headers=h).json()
+    light = sim("light-month")
+    assert light["bill"]["usage"]["data_mb"] == 1_000      # replaces the month's data (was 2.5 GB + 1 GB on top)
+    trip = sim("us-trip-2-weeks")
+    assert trip["bill"]["usage"]["data_mb"] == 2_500       # a trip adds roaming, not a second month at home
+    up = lambda name, body: client.post("/v1/me/usage/simulate", files={"file": (name, body)}, headers=h)
+    ok = up("de.csv", b"Usage_Type; Quantity; Unit; Roaming_Zone\nDATA;2,5;GB;\n")
+    assert ok.status_code == 200 and ok.json()["bill"]["usage"]["data_mb"] == 2_500   # ';' + decimal comma
+    for name, body in [("x.json", b'{"usage_type": "DATA"}'), ("x.json", b'[{"usage_type": "DATA", "quantity": null, "unit": "GB"}]'),
+                       ("x.csv", b"usage_type,unit,quantity\nDATA,GB\n"), ("x.csv", b"usage_type,quantity,unit\nMMS,1,count\n"),
+                       ("x.csv", b"usage_type,quantity,unit,roaming_zone\nDATA,1,GB,Z3\n"), ("x.csv", "\ufeffé".encode("latin-1", "ignore"))]:
+        r = up(name, body)
+        assert r.status_code == 422 and "Traceback" not in r.text, (name, body, r.text)

@@ -10,7 +10,7 @@ REG=$(grep registry: deploy/helm/values-oci.yaml | awk '{print $2}')
 sed -e "s|REGISTRY|$REG|" -e "s|IMAGE_TAG|latest|" deploy/loadtest/scenarios-job.yaml | kubectl -n selfcare apply -f -
 kubectl -n selfcare logs -f job/cdr-scenarios
 ```
-The System page shows the results live: CDR counts per type, quarantined and duplicate counts, and sample quarantine reasons.
+The System page shows the results live: CDR counts per type, quarantined and duplicate counts, and sample quarantine reasons (reasons only, no record ids).
 
 ## Record types
 
@@ -31,21 +31,26 @@ The System page shows the results live: CDR counts per type, quarantined and dup
 | Zero-rated data (streaming pass) | `DATA_ZERO_RATED` | counted separately | free, **does not use the allowance or trigger alerts** | personas test |
 | EU roaming data / calls | `ROAMING_DATA`/`ROAMING_VOICE` zone EU | count towards domestic allowance | roam like at home | `test_eu_roaming_is_roam_like_at_home…` |
 | Z2/Z3 roaming data / calls | zone Z2/Z3 | summed per zone | per MB / per minute per zone | same |
-| Add-on purchase | `PLAN_CHANGED` + `addon_code` | allowance grows in the same partition; alert levels re-armed | add-on price once | `test_addon_rearms_alerts…` |
+| Add-on purchase | `PLAN_CHANGED` + `addon_code`, only from an order source (`core-orders` once `order-source-token` exists) | allowance grows in the same partition; alert levels re-armed, each new crossing gets a new `alert_id` | add-on price once; unused volume carries across a tariff switch in the month | `test_addon_rearms_alerts…`, `test_add_on_events_only_from_the_dedicated_order_source…`, `test_unused_addon_volume_carries…` |
+| Tariff upgrade | order workflow (not a CDR) | real-time profile updated; levels now below are re-armed | pro-rated per segment | `test_tariff_upgrade_rearms_the_levels_now_below` |
 
 ## Data quality and delivery semantics
 
 | Scenario | Where | Outcome | Test |
 |---|---|---|---|
-| Same file re-sent (same batch id) | collector | `duplicate`, nothing republished | collector contract |
+| Same file re-sent (same batch id) | collector | `duplicate`, nothing republished (batch ids scoped per source) | collector contract |
 | Same CDR re-sent in a new file | collector screening | dropped as duplicate (record id remembered 7 days; Bloom filter at scale) | `test_screening_quarantines…` |
+| Overlapping batches / re-send while the first is still publishing | collector screening | record ids claimed atomically (`SET NX`): counted once; claims released if publishing fails | `test_overlapping_batches_count_a_record_once…` |
 | Duplicate inside one file | collector screening | dropped | same |
 | Malformed record (unknown type, missing zone, negative quantity) | collector screening | **quarantined individually** with the validation reason; rest of the file accepted | same |
+| Unknown add-on code / unknown roaming zone / quantity > 10¹³ | collector screening | quarantined (they used to crash-loop the aggregator or stop the bill run) | `test_unknown_addon_zone_and_huge_quantity_are_quarantined` |
+| Add-on record from a network source | collector | quarantined ("add-on events are not accepted from this source") | `test_add_on_events_only_from…` |
+| Message that can never apply | aggregator | pushed to `dlq:{p}`, partition continues | — |
 | Future-dated record (clock skew > 10 min) | collector screening | quarantined | same |
 | Partial publish then retry | collector + aggregator | deterministic message ids → re-published chunk dropped | `test_republished_message…` |
 | Consumer crash and replay | aggregator | offset stored with the state → replay is a no-op | `test_replayed_offset…` |
 | Out-of-order arrival | aggregator | totals are sums; cycle by event time | scenarios |
-| Late CDR after the bill was issued | bill run | issued bill unchanged; **adjustment line on the next bill** | `test_late_cdrs_after_bill_issue…` |
+| Late CDR after the bill was issued | bill run | issued bill unchanged; **adjustment line on the next bill**, priced on that month's tariff; the last 3 billed months are checked, each applied once | `test_late_cdrs_after_bill_issue…`, `test_usage_arriving_two_months_late…` |
 | Unknown subscriber | aggregator | counted, no alert (no profile) | `test_unknown_subscriber…` |
 | Allowance crossed (50/80/100%) | aggregator Lua | exactly one alert per level per cycle | `test_crossing_80…` |
 | 100% on a throttle plan | notifier | "speed reduced" notification (network policy hook) | notifier render |

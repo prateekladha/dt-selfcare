@@ -31,7 +31,9 @@ export async function action({ request }: Route.ActionArgs) {
     return { error: "We can't reach the service right now. Please try again in a moment.", subscriber_id };
   }
   if (!res.ok) {
-    return { error: res.status === 429 ? "Too many attempts. Please wait a few minutes and try again." : "That number and password don't match.", subscriber_id };
+    return { error: res.status === 429 ? "Too many attempts. Please wait a few minutes and try again."
+      : res.status >= 500 ? "We can't reach the service right now. Please try again in a moment."
+      : "That number and password don't match.", subscriber_id };
   }
   const { access_token, refresh_token } = await res.json();
   const session = await sessions.getSession(request.headers.get("Cookie"));

@@ -1,6 +1,17 @@
 import { useState } from "react";
-import { CheckCircle2, Database, Loader2, XCircle } from "lucide-react";
+import { CheckCircle2, Clock, Database, Loader2, XCircle } from "lucide-react";
+import { dateLabel } from "~/lib/format";
 import type { Evidence } from "~/lib/types";
+
+/** Customer words for the usage keys the pipeline counts (DATA, ROAMING_DATA:Z2, ...). */
+const USAGE: Record<string, string> = { DATA: "Mobile data", VOICE: "Calls", SMS: "Texts", MMS: "Picture messages",
+  ROAMING_DATA: "Roaming data", ROAMING_VOICE: "Roaming calls", ROAMING_SMS: "Roaming texts", VOICE_INTL: "International calls",
+  SMS_INTL: "International texts", ZERO_RATED_DATA: "Free data (not counted)", PREMIUM: "Premium services" };
+function usageLabel(key: string) {
+  const [type, zone] = key.split(":");
+  const base = USAGE[type] ?? type.toLowerCase().replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+  return zone ? `${base}, zone ${zone}` : base;
+}
 
 const fmtQty = (q: number, unit: string) =>
   unit === "bytes" ? `${(q / 1e6).toLocaleString("en-GB", { maximumFractionDigits: 1 })} MB`
@@ -25,44 +36,47 @@ export function EvidencePanel({ cycle }: { cycle: string }) {
   return (
           <div className="rounded-lg border border-[var(--line)] bg-[var(--surface-2)] p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="flex items-center gap-1.5 text-sm font-semibold"><Database size={15} /> Verify against raw CDRs</p>
+        <p className="flex items-center gap-1.5 text-sm font-semibold"><Database size={15} /> Check against your usage records</p>
         {!ev && <button type="button" onClick={verify} disabled={state === "loading"}
           className="inline-flex h-9 items-center gap-2 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3.5 text-sm font-bold hover:bg-[var(--chip)] disabled:opacity-60">
-          {state === "loading" ? <><Loader2 size={15} className="animate-spin" /> Re-reading archive…</> : "Re-sum my CDRs"}</button>}
+          {state === "loading" ? <><Loader2 size={15} className="animate-spin" /> Adding up your records…</> : "Add up my usage records"}</button>}
       </div>
-      <p className="mt-1 text-xs text-[var(--ink-3)]">Reads your raw usage records from the audit archive in Object Storage (written independently of the real-time pipeline), adds them up again and compares with the running totals that priced your bill.</p>
+      <p className="mt-1 text-xs text-[var(--ink-3)]">Adds up every usage record from our independent audit copy and compares the result with the live meter that priced your bill.</p>
       {state === "error" && <p className="mt-3 text-sm text-[var(--bad)]">{err}</p>}
       {ev && (
         <div className="mt-4 space-y-4">
           <div className={`flex items-start gap-2 rounded-md px-3 py-2.5 text-sm font-medium ${ev.all_match ? "bg-[var(--good-bg)] text-[var(--good)]" : "bg-[var(--warn-bg)] text-[var(--warn)]"}`}>
             {ev.all_match ? <CheckCircle2 size={17} className="mt-px shrink-0" /> : <XCircle size={17} className="mt-px shrink-0" />}
-            <span>{ev.cdr_count.toLocaleString("en-GB")} CDRs between {ev.first_event?.slice(0, 10)} and {ev.last_event?.slice(0, 10)} ·
-              {ev.all_match ? " every total matches the real-time counters" : " some totals differ (see below)"} · {ev.objects_scanned} archive objects scanned on stream partition P{ev.partition}</span>
+            <span>{ev.cdr_count.toLocaleString("en-GB")} usage records{ev.first_event && ev.last_event ? ` from ${dateLabel(ev.first_event)} to ${dateLabel(ev.last_event)}` : ""} ·{" "}
+              {!ev.all_match ? "some totals don't match (see below)"
+                : ev.still_arriving ? "everything matches so far; the newest records are still being copied to the audit archive"
+                : "every total matches the meter"}</span>
           </div>
-          {ev.note && <p className="text-xs text-[var(--ink-3)]">{ev.note}</p>}
           <div className="overflow-x-auto">
             <table className="w-full text-[13px]">
-              <thead className="text-left text-[11px] uppercase tracking-wide text-[var(--ink-3)]"><tr><th className="py-1.5">Usage</th><th className="py-1.5 text-right">CDRs</th><th className="py-1.5 text-right">Re-summed from CDRs</th><th className="py-1.5 text-right">Real-time counter (Valkey)</th><th className="py-1.5 text-center">Match</th></tr></thead>
+              <thead className="text-left text-[11px] uppercase tracking-wide text-[var(--ink-3)]"><tr><th className="py-1.5">Usage</th><th className="py-1.5 text-right">Records</th><th className="py-1.5 text-right">Added up from records</th><th className="py-1.5 text-right">Live meter</th><th className="py-1.5 text-center">Match</th></tr></thead>
               <tbody className="tabular divide-y divide-[var(--line)]">
                 {ev.reconciliation.map((r) => (
-                  <tr key={r.key}><td className="py-1.5 font-semibold">{r.key}</td><td className="py-1.5 text-right">{r.cdr_records.toLocaleString("en-GB")}</td>
+                  <tr key={r.key}><td className="py-1.5 font-semibold">{usageLabel(r.key)}</td><td className="py-1.5 text-right">{r.cdr_records.toLocaleString("en-GB")}</td>
                     <td className="py-1.5 text-right">{fmtQty(r.from_cdrs, r.unit)}</td><td className="py-1.5 text-right">{fmtQty(r.valkey_counter, r.unit)}</td>
-                    <td className="py-1.5 text-center">{r.match ? <CheckCircle2 size={15} className="inline text-[var(--good)]" /> : <XCircle size={15} className="inline text-[var(--bad)]" />}</td></tr>
+                    <td className="py-1.5 text-center">{r.state === "arriving" ? <Clock size={15} className="inline text-[var(--ink-3)]" aria-label="still arriving" />
+                      : r.match ? <CheckCircle2 size={15} className="inline text-[var(--good)]" aria-label="matches" /> : <XCircle size={15} className="inline text-[var(--bad)]" aria-label="does not match" />}</td></tr>
                 ))}
               </tbody>
             </table>
           </div>
           <p className="text-xs text-[var(--ink-3)]">The bill rounds each usage type up to the next started MB / minute (e.g. 371.04 MB is billed as 372 MB), per the tariff rules.</p>
           {ev.bill_lines.length > 0 && (
-            <p className="text-xs text-[var(--ink-3)]">Priced into bill <code className="text-[var(--ink-2)]">{ev.bill_id}</code>: {ev.bill_lines.map((l) => `${l.label} ${l.quantity.toLocaleString("en-GB")} ${l.unit}`).join(" · ")}</p>
+            <p className="text-xs text-[var(--ink-3)]">On your bill: {ev.bill_lines.map((l) => `${l.label} ${l.quantity.toLocaleString("en-GB")} ${l.unit}`).join(" · ")}</p>
           )}
           <details className="text-[13px]">
-            <summary className="cursor-pointer font-semibold text-[var(--ink-2)]">Sample CDRs ({ev.sample.length})</summary>
+            <summary className="cursor-pointer font-semibold text-[var(--ink-2)]">Example records and technical details</summary>
+            <p className="mt-2 text-xs text-[var(--ink-3)]">{ev.objects_scanned} archive files read (stream partition P{ev.partition}).{ev.note ? ` ${ev.note}` : ""}</p>
             <div className="mt-2 overflow-x-auto">
               <table className="w-full text-[12px]">
                 <thead className="text-left text-[11px] uppercase tracking-wide text-[var(--ink-3)]"><tr><th className="py-1">Record id</th><th className="py-1">Event time (UTC)</th><th className="py-1">Usage</th><th className="py-1 text-right">Quantity</th><th className="py-1">Archive object</th></tr></thead>
                 <tbody className="tabular divide-y divide-[var(--line)] font-mono">
-                  {ev.sample.map((c) => (<tr key={c.record_id}><td className="py-1 pr-3">{c.record_id}</td><td className="py-1 pr-3">{c.event_time.slice(0, 19).replace("T", " ")}</td><td className="py-1 pr-3">{c.key}</td><td className="py-1 pr-3 text-right">{fmtQty(c.quantity, c.unit)}</td><td className="py-1 text-[var(--ink-3)]">{c.archive_object}</td></tr>))}
+                  {ev.sample.map((c) => (<tr key={c.record_id}><td className="py-1 pr-3">{c.record_id}</td><td className="py-1 pr-3">{c.event_time.slice(0, 19).replace("T", " ")}</td><td className="py-1 pr-3">{usageLabel(c.key)}</td><td className="py-1 pr-3 text-right">{fmtQty(c.quantity, c.unit)}</td><td className="py-1 text-[var(--ink-3)]">{c.archive_object}</td></tr>))}
                 </tbody>
               </table>
             </div>

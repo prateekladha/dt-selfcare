@@ -44,6 +44,9 @@ flowchart LR
 - **Payments → billing is event-driven.** payments-service never writes billing tables.
   - Billing applies `PAYMENT_SUCCEEDED` through the `bill_payments` ledger (PK = payment id), so redeliveries do nothing.
   - The bill shows PAID within a few seconds of the capture (outbox relay → stream → consumer).
+  - The outbox relay (idempotent producer) marks only rows with a successful delivery report as published; a rejected message is retried.
+  - The billing consumer commits only applied events and re-reads a failed one (e.g. DB down), so no payment is skipped. The reconciler's `apply_missing` sweep applies any captured bill payment still missing from its bill after 2 min.
+- **notifier supervision:** its worker threads (alerts, outbox relay, spine, billing, order projections) survive DB blips; if one dies anyway, `main()` exits so Kubernetes restarts the pod (the liveness probe only sees the metrics port). The order-events consumer commits per projected event and re-reads a failed one.
 - **Honest limit:** the services still share one Autonomous DB, with table ownership as above. The assistant's read-only tools read billing tables directly. The target is a database per service, with tools calling core-api's read APIs. That's the next extraction step, gated on team topology.
 
 ## LLM gateway (LiteLLM)
@@ -60,6 +63,11 @@ flowchart LR
   DB transaction** and relayed to the stream. The `order-projections` consumer updates the
   home-screen cache, the assistant's context and, on terminal states, the customer notification
   (idempotent: `alert_id = order:<id>:<status>`). Workflows never write notifications themselves.
+- **Status writes are compare-and-set** (`set_status(..., expect=...)`): approve only from PROPOSED/DECLINED, decline
+  only from PROPOSED, finish only from APPROVED/SUBMITTED. Approve and decline at the same moment can't both win, and a
+  retried finish or a late write can't regress an order. If the workflow can't be started, the approval is rolled
+  back ("nothing was charged, try again", 503). Workflows start with `ALLOW_DUPLICATE_FAILED_ONLY`: a completed order
+  can't run twice, a failed one can be retried.
 - **`bss-events`.** The legacy result (TMF622 state) is published by the order-adapter. The worker's
   `order-workflows` consumer turns it into a workflow signal. Measured live: 0.7 s from legacy result to
   signal. If an event is lost, the workflow asks the adapter for the state every 45 s.
@@ -74,7 +82,8 @@ flowchart LR
 - **Safety net.** The adapter still enforces each country's capacity (Valkey 1-second window). If it ever
   answers 429 + Retry-After, the activity backs off and the card switches to an explicit "Queued" message.
 - **Tariff change** (`PlanChangeWorkflow`) shares the same activities and adapters (`action: modify`).
-  The switch applies from today; this month is billed on the new tariff (pro-rating is out of scope).
+  The switch applies from today and is pro-rated (see below). It also updates the real-time profile (`prof:`
+  allowance), and after an upgrade re-arms the alert levels the customer is now below.
   Available from the `/plan` page and from the assistant (`propose_plan_change`, approval card).
 
 ### Day-level usage (trend chart + exact pro-rating)
@@ -96,7 +105,12 @@ flowchart LR
   month-end projection; each bill: that month).
 - **Exact pro-rating:** with day detail, each tariff segment is rated on its own tariff, its own
   pro-rated allowance and its own days of usage (`rate_segments`). Months recorded before day detail
-  existed fall back to blended allowances. Add-ons count in the segment they were bought in.
+  existed fall back to blended allowances. An add-on is charged in the segment it was bought in; its unused volume
+  carries into the following segments of the month.
+- **Mid-month join:** a customer who joined during the month and has no earlier bill pays fee and allowances only
+  from the join day (`first_billable_day`). Existing customers are never cut.
+- **Tariff in force:** bills and late-usage adjustments are priced on the tariff of that month (`plan_at`, from
+  `plan_changes`), so a switch on the 1st before the bill run doesn't re-price the closed month.
 
 ### Tariff change pro-rating
 - Every switch is recorded in `plan_changes` (keyed by order id, written in the same transaction as the
@@ -118,7 +132,7 @@ one trial request decides whether it closes. 4xx and 429 don't trip it.
 
 | Caller → callee | Connect / read | Breaker |
 |---|---|---|
-| web BFF → core-api, payments, assistant | fetch timeout 5 s (30 s explanation, 120 s assistant stream) | **opossum**: ≥50% of ≥5 calls fail in 10 s → open 20 s → half-open trial |
+| web BFF → core-api, payments, assistant | fetch timeout 5 s (30 s explanation, evidence re-scan and what-if simulation, 120 s assistant stream; SSR `streamTimeout` 35 s) | **opossum**: ≥50% of ≥5 calls fail in 10 s → open 20 s → half-open trial |
 | workflow activities → order-adapter | 1 s / 5 s | 5 fails → open 30 s → Temporal retries |
 | workflow activities → usage-collector | 1 s / 10 s | Temporal retry policy |
 | services → LLM gateway | per stage, with retries/backoff | gateway cooldown + fallback |
@@ -155,7 +169,8 @@ message) before the up-front degradation kicks in.
 - "Re-sum my CDRs" re-reads the customer's raw CDRs from Object Storage and reconciles them with Valkey.
 - **Index:** archive objects are immutable, so each is read once to learn which customers it holds
   (`evidx:{p}:<customer-set hash>` in Valkey, 35 days). Later scans download only the customer's own objects.
-- **Single flight:** concurrent requests for the same evidence wait for the first scan. The BFF gives the call 30 s.
+- **Single flight:** concurrent requests for the same evidence wait for the first scan; the scan lock is released on failure too. The BFF gives the call 30 s.
+- **Current month:** the archive is written about once a minute while the live meter updates at once, so archive < meter is shown as "still arriving", not as a mismatch. More in the archive than counted is a mismatch.
 - **Why:** a cold scan read every object of the partition (about 7 s), longer than the 5 s BFF budget, so it was aborted
   and counted against the core-api breaker. That was the e2e flake on the bill page.
 
@@ -179,10 +194,10 @@ about 72 days of usage per day, which inflated November.)
 - **Workflow steps:**
   1. Validate.
   2. Submit to the legacy BSS (simulated: 20–60 s, ~10% rejections).
-  3. Durable wait for its signal, re-checking with `bss_status` every 45 s in case the callback was lost; give up after 30 min.
-  4. On confirmation, apply as `PLAN_CHANGED` through the **real usage pipeline**. The record id is `order-<id>`, so a retried activity is deduplicated by the collector.
+  3. Durable wait for its signal, re-checking with `bss_status` every 45 s in case the callback was lost (an adapter outage just means "ask again"); one last status check, then give up after 30 min. The first result wins: a later, conflicting callback can't flip it.
+  4. On confirmation, apply as `PLAN_CHANGED` through the **real usage pipeline**, as source `core-orders` with its own token when `order-source-token` is configured (the collector then accepts add-on events only from it). The record id is `order-<id>`, so a retried activity is deduplicated by the collector; a quarantined record fails the activity so it retries. After confirmation, apply and finish retry without an attempt cap.
   5. Complete and notify.
-- **On rejection or timeout:** compensate (mark FAILED, notify; nothing was applied).
+- **On rejection, timeout or an activity that ran out of retries before confirmation:** compensate (mark FAILED, notify; nothing was applied or charged). No order stays APPROVED/SUBMITTED forever.
 - **Durability:** a worker or server pod restart resumes from history; the server stores its SQLite DB on a volume. In production: Temporal Cloud or an HA cluster on Postgres/Cassandra, with the same code.
 - **Tests:** `tests/test_workflow.py` runs 4 paths on Temporal's time-skipping test server:
   - confirmed
@@ -193,7 +208,7 @@ about 72 days of usage per day, which inflated November.)
 ## Observability, evaluations, prompt versioning (Langfuse, EU cloud)
 - **Traces:** every LLM call (grader, agent turns, repairs, explanation) carries cost, tokens, cached tokens and latency, grouped by session.
 - **Prompt management:** `assistant-system` and `explainer-system` are fetched with label `production`, cached 5 min, with the repo default as fallback.
-  - `prompt-seed` publishes the repo versions.
+  - `prompt-seed` publishes the repo versions; it runs as a post-install/post-upgrade Helm hook on every deploy, publishing only when the text changed and never failing the deploy.
   - Rollback = move the label.
   - The active version is recorded in every trace (`prompt_version`).
 - **Evaluations:** dataset `billing-assistant-golden` (9 questions over the demo population), run as experiment `assistant-golden` (`deploy/loadtest/evals-job.yaml`) with these evaluators:
@@ -211,4 +226,4 @@ Sessions use rotating refresh tokens:
 - **Parallel refreshes:** a 30 s grace window covers requests that refresh at the same time.
 - **Logout** revokes the refresh token.
 
-The web server refreshes transparently, so users stay signed in across deploys.
+The web server refreshes transparently, so users stay signed in across deploys. A root middleware (`root.tsx`) attaches the rotated session cookie to every response that refreshed, resource routes included (API, PDF, SSE, orders, assistant); before, those dropped it and the next click used the dead refresh token.

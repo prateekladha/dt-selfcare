@@ -36,3 +36,9 @@ export function phoneLabel(id: string) {
 }
 
 export const FLAGS: Record<string, string> = { DE: "🇩🇪", PL: "🇵🇱" };
+
+/** Overdue only after the END of the due day: "pay by 15 Nov" is still on time all of 15 Nov
+ *  (due dates are stored as 00:00 UTC of that day). Same rule as the PDF, the assistant and order blocking. */
+export function isOverdue(dueDate: string, asOf: string | Date = new Date()): boolean {
+  return new Date(dueDate).getTime() + 86_400_000 <= new Date(asOf).getTime();
+}

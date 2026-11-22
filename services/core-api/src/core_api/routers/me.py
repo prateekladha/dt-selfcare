@@ -65,8 +65,13 @@ def home(response: Response, p: Principal = Depends(current_principal)) -> dict:
     plan = get_plan(sub["plan_code"])
     state = get_usage_state()
     now = datetime.now(UTC)
-    seg = [(get_plan(c), d) for c, d in snap["plan_segments"]] if snap.get("plan_segments") else None
-    current = unbilled(state, sub["id"], sub["plan_code"], now, seg=seg)
+    from telco_common.models import cycle_of
+
+    if snap.get("segments_cycle") == cycle_of(now):   # cached tariff split of THIS month
+        seg = [(get_plan(c), d) for c, d in snap["plan_segments"]] if snap.get("plan_segments") else None
+        current = unbilled(state, sub["id"], sub["plan_code"], now, seg=seg)
+    else:   # snapshot from last month (or older format): look the split up for this month
+        current = unbilled(state, sub["id"], sub["plan_code"], now)
     counters = state.counters(sub["id"], current.cycle)
     last = history[-1] if history else None
     return {
@@ -79,8 +84,10 @@ def home(response: Response, p: Principal = Depends(current_principal)) -> dict:
                   "version": state.committed_offset_for(sub["id"]), **current.usage.model_dump()},
         "unbilled": {"cycle": current.cycle, "currency": current.currency, "subtotal": current.subtotal,
                      "vat": current.vat, "total": current.total, "lines": [x.model_dump() for x in current.lines]},
+        # the OLDEST unpaid bill comes first (it's the one that is or becomes overdue); the amount covers all
         "outstanding": {"amount": sum(b["outstanding"] for b in history), "currency": current.currency,
-                        "bill_id": next((b["id"] for b in reversed(history) if b["outstanding"] > 0), None)},
+                        "bill_id": next((b["id"] for b in history if b["outstanding"] > 0), None),
+                        "unpaid_bills": sum(1 for b in history if b["outstanding"] > 0)},
         "last_bill": last,
         "trend": history,
         "notifications": snap["notes"],
@@ -192,7 +199,7 @@ def bill_evidence(cycle: Annotated[str, CYCLE], response: Response, p: Principal
     row = None if cycle == "current" else get_bill_row(get_engine(), p.subscriber_id, cycle)
     ev["bill_lines"] = [x.model_dump() for x in row_to_bill(row).lines] if row else []
     ev["bill_id"] = row.id if row else None
-    ev["note"] = ("Current cycle: the archive is flushed every ~60 s, so the newest CDRs may not be archived yet."
+    ev["note"] = ("This month: the audit copy is written about once a minute, so the newest records may not be in it yet."
                   if cycle == "current" else None)
     return ev
 

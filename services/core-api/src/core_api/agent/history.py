@@ -68,11 +68,15 @@ def recent_turns(engine: Engine, sid: str, n: int = CONTEXT_TURNS) -> list[dict]
     return turns[-n:]
 
 
-def append_turn(engine: Engine, sid: str, question: str, answer: str, status: str, citations: list) -> None:
+def append_turn(engine: Engine, sid: str, question: str, answer: str, status: str, citations: list,
+                cards: list | None = None) -> None:
+    # the approval cards are kept with the answer, so a reopened chat still shows the Pay card its text
+    # points to ("citations" holds {"sources", "cards"} then; a plain list is the older format)
+    stored = {"sources": citations, "cards": cards} if cards else citations
     with engine.begin() as cx:
         cx.execute(insert(chat_messages).values(session_id=sid, role="user", content=question[:400]))
         cx.execute(insert(chat_messages).values(session_id=sid, role="assistant", content=answer, status=status,
-                                                citations=json.dumps(citations, default=str)))
+                                                citations=json.dumps(stored, default=str)))
         cx.execute(update(chat_sessions).where(chat_sessions.c.id == sid).values(
             turns=chat_sessions.c.turns + 1, updated_at=datetime.now(UTC)))
 
@@ -119,8 +123,15 @@ def get_session(engine: Engine, sub: str, sid: str) -> dict | None:
         if s is None:
             return None
         msgs = cx.execute(select(chat_messages).where(chat_messages.c.session_id == sid).order_by(chat_messages.c.id)).all()
-    return {"id": s.id, "title": s.title or "New chat", "messages": [
-        {"role": m.role, "content": m.content, "status": m.status, "citations": json.loads(m.citations or "[]")} for m in msgs]}
+    def parts(raw: str | None) -> tuple[list, list]:
+        v = json.loads(raw or "[]")
+        return (v.get("sources", []), v.get("cards", [])) if isinstance(v, dict) else (v, [])
+
+    out = []
+    for m in msgs:
+        sources, cards = parts(m.citations)
+        out.append({"role": m.role, "content": m.content, "status": m.status, "citations": sources, "cards": cards})
+    return {"id": s.id, "title": s.title or "New chat", "messages": out}
 
 
 def delete_session(engine: Engine, sub: str, sid: str) -> bool:

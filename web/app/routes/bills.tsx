@@ -1,7 +1,7 @@
 import { FileText, Receipt } from "lucide-react";
 import { Link } from "react-router";
 import { Card, Pill } from "~/components/ui";
-import { cycleLabel, dateLabel, money } from "~/lib/format";
+import { cycleLabel, dateLabel, money, isOverdue } from "~/lib/format";
 import { useSnapshot } from "./_app";
 
 export const meta = () => [{ title: "Bills · Self-care" }];
@@ -20,7 +20,7 @@ export default function Bills() {
       <Card className="overflow-hidden sm:hidden">
         <ul className="divide-y divide-[var(--line)]">
           {bills.map((b) => {
-            const overdue = b.outstanding > 0 && new Date(b.due_date) < new Date(home.as_of);
+            const overdue = b.outstanding > 0 && isOverdue(b.due_date, home.as_of);
             return (
               <li key={b.cycle} className="flex items-center gap-3 px-4 py-3.5">
                 <Link to={`/bills/${b.cycle}`} className="min-w-0 flex-1">
@@ -44,7 +44,7 @@ export default function Bills() {
           </thead>
           <tbody className="divide-y divide-[var(--line)]">
             {bills.map((b) => {
-              const overdue = b.outstanding > 0 && new Date(b.due_date) < new Date(home.as_of);
+              const overdue = b.outstanding > 0 && isOverdue(b.due_date, home.as_of);
               return (
                 <tr key={b.cycle} className="group transition-colors hover:bg-[var(--surface-2)]">
                   <td className="px-6 py-4"><Link to={`/bills/${b.cycle}`} className="flex items-center gap-3 font-semibold after:absolute"><span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--chip)] text-[var(--ink-2)]"><Receipt size={16} /></span>{cycleLabel(b.cycle, loc)}</Link></td>

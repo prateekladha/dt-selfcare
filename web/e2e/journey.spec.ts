@@ -80,8 +80,8 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   // Evidence trail: sources + raw CDRs re-summed from the archive must match the real-time counters
   await page.getByRole("button", { name: /Sources \([1-9]\d*\) and evidence/ }).click();
   await expect(page.locator('[id^="cite-"]').first()).toBeVisible();  // numbered sources matching the superscripts
-  await page.getByRole("button", { name: "Re-sum my CDRs" }).click();
-  await expect(page.getByText(/every total matches the real-time counters/)).toBeVisible({ timeout: 60_000 });
+  await page.getByRole("button", { name: "Add up my usage records" }).click();
+  await expect(page.getByText(/every total matches the meter/)).toBeVisible({ timeout: 60_000 });
   await shot(page, "04b-bill-evidence");
 
   // Language switch re-explains in German
@@ -121,7 +121,7 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
 
   // Payment: Pay now leads to the payment page, which opens the real Razorpay checkout
   await page.goto("/");
-  const pay = page.getByRole("link", { name: /Pay now/ });
+  const pay = page.getByRole("link", { name: /^Pay (now|.+ bill)$/ });
   if (await pay.count()) {
     await pay.first().click();
     await expect(page).toHaveURL(/\/pay\/bill\/\d{4}-\d{2}$/);

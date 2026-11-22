@@ -10,7 +10,8 @@ import { renderToPipeableStream } from "react-dom/server";
 
 import { NonceContext } from "./lib/nonce";
 
-export const streamTimeout = 5_000;
+// above the AI explanation budget (30 s): a streamed explanation must not be cut off on a cold cache
+export const streamTimeout = 35_000;
 
 export default function handleRequest(
   request: Request,

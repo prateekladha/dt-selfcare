@@ -35,7 +35,7 @@ function Chart({ bills, locale, selected, W, H }: { bills: BillSummary[]; locale
         {[0.25, 0.5, 0.75, 1].map((f) => <line key={f} x1={padL} x2={W - padR} y1={y(max * f / 1.18)} y2={y(max * f / 1.18)} stroke="var(--grid)" />)}
         <line x1={padL} x2={W - padR} y1={y(0)} y2={y(0)} stroke="var(--line-strong)" />
         <line x1={padL} x2={W - padR} y1={y(avg)} y2={y(avg)} stroke="var(--ink-3)" strokeDasharray="2 4" />
-        <text x={padL + 2} y={y(avg) - 6} className="fill-[var(--ink-3)] text-[11px] font-medium">12-month average {money(Math.round(avg), cur, locale)}</text>
+        <text x={padL + 2} y={y(avg) - 6} className="fill-[var(--ink-3)] text-[11px] font-medium">{bills.length}-month average {money(Math.round(avg), cur, locale)}</text>
         {bills.map((b, i) => {
           const x = padL + i * step + (step - barW) / 2;
           const top = y(b.total), base = y(0), r = 4, h = Math.max(base - top, 3);

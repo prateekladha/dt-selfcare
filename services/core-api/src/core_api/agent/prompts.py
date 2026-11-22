@@ -1,8 +1,9 @@
 """Prompt versioning via Langfuse prompt management.
 
 Prompts are fetched by name with label "production" (cached 5 min). The code-reviewed default in the repo
-is the fallback, so a Langfuse outage never breaks answers. `prompt-seed` publishes the repo defaults as
-new versions; a prompt change can then be promoted/rolled back by moving the label in Langfuse.
+is the fallback, so a Langfuse outage never breaks answers. Every deploy runs `prompt-seed`, which publishes
+a repo default as a new "production" version only when its text changed (so the reviewed code IS what runs);
+a rollback is moving the label back in Langfuse.
 """
 from __future__ import annotations
 
@@ -41,11 +42,31 @@ def defaults() -> dict[str, str]:
 
 
 def seed_cli() -> None:
-    lf = _client()
+    """Runs on every deploy (Helm hook). Never fails a deploy: without Langfuse the repo default is used anyway."""
+    try:
+        lf = _client()
+    except Exception as e:  # noqa: BLE001 - even a broken client config must not fail the deploy
+        print(f"prompt-seed: Langfuse client unavailable ({type(e).__name__}); prompts unchanged")
+        return
     if lf is None:
-        raise SystemExit("LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY are not set")
+        print("prompt-seed: Langfuse keys not set; the repo defaults are used directly")
+        return
+    try:
+        _seed(lf)
+    except Exception as e:  # noqa: BLE001
+        print(f"prompt-seed: Langfuse unavailable ({type(e).__name__}); prompts stay at their current version")
+
+
+def _seed(lf) -> None:
     for name, text in defaults().items():
+        try:
+            live = lf.get_prompt(name, label=LABEL, cache_ttl_seconds=0)
+            if live.prompt == text:
+                print(f"{name}: unchanged (version {live.version} is {LABEL})")
+                continue
+        except Exception as e:  # noqa: BLE001 - not created yet
+            print(f"{name}: no {LABEL} version yet ({type(e).__name__})")
         p = lf.create_prompt(name=name, prompt=text, labels=[LABEL], type="text",
-                             commit_message="published from repo default")
-        print(f"{name}: version {p.version} labelled {LABEL}")
+                             commit_message="published from repo default by deploy")
+        print(f"{name}: published version {p.version} labelled {LABEL}")
     lf.flush()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -12,7 +13,14 @@ from ..deps import get_usage_state
 from ..security import Principal, current_principal
 from ..services.bills import unbilled
 from ..services.gateway import PaymentGateway, Razorpay
-from ..services.payments import PaymentError, create_payment, get_payment, reconcile_order
+from ..services.payments import (
+    PaymentError,
+    advance_paid_this_month,
+    create_payment,
+    get_payment,
+    paid_not_applied,
+    reconcile_order,
+)
 from ..services.resilience import CircuitOpen
 from ..settings import get_settings
 
@@ -55,13 +63,32 @@ def create(body: CreatePaymentIn, p: Principal = Depends(current_principal),
                                                   bills.c.subscriber_id == p.subscriber_id)).first()
         if bill is None:
             raise HTTPException(404, "bill not found")
-        amount, currency, bill_id = bill.total - bill.amount_paid, bill.currency, bill.id
+        # minus payments already captured but not yet applied to the bill (seconds normally, longer if billing
+        # is behind): otherwise a fresh visit right after paying would charge the full amount again
+        amount, currency, bill_id = (bill.total - bill.amount_paid - paid_not_applied(engine, bill.id),
+                                     bill.currency, bill.id)
+        if amount <= 0:
+            raise HTTPException(409, "This bill is already paid. It can take a minute to show as paid.")
     else:
         with engine.connect() as cx:
             plan_code = cx.execute(select(subscribers.c.plan_code)
                                    .where(subscribers.c.id == p.subscriber_id)).scalar_one()
         current = unbilled(get_usage_state(), p.subscriber_id, plan_code, datetime.now(UTC))
-        amount, currency, bill_id = current.total, current.currency, None
+        # only what isn't covered by advances already paid this month (each used to charge the full amount)
+        amount, currency, bill_id = (current.total - advance_paid_this_month(engine, p.subscriber_id),
+                                     current.currency, None)
+        if amount <= 0:
+            raise HTTPException(409, "Your usage so far this month is already paid.")
+    # single flight per bill / advance: two tabs starting at the same moment get ONE order (the second waits
+    # for the first and then finds its open order)
+    from ..deps import get_valkey
+
+    r = get_valkey()
+    lock = f"pay-lock:{p.subscriber_id}:{bill_id or 'advance'}"
+    for _ in range(20):
+        if r.set(lock, 1, nx=True, ex=15):
+            break
+        time.sleep(0.25)
     try:
         return create_payment(engine, gateway_for(p.country, p.subscriber_id), p.subscriber_id, idempotency_key,
                               body.purpose, amount, currency, bill_id,
@@ -72,6 +99,20 @@ def create(body: CreatePaymentIn, p: Principal = Depends(current_principal),
         raise HTTPException(503, "payment provider unavailable, try again shortly") from e
     except ValueError as e:
         raise HTTPException(502, str(e)) from e
+    finally:
+        r.delete(lock)
+
+
+@router.get("/v1/me/payments/advance-due")
+def advance_due(p: Principal = Depends(current_principal)) -> dict:
+    """What 'pay in advance' would charge now: usage so far this month minus advances already paid."""
+    engine = get_engine()
+    with engine.connect() as cx:
+        plan_code = cx.execute(select(subscribers.c.plan_code).where(subscribers.c.id == p.subscriber_id)).scalar_one()
+    current = unbilled(get_usage_state(), p.subscriber_id, plan_code, datetime.now(UTC))
+    already = advance_paid_this_month(engine, p.subscriber_id)
+    return {"cycle": current.cycle, "currency": current.currency, "usage_total": current.total,
+            "already_paid": already, "amount": max(0, current.total - already)}
 
 
 @router.post("/v1/me/payments/{payment_id}/confirm")
@@ -96,9 +137,13 @@ def status(payment_id: str, refresh: bool = False, p: Principal = Depends(curren
     row = get_payment(engine, p.subscriber_id, payment_id)
     if row is None:
         raise HTTPException(404, "payment not found")
+    delayed = False
     if refresh and row.status != "PAID":
-        reconcile_order(engine, gateway_for(p.country, p.subscriber_id), row.gateway_order_id, trigger="poll")
-        row = get_payment(engine, p.subscriber_id, payment_id)
+        try:
+            reconcile_order(engine, gateway_for(p.country, p.subscriber_id), row.gateway_order_id, trigger="poll")
+            row = get_payment(engine, p.subscriber_id, payment_id)
+        except Exception:  # noqa: BLE001 - gateway down / breaker open: show the stored status, never an error page
+            delayed = True
     cycle = None
     if row.bill_id:
         with engine.connect() as cx:
@@ -108,7 +153,7 @@ def status(payment_id: str, refresh: bool = False, p: Principal = Depends(curren
             "cycle": cycle or f"{created:%Y-%m}", "amount": row.amount, "currency": row.currency,
             "charged_amount": row.charged_amount or row.amount, "charged_currency": row.charged_currency or row.currency,
             "fx_rate": row.fx_rate, "gateway": row.gateway, "gateway_payment_id": row.gateway_payment_id,
-            "gateway_status": row.gateway_status, "created_at": created.isoformat(),
+            "gateway_status": row.gateway_status, "created_at": created.isoformat(), "status_check_delayed": delayed,
             "check_attempts": row.check_attempts,
             "next_check_at": row.next_check_at.isoformat() if row.next_check_at else None}
 
@@ -124,7 +169,8 @@ async def razorpay_webhook(request: Request, x_razorpay_signature: str = Header(
     body = await request.body()
     s = get_settings()
     try:
-        gw = _gateways.get("razorpay") or Razorpay(s.razorpay_key_id, s.razorpay_key_secret, s.razorpay_webhook_secret)
+        gw = _gateways.get("razorpay") or _gateways.setdefault(
+            "razorpay", Razorpay(s.razorpay_key_id, s.razorpay_key_secret, s.razorpay_webhook_secret))
     except RuntimeError as e:
         raise HTTPException(503, "payments are not configured") from e
     if not gw.verify_webhook(body, x_razorpay_signature):

@@ -29,9 +29,11 @@ metadata: { name: bill-run }
 spec:
   schedule: "0 2 1 * *"   # 02:00 UTC on the 1st: close the previous cycle
   concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600   # missed by more than an hour (e.g. cluster down): run at the next schedule
   jobTemplate:
     spec:
       backoffLimit: 3
+      activeDeadlineSeconds: 21600   # 6 h cap: a stuck run must not block next month's (concurrencyPolicy Forbid)
       template:
         spec:
           restartPolicy: OnFailure
@@ -105,3 +107,26 @@ spec:
           resources: { requests: { cpu: 20m, memory: 64Mi }, limits: { memory: 256Mi } }
           {{- include "selfcare.containerSecurity" . | nindent 10 }}
 {{- end }}
+---
+# Prompt management: publish the reviewed repo prompts to Langfuse as the "production" version when their
+# text changed. Without this, prod kept serving an old Langfuse version and prompt changes in code never
+# reached customers. Never fails a deploy (no keys / Langfuse down -> logged, current version stays).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: prompt-seed
+  annotations: { "helm.sh/hook": post-install,post-upgrade, "helm.sh/hook-weight": "5", "helm.sh/hook-delete-policy": before-hook-creation }
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300   # image pull + import on a busy node; the script itself never fails
+  template:
+    spec:
+      restartPolicy: Never
+      {{- include "selfcare.podSecurity" . | nindent 6 }}
+      containers:
+        - name: prompt-seed
+          image: {{ include "selfcare.image" (dict "root" . "name" "core-api") }}
+          command: ["prompt-seed"]
+          env: {{- include "selfcare.env" . | nindent 12 }}
+          resources: { requests: { cpu: 25m, memory: 192Mi }, limits: { memory: 384Mi } }
+          {{- include "selfcare.containerSecurity" . | nindent 10 }}

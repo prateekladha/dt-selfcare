@@ -31,8 +31,8 @@ export type ToolSource = { label: string; tool: string; args: Record<string, unk
 export type AgentAnswer = { status: string; answer: string; citations: ToolSource[]; trace: AgentTrace };
 export type Evidence = {
   subscriber_id: string; cycle: string; partition: number; source: string; objects_scanned: number; cdr_count: number;
-  first_event: string | null; last_event: string | null; all_match: boolean; note: string | null; bill_id: string | null;
-  reconciliation: { key: string; unit: string; cdr_records: number; from_cdrs: number; valkey_counter: number; match: boolean }[];
+  first_event: string | null; last_event: string | null; all_match: boolean; still_arriving?: boolean; note: string | null; bill_id: string | null;
+  reconciliation: { key: string; unit: string; cdr_records: number; from_cdrs: number; valkey_counter: number; match: boolean; state?: "match" | "arriving" | "differs" }[];
   sample: { record_id: string; event_time: string; key: string; quantity: number; unit: string; archive_object: string }[];
   bill_lines: Line[];
 };
@@ -43,7 +43,7 @@ export type Home = {
   usage: { cycle: string; data_pct: number; version: number | null; data_mb: number; data_allowance_mb: number; voice_min: number; sms: number;
            intl_voice_min: number; roaming_data_mb: Record<string, number>; roaming_voice_min: Record<string, number>; eu_roaming_data_mb: number };
   unbilled: { cycle: string; currency: string; subtotal: number; vat: number; total: number; lines: Line[] };
-  outstanding: { amount: number; currency: string; bill_id: string | null };
+  outstanding: { amount: number; currency: string; bill_id: string | null; unpaid_bills?: number };
   last_bill: BillSummary | null;
   trend: BillSummary[];
   notifications: { id: number; kind: string; title: string; body: string; created_at: string; read: boolean }[];

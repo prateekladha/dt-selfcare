@@ -148,6 +148,16 @@ def cdr_evidence(state: UsageState, subscriber_id: str, cycle: str, sample_per_k
             if cached := state.r.get(cache_key):
                 return json.loads(cached)
 
+    try:
+        out = _evidence(state, subscriber_id, cycle, sample_per_key)
+    finally:
+        state.r.delete(f"{cache_key}:lock")   # also on failure: the next check must not wait for a dead scan
+    is_current = cycle == cycle_of(datetime.now().astimezone())
+    state.r.set(cache_key, json.dumps(out), ex=60 if is_current else 900)
+    return out
+
+
+def _evidence(state: UsageState, subscriber_id: str, cycle: str, sample_per_key: int) -> dict:
     scan = _scan(subscriber_id, cycle, state)
     recs = scan["records"]
     sums: dict[str, int] = defaultdict(int)
@@ -162,9 +172,16 @@ def cdr_evidence(state: UsageState, subscriber_id: str, cycle: str, sample_per_k
 
     counters = state.counters(subscriber_id, cycle)
     keys = sorted(set(sums) | {k for k in counters if not k.startswith("records")})
+    # In the current month the archive is written about every 60 s while the live counters update at once, so
+    # archive < counter is normal ("still arriving"), not a mismatch. More in the archive than counted is.
+    current = cycle == cycle_of(datetime.now().astimezone())
+
+    def state_of(k: str) -> str:
+        a, c = sums.get(k, 0), int(counters.get(k, 0))
+        return "match" if a == c else ("arriving" if current and a < c else "differs")
     recon = [{"key": k, "unit": UNITS.get(k.split(":")[0], ""), "cdr_records": counts.get(k, 0),
               "from_cdrs": sums.get(k, 0), "valkey_counter": int(counters.get(k, 0)),
-              "match": sums.get(k, 0) == int(counters.get(k, 0))} for k in keys]
+              "state": state_of(k), "match": state_of(k) != "differs"} for k in keys]
     sample = []
     for k, rs in sorted(by_key.items()):
         for r in sorted(rs, key=lambda x: x["event_time"], reverse=True)[:sample_per_key]:
@@ -176,9 +193,7 @@ def cdr_evidence(state: UsageState, subscriber_id: str, cycle: str, sample_per_k
         "subscriber_id": subscriber_id, "cycle": cycle, "partition": scan["partition"],
         "source": f"oci://{BUCKET}/raw/{TOPIC}/…/p={scan['partition']}/", "objects_scanned": scan["objects_scanned"],
         "cdr_count": len(recs), "first_event": times[0] if times else None, "last_event": times[-1] if times else None,
-        "reconciliation": recon, "all_match": all(x["match"] for x in recon), "sample": sample,
+        "reconciliation": recon, "all_match": all(x["match"] for x in recon),
+        "still_arriving": any(x["state"] == "arriving" for x in recon), "sample": sample,
     }
-    is_current = cycle == cycle_of(datetime.now().astimezone())
-    state.r.set(cache_key, json.dumps(out), ex=60 if is_current else 900)
-    state.r.delete(f"{cache_key}:lock")
     return out

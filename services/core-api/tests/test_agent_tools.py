@@ -63,6 +63,11 @@ def scripted_llm(r, turns):
             if kind == "tools":
                 calls = [{"index": i, "id": f"call_{i}", "function": {"name": n, "arguments": json.dumps(a)}} for i, (n, a) in enumerate(val)]
                 return sse([{"choices": [{"delta": {"tool_calls": calls}}]}, USAGE])
+            if kind == "text_then_tools":
+                text, tools_ = val
+                calls = [{"index": i, "id": f"call_{i}", "function": {"name": n, "arguments": json.dumps(a)}} for i, (n, a) in enumerate(tools_)]
+                return sse([{"choices": [{"delta": {"content": w + " "}}]} for w in text.split(" ")]
+                           + [{"choices": [{"delta": {"tool_calls": calls}}]}, USAGE])
             words = val.split(" ")
             return sse([{"choices": [{"delta": {"content": w + (" " if i < len(words) - 1 else "")}}]} for i, w in enumerate(words)] + [USAGE])
         content = json.dumps(val) if kind == "json" else val
@@ -112,7 +117,10 @@ def test_unsupported_number_in_answer_is_repaired(world):
                            ("text", "Roaming in zone Z2 added 372 MB [S1].")])
     ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
     events = collect(run_stream("Why is it higher?", ctx, llm, engine))
-    assert "repairing" in [e["type"] for e in events] and events[-1]["status"] == "REPAIRED"
+    streamed = "".join(e["text"] for e in events if e["type"] == "token")
+    assert events[-1]["status"] == "REPAIRED" and "999" not in streamed            # the wrong draft never shown
+    assert not {"repairing", "replace"} & {e["type"] for e in events}             # no visible "checking"
+    assert streamed == events[-1]["answer"]                                        # only the final answer
 
 
 def test_structured_explanation_single_call_verified_and_cached(world):
@@ -216,7 +224,8 @@ def test_answer_from_chat_history_is_repaired_by_looking_the_fact_up_not_dropped
     the old tool-less repair invented [S1], then replied "I don't have the bill details" and that
     replaced the correct answer. Now the repair may call tools, and fact-dropping rewrites are rejected."""
     engine, r, state = world
-    due = get_bill_row(engine, SUB, "2026-10").due_date.date().isoformat()
+    d = get_bill_row(engine, SUB, "2026-10").due_date.date()
+    due = f"{d.day} {d:%B %Y}"
     llm = scripted_llm(r, [
         ("text", "Your October bill was due on 15 November 2026."),                 # from history, no tools
         ("text", "I don't have the bill details in front of me right now."),       # repair 1: drops the facts
@@ -228,11 +237,12 @@ def test_answer_from_chat_history_is_repaired_by_looking_the_fact_up_not_dropped
                                 history=[{"q": "current dues?", "a": "October 41.59 EUR, due 15 November 2026"}]))
     done = events[-1]
     attempts = done["trace"]["attempts"]
-    assert attempts[0]["problems"] == ["numbers without citations"]
+    assert "without looking them up" in attempts[0]["problems"][0]
     assert "dropped the facts" in attempts[1]["problems"][0]
     assert done["status"] == "REPAIRED" and "[S1]" in done["answer"] and "don't have" not in done["answer"]
     kinds = [e["type"] for e in events]
-    assert "step" in kinds and kinds.count("replace") == 1   # the repair's lookup is shown, one replacement
+    assert "step" in kinds and "replace" not in kinds and "repairing" not in kinds   # lookup steps shown, no swap
+    assert "".join(e["text"] for e in events if e["type"] == "token") == done["answer"]
     assert done["citations"] and done["citations"][0]["tool"] == "get_bill"
 
 
@@ -241,9 +251,12 @@ def test_bill_tools_return_day_counts_so_the_model_never_does_date_maths(world):
 
     from core_api.agent.tools import _due
     now = datetime.now(UTC)
-    assert _due(now - timedelta(days=7), 41, 0) == {"due": (now - timedelta(days=7)).date().isoformat(), "days_overdue": 7}
+    week_ago = (now - timedelta(days=7)).date()
+    assert _due(now - timedelta(days=7), 41, 0) == {"due_date": f"{week_ago.day} {week_ago:%B %Y}",   # in words
+                                                    "payment_status": "overdue", "days_overdue": 7}
     assert _due(now + timedelta(days=3), 41, 0)["days_until_due"] == 3
-    assert "days_overdue" not in _due(now - timedelta(days=7), 41, 41)   # paid: no count
+    paid = _due(now - timedelta(days=7), 41, 41)
+    assert paid["payment_status"] == "paid" and "days_overdue" not in paid
 
 
 def test_failed_answers_are_not_fed_back_as_conversation_context(world):
@@ -253,3 +266,145 @@ def test_failed_answers_are_not_fed_back_as_conversation_context(world):
     hist.append_turn(engine, sid, "What is the due date?", "I couldn't put together an answer I can verify.", "UNVERIFIED", [])
     hist.append_turn(engine, sid, "Why higher?", "Roaming in zone Z2 [S1].", "VERIFIED", [])
     assert [t["q"] for t in hist.recent_turns(engine, sid)] == ["Why higher?"]
+
+
+def test_answer_pointing_to_a_checkout_that_was_never_prepared_gets_the_payment_prepared_by_code(world):
+    """Prod: 'Please finish the payment in the secure checkout below' with no propose_payment call, so no
+    Pay card was shown. Code now prepares the payment itself: no extra LLM round, no rewritten answer."""
+    engine, r, state = world
+    llm = scripted_llm(r, [
+        ("tools", [("list_bills", {"months": 3})]),
+        ("text", "Yes, pay the October bill first. Please finish the payment in the secure checkout below."),
+    ])
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
+    events = collect(run_stream("should I pay the bill first?", ctx, llm, engine))
+    kinds = [e["type"] for e in events]
+    assert [e["kind"] for e in events if e["type"] == "proposal"] == ["PAYMENT"]
+    assert events[-1]["status"] == "VERIFIED" and "repairing" not in kinds and "replace" not in kinds
+
+
+def test_correct_answer_without_citation_markers_is_not_rewritten_sources_are_attached(world):
+    """Prod: 7 of 8 answers were rewritten only because the model left out [S#] markers, so the customer
+    saw a different answer after the 'double-check'. Now code attaches the sources; no repair, no replace."""
+    engine, r, state = world
+    total = row_to_bill(get_bill_row(engine, SUB, "2026-10")).total
+    amount = f"{total / 100:.2f} EUR"
+    llm = scripted_llm(r, [("tools", [("get_bill", {"cycle": "2026-10"})]),
+                           ("text", f"Your October bill comes to {amount}. Most of it is roaming in zone Z2: 372 MB.")])
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
+    events = collect(run_stream("Why is it higher?", ctx, llm, engine))
+    kinds = [e["type"] for e in events]
+    done = events[-1]
+    assert done["status"] == "VERIFIED" and "repairing" not in kinds and "replace" not in kinds
+    assert done["answer"].count("[S1]") == 2 and done["citations"][0]["tool"] == "get_bill"
+
+
+def test_preamble_before_a_tool_call_is_never_streamed_so_nothing_flickers(world):
+    engine, r, state = world
+    llm = scripted_llm(r, [("text_then_tools", ("Let me check your bills.", [("list_bills", {"months": 3})])),
+                           ("text", "Your last three bills are all paid, and nothing is outstanding right now. Anything else?")])
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
+    events = collect(run_stream("Any dues?", ctx, llm, engine))
+    streamed = "".join(e["text"] for e in events if e["type"] == "token")
+    assert "Let me check" not in streamed and "reset" not in [e["type"] for e in events]
+    assert streamed.startswith("Your last three bills")
+
+
+
+def test_figures_given_before_any_lookup_are_never_streamed(world):
+    """With chat history, the model sometimes answers from earlier answers without tools. Such an answer is
+    checked and replaced, so it must not appear on screen first (that was the visible 'answer changes')."""
+    engine, r, state = world
+    total = row_to_bill(get_bill_row(engine, SUB, "2026-10")).total
+    llm = scripted_llm(r, [
+        ("text", "Your October bill is 41.59 EUR and it is overdue since 15 November 2026, please pay it soon."),
+        ("tools", [("get_bill", {"cycle": "2026-10"})]),
+        ("text", f"Your October bill is {total / 100:.2f} EUR."),
+    ])
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
+    events = collect(run_stream("what do I owe?", ctx, llm, engine, history=[{"q": "dues?", "a": "41.59 EUR"}]))
+    streamed = "".join(e["text"] for e in events if e["type"] == "token")
+    assert "41.59" not in streamed and events[-1]["status"] == "REPAIRED"
+    assert f"{total / 100:.2f} EUR" in events[-1]["answer"]
+
+
+def test_approval_cards_come_with_the_final_answer_once_never_from_a_discarded_draft(world):
+    """A draft prepared the payment, the repair prepared it again: the card used to be sent twice (same key,
+    duplicated card) and before the answer was final. Now one card, sent with the final answer."""
+    engine, r, state = world
+    total = row_to_bill(get_bill_row(engine, SUB, "2026-09")).total
+    llm = scripted_llm(r, [
+        ("tools", [("propose_payment", {"purpose": "bill"})]),
+        ("text", "Your bill is 999 EUR. You can pay it in the secure checkout below."),     # wrong figure
+        ("tools", [("propose_payment", {"purpose": "bill"})]),
+        ("text", f"Your bill is {total / 100:.2f} EUR. You can pay it in the secure checkout below."),
+    ])
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
+    events = collect(run_stream("pay my bill", ctx, llm, engine))
+    kinds = [e["type"] for e in events]
+    assert kinds.count("proposal") == 1
+    assert kinds.index("proposal") > max(i for i, k in enumerate(kinds) if k == "step_done")   # after all lookups
+    assert events[-1]["status"] == "REPAIRED"
+
+
+def test_long_tool_results_are_not_cut_for_the_checker():
+    """Results were cut at 3,500 characters: figures past the cut were 'not in the tool results'."""
+    from core_api.agent.broker import RESULT_CHARS, Broker
+    from core_api.agent.loop import check_numbers
+    from core_api.agent.tools import TOOLS, Tool
+    long = {"source": "x", "rows": [f"row {i}: {1000 + i}.50 EUR" for i in range(150)]}   # ~4k chars
+    TOOLS["_long"] = Tool("_long", "test", {"type": "object"}, lambda a, c: long)
+    try:
+        b = Broker(["_long"])
+        b.request("_long", "{}", ToolContext(SUB, "DE", None, None, None))
+        assert len(b.sources["S1"]) < RESULT_CHARS and check_numbers("The last one is 1149.50 EUR.", b.sources) == []
+    finally:
+        del TOOLS["_long"]
+
+
+def test_reopened_chat_keeps_the_pay_card_its_answer_points_to(world):
+    from core_api.agent import history as hist
+    engine, _r, _state = world
+    sid, _ = hist.ensure_session(engine, SUB, None)
+    card = {"type": "proposal", "kind": "PAYMENT", "cycle": "2026-10", "price": "41.59 EUR", "order_id": "pay:BILL:2026-10"}
+    hist.append_turn(engine, sid, "pay?", "You can pay it in the secure checkout below.", "VERIFIED",
+                     [{"label": "S1", "tool": "list_bills"}], [card])
+    hist.append_turn(engine, sid, "thanks", "You're welcome!", "CONVERSATIONAL", [])        # older/plain format
+    msgs = hist.get_session(engine, SUB, sid)["messages"]
+    assert msgs[1]["cards"] == [card] and msgs[1]["citations"][0]["label"] == "S1"
+    assert msgs[3]["cards"] == [] and msgs[3]["citations"] == []
+
+
+def test_explanation_json_missing_lists_is_normalised_so_the_bill_page_cannot_crash(world):
+    engine, r, _state = world
+    cur, prev = row_to_bill(get_bill_row(engine, SUB, "2026-10")), row_to_bill(get_bill_row(engine, SUB, "2026-09"))
+    out = explain_bill(scripted_llm(r, [("json", {"summary": "Your bill went up because of roaming in zone Z2."})]),
+                       r, cur, prev)
+    assert out["status"] == "VERIFIED" and out["explanation"]["drivers"] == [] and out["explanation"]["top_usage"] == []
+
+
+def test_may_as_a_verb_is_not_read_as_the_may_bill():
+    from core_api.agent.retrieve import cycle_hint
+    known = ["2026-05", "2026-10"]
+    assert cycle_hint("may I pay in parts?", None, known) is None
+    assert cycle_hint("why was my bill in May higher?", None, known) == "2026-05"
+    assert cycle_hint("october roaming", None, known) == "2026-10"
+
+
+def test_spine_drops_stale_docs_and_does_not_re_embed_an_unchanged_customer(world):
+    from core_api.agent.spine import refresh_subscriber
+    from core_api.db import context_docs
+    from sqlalchemy import insert as _insert
+    from sqlalchemy import select as _select
+    engine, _r, state = world
+    emb = HashEmbedder()
+    first = refresh_subscriber(engine, state, emb, SUB)
+    assert first["embedded"] > 0
+    with engine.begin() as cx:   # a doc that is no longer generated (e.g. an old month's live usage)
+        cx.execute(_insert(context_docs).values(id=f"{SUB}:usage:2025-01", subscriber_id=SUB, doc_type="usage_live",
+                                                cycle="2025-01", title="old", body="old", source_ref="x",
+                                                content_hash="x", embedding_json="[]"))
+    again = refresh_subscriber(engine, state, emb, SUB)
+    assert again["embedded"] == 0 and again["removed"] == 1   # nothing changed: no re-embedding; stale doc gone
+    with engine.connect() as cx:
+        assert cx.execute(_select(context_docs.c.id).where(context_docs.c.id == f"{SUB}:usage:2025-01")).first() is None

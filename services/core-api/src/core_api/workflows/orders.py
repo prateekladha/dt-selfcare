@@ -42,20 +42,23 @@ OFFER_TTL_H = 24  # a proposal (and a declined one the customer may still accept
 
 def overdue_bill(engine: Engine, subscriber_id: str):
     """Credit control: an issued bill past its due date and not fully paid blocks new purchases."""
-    from datetime import UTC, datetime
+    from datetime import UTC, datetime, timedelta
 
     from ..db import bills
 
     with engine.connect() as cx:
         return cx.execute(select(bills).where(bills.c.subscriber_id == subscriber_id, bills.c.status != "PAID",
-                                              bills.c.due_date < datetime.now(UTC), bills.c.total > bills.c.amount_paid)
+                                              bills.c.due_date <= datetime.now(UTC) - timedelta(days=1), bills.c.total > bills.c.amount_paid)
                           .order_by(bills.c.cycle)).first()
 
 
 def _credit_check(engine: Engine, subscriber_id: str) -> None:
     b = overdue_bill(engine, subscriber_id)
     if b is not None:
-        raise OrderError(402, f"Your {b.cycle} bill is overdue. Please pay it first; then you can buy add-ons or change tariff.")
+        from calendar import month_name
+        month = f"{month_name[int(b.cycle[5:])]} {b.cycle[:4]}"
+        raise OrderError(402, f"Not possible yet: the {month} bill is overdue. Once it is paid, add-ons and tariff "
+                              "changes can be ordered again.")
 
 
 def expired(row) -> bool:
@@ -121,15 +124,23 @@ def propose_plan_change(engine: Engine, subscriber_id: str, plan_code: str, sour
                                       "old_data": gb(cur_plan.data_mb), "currency": cur, "plan": cur_plan.name}}
 
 
-def set_status(engine: Engine, order_id: str, status: str, detail: str | None = None, **extra) -> None:
+def set_status(engine: Engine, order_id: str, status: str, detail: str | None = None,
+               expect: tuple[str, ...] | None = None, **extra) -> bool:
+    """-> True if changed. `expect`: compare-and-set, the change only happens from one of these statuses (approve
+    and decline arriving at the same moment can't both win; a late write can't undo a completed order)."""
     values = {"status": status, "updated_at": utcnow(), **extra}
     if detail is not None:
         values["detail"] = detail[:500]
     with engine.begin() as cx:
-        cx.execute(update(orders).where(orders.c.id == order_id).values(**values))
+        q = update(orders).where(orders.c.id == order_id)
+        if expect:
+            q = q.where(orders.c.status.in_(expect))
+        if cx.execute(q.values(**values)).rowcount == 0:
+            return False
         row = cx.execute(select(orders).where(orders.c.id == order_id)).first()
         if row is not None:
             _event(cx, row)
+    return True
 
 
 def get(engine: Engine, subscriber_id: str, order_id: str):

@@ -16,27 +16,46 @@ export function OrderCard({ orderId, title, extra, price, kind = "ADDON" }:
   const revalidator = useRevalidator();
   const active = order.status === "APPROVED" || order.status === "SUBMITTED";
 
+  // The real status on mount: a card restored with a reopened chat may be completed, in progress or expired
+  // (it used to show "Approve and buy" again).
+  useEffect(() => {
+    fetch(`/api/orders?id=${orderId}`).then((r) => (r.ok ? r.json() : null)).then((o) => { if (o?.status) setOrder(o); }).catch(() => {});
+  }, [orderId]);
+
+  // Live progress while the network confirms; stops after ~10 min or repeated errors (we notify on completion).
   useEffect(() => {
     if (!active) return;
+    let errors = 0, ticks = 0;
     const t = setInterval(async () => {
-      const r = await fetch(`/api/orders?id=${orderId}`);
-      if (r.ok) {
+      ticks += 1;
+      try {
+        const r = await fetch(`/api/orders?id=${orderId}`);
+        if (!r.ok) throw new Error(String(r.status));
+        errors = 0;
         const o = await r.json();
         setOrder(o);
         if (o.status === "COMPLETED") revalidator.revalidate();
+      } catch {
+        errors += 1;
       }
+      if (errors >= 5 || ticks >= 200) clearInterval(t);
     }, 3000);
     return () => clearInterval(t);
   }, [active, orderId]);
 
   async function act(op: "approve" | "decline") {
     setBusy(true);
-    const r = await fetch(`/api/orders?id=${orderId}&op=${op}`, { method: "POST" });
-    const j = await r.json().catch(() => ({}));
-    if (r.ok) setOrder(j);
-    else if (r.status === 410) setOrder((o) => ({ ...o, status: "EXPIRED" }));
-    else toast(j.detail ?? "That didn't work. Please try again.", "bad");
-    setBusy(false);
+    try {
+      const r = await fetch(`/api/orders?id=${orderId}&op=${op}`, { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) setOrder(j);
+      else if (r.status === 410) setOrder((o) => ({ ...o, status: "EXPIRED" }));
+      else toast(j.detail ?? "That didn't work. Please try again.", "bad");
+    } catch {
+      toast("We can't reach the service right now. Please try again in a moment.", "bad");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (

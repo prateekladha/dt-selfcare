@@ -37,7 +37,7 @@ def test_crossing_80_raises_exactly_one_alert(state):
     assert state.apply(PART, 2, "m2", [data(2, 10)], LEVELS).alerts == 0  # still 81%, no repeat
     got = alerts(state)
     assert [a["level"] for a in got] == ["50", "80"]
-    assert got[1]["alert_id"] == f"{SUB}:2026-11:80"
+    assert got[1]["alert_id"].startswith(f"{SUB}:2026-11:80:")   # one id per arming (offset that set the flag)
 
 
 def test_replayed_offset_after_crash_is_not_double_counted(state):
@@ -66,8 +66,19 @@ def test_addon_rearms_alerts_for_new_allowance(state):
                         kind=EventKind.PLAN_CHANGED, addon_code="DE-DATA-5GB", event_time=T)
     state.apply(PART, 1, "m1", [addon], LEVELS)  # 2.5 of 8 GB = 31% -> re-arm 50/80
     state.apply(PART, 2, "m2", [data(1, 4_000)], LEVELS)  # 6.5 of 8 GB = 81%
-    assert [a["level"] for a in alerts(state)] == ["50", "80", "50", "80"]
+    got = alerts(state)
+    assert [a["level"] for a in got] == ["50", "80", "50", "80"]
+    # the re-armed crossings are NEW alerts: distinct ids, so the notifier (unique alert_id) doesn't drop them
+    assert len({a["alert_id"] for a in got}) == 4
     assert state.counters(SUB, "2026-11")["addon:DE-DATA-5GB"] == 1
+
+
+def test_tariff_upgrade_rearms_the_levels_now_below(state):
+    state.apply(PART, 0, "m0", [data(0, 2_500)], LEVELS)   # 83% of 3 GB -> 50, 80 armed
+    state.upsert_profile(SUB, "DE-M")                      # 30 GB: now ~8%
+    assert sorted(state.rearm_alerts(SUB, "2026-11")) == [50, 80]
+    state.apply(PART, 1, "m1", [data(1, 13_000)], LEVELS)  # 15.5 of 30 GB -> 50% again
+    assert [a["level"] for a in alerts(state)][-1] == "50"
 
 
 def test_unknown_subscriber_counts_usage_without_alerting(state):

@@ -49,7 +49,7 @@ spec:
           image: docker.io/valkey/valkey:8.1-alpine
           args: ["/etc/valkey/valkey.conf"]
           ports: [{ containerPort: 6379 }]
-          resources: { requests: { cpu: 50m, memory: 512Mi }, limits: { memory: 1536Mi } }
+          resources: { requests: { cpu: 50m, memory: 512Mi }, limits: { memory: 2560Mi } }   # headroom for the fork of AOF rewrites / RDB saves (copy-on-write)
           readinessProbe: { exec: { command: ["valkey-cli", "ping"] }, periodSeconds: 5 }
           livenessProbe: { exec: { command: ["valkey-cli", "ping"] }, periodSeconds: 15, failureThreshold: 6 }
           volumeMounts:

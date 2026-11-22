@@ -12,13 +12,13 @@ import type { Route } from "./+types/insights";
 export const headers = () => PRIVATE;
 export const meta = () => [{ title: "Try your usage · Self-care" }];
 
-type SimResult = { source: string; compared_to: string | null; baseline: string | null; llm: LlmExplanation | null; status: string; sources: SourceDoc[];
+type SimResult = { source: string; scenario_title?: string | null; compared_to: string | null; baseline: string | null; llm: LlmExplanation | null; status: string; sources: SourceDoc[];
   bill: { lines: Line[]; subtotal: number; vat: number; total: number; currency: string }; explanation: Explanation };
 
 const ICONS: Record<string, typeof Plane> = { "us-trip-2-weeks": Plane, "eu-summer-holiday": Sun, "heavy-streaming": Tv,
   "calling-family-abroad": Phone, "light-month": Globe };
-const BLURB: Record<string, string> = { "us-trip-2-weeks": "1.5 GB data + 90 min calls in zone 2", "eu-summer-holiday": "6 GB in the EU, roam like at home",
-  "heavy-streaming": "45 GB of video at home", "calling-family-abroad": "400 min international calls", "light-month": "1 GB and an hour of calls" };
+const BLURB: Record<string, string> = { "us-trip-2-weeks": "+1.5 GB data and 90 min calls in zone 2", "eu-summer-holiday": "+6 GB and 150 min in the EU, roam like at home",
+  "heavy-streaming": "45 GB of data instead of your usual", "calling-family-abroad": "+400 min international calls", "light-month": "1 GB and an hour of calls instead of your usual" };
 
 export async function loader({ request }: Route.LoaderArgs) {
   return { scenarios: await api<{ key: string; title: string }[]>(request, "/v1/me/usage/scenarios") };
@@ -28,13 +28,14 @@ export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
   const body = new FormData();
   const file = form.get("file");
+  if (file instanceof File && file.size > 1_000_000) return { error: "That file is larger than 1 MB. Please upload a smaller usage file." };
   if (file instanceof File && file.size > 0) body.set("file", file, file.name);
   else if (form.get("scenario")) body.set("scenario", String(form.get("scenario")));
   else return { error: "Choose a scenario or upload a file." };
   try {
     return { result: await api<SimResult>(request, "/v1/me/usage/simulate", { method: "POST", body }), picked: String(form.get("scenario") ?? "") };
   } catch (e) {
-    if (e instanceof ApiError) return { error: e.message.replace(/^invalid usage: /, "") };
+    if (e instanceof ApiError) return { error: e.status >= 500 ? "We couldn't price that right now. Please try again in a moment." : e.message.replace(/^invalid usage: /, "") };
     throw e;
   }
 }
@@ -56,7 +57,7 @@ export default function Insights({ loaderData, actionData }: Route.ComponentProp
     <div className="space-y-6">
       <div>
         <h1 className="display text-[34px] font-extrabold">Try your usage</h1>
-        <p className="mt-1 max-w-[720px] text-[15px] text-[var(--ink-3)]">Scenarios are added on top of your real usage from last month (computed from your CDRs) and priced on your plan ({home.plan.name}). Or upload a usage file. Your real bill is never affected.</p>
+        <p className="mt-1 max-w-[720px] text-[15px] text-[var(--ink-3)]">Scenarios start from your real usage last month (a trip adds to it, a lighter or heavier month replaces it) (from your network usage records) and priced on your plan ({home.plan.name}). Or upload a usage file. Your real bill is never affected.</p>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-5">
@@ -107,9 +108,9 @@ export default function Insights({ loaderData, actionData }: Route.ComponentProp
           <Card>
             <div className="flex flex-wrap items-end justify-between gap-6 p-6">
               <div>
-                <p className="text-sm font-semibold text-[var(--ink-3)]">Estimated bill · {r.source.replace(/^scenario:/, "").replace(/^upload:/, "file: ").replace(/-/g, " ")}</p>
+                <p className="text-sm font-semibold text-[var(--ink-3)]">Estimated bill · {r.scenario_title ?? r.source.replace(/^upload:/, "file: ")}</p>
                 <p className="display tabular mt-1 text-[44px] font-extrabold leading-none">{money(r.bill.total, r.bill.currency, loc)}</p>
-                <p className="mt-2 text-[13px] text-[var(--ink-3)]">incl. VAT{r.baseline && r.compared_to ? <> · your actual {cycleLabel(r.compared_to, loc)} usage (from your CDRs) plus this scenario</> : r.compared_to && <> · compared with your {cycleLabel(r.compared_to, loc)} bill</>}</p>
+                <p className="mt-2 text-[13px] text-[var(--ink-3)]">incl. VAT{r.baseline && r.compared_to ? <> · your actual {cycleLabel(r.compared_to, loc)} usage (from your network usage records) with this scenario</> : r.compared_to && <> · compared with your {cycleLabel(r.compared_to, loc)} bill</>}</p>
               </div>
               <DeltaPill ex={r.explanation} locale={loc} />
             </div>

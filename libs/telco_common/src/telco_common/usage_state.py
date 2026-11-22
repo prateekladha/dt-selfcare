@@ -62,6 +62,21 @@ class UsageState:
             "plan_code": plan.code, "country": plan.country, "allowance_bytes": plan.data_allowance_bytes,
         })
 
+    def rearm_alerts(self, subscriber_id: str, cycle: str) -> list[int]:
+        """After the allowance grew (tariff upgrade): clear the alert levels the customer is now below, so
+        crossing them again notifies (same idea as the add-on re-arm inside apply.lua)."""
+        p = partition_for(subscriber_id, self.partitions)
+        key = usage_key(p, subscriber_id, cycle)
+        h = {k.decode(): v.decode() for k, v in self.r.hgetall(key).items()}
+        allowance = int(self.profile(subscriber_id).get("allowance_bytes", 0) or 0) + int(h.get("addon_bytes", 0) or 0)
+        if allowance <= 0:
+            return []
+        pct = (int(h.get("DATA", 0) or 0) + int(h.get("ROAMING_DATA:EU", 0) or 0)) * 100 / allowance
+        levels = [int(k.split(":")[1]) for k in h if k.startswith("alert:") and int(k.split(":")[1]) > pct]
+        if levels:
+            self.r.hdel(key, *[f"alert:{lv}" for lv in levels])
+        return levels
+
     def profile(self, subscriber_id: str) -> dict[str, str]:
         p = partition_for(subscriber_id, self.partitions)
         return {k.decode(): v.decode() for k, v in self.r.hgetall(profile_key(p, subscriber_id)).items()}

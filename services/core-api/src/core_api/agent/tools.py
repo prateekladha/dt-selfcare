@@ -3,9 +3,10 @@ tool can never be pointed at another customer). Each result carries a `source` s
 Only the Broker may execute tools."""
 from __future__ import annotations
 
+from calendar import monthrange
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from telco_common.billing import data_usage_pct, rate
@@ -46,10 +47,13 @@ def _sub(ctx: ToolContext):
 def _due(due_date, total, paid) -> dict:
     """Due date plus the day counts the assistant may quote (computed here: the model must not do date maths)."""
     d = (due_date if due_date.tzinfo else due_date.replace(tzinfo=UTC)).date()
-    out: dict = {"due": d.isoformat()}
+    out: dict = {"due_date": f"{d.day} {d:%B %Y}"}   # in words: the model quotes what it is given
     if total > paid:
         days = (datetime.now(UTC).date() - d).days
+        out.update({"payment_status": "overdue" if days > 0 else "not yet due"})
         out.update({"days_overdue": days} if days > 0 else {"days_until_due": -days})
+    else:
+        out["payment_status"] = "paid"
     return out
 
 
@@ -58,10 +62,11 @@ def _month(cycle: str) -> str:
 
 
 def t_list_bills(args: dict, ctx: ToolContext) -> dict:
-    rows = list_bills(ctx.engine, ctx.subscriber_id, int(args.get("months", 12)))
+    rows = list_bills(ctx.engine, ctx.subscriber_id, int(args.get("months", 6)))   # recent half-year unless asked
     return {"source": "adb:bills", "bills": [
-        {"cycle": r.cycle, "month": _month(r.cycle), "total": fmt_money(r.total, r.currency), "status": r.status,
-         "paid": fmt_money(r.amount_paid, r.currency), **_due(r.due_date, r.total, r.amount_paid)} for r in rows]}
+        {"cycle": r.cycle, "month": _month(r.cycle), "total": fmt_money(r.total, r.currency),
+         "paid_so_far": fmt_money(r.amount_paid, r.currency), "outstanding": fmt_money(r.total - r.amount_paid, r.currency),
+         **_due(r.due_date, r.total, r.amount_paid)} for r in rows]}
 
 
 def t_get_bill(args: dict, ctx: ToolContext) -> dict:
@@ -70,9 +75,10 @@ def t_get_bill(args: dict, ctx: ToolContext) -> dict:
         return {"error": f"no bill for {args['cycle']}"}
     b = row_to_bill(row)
     cur = b.currency
-    return {"source": f"adb:bills:{row.id}", "month": _month(b.cycle), "status": row.status,
+    return {"source": f"adb:bills:{row.id}", "month": _month(b.cycle),
             "total": fmt_money(b.total, cur), "net": fmt_money(b.subtotal, cur), "vat": fmt_money(b.vat, cur),
-            "vat_rate": f"{int(float(b.vat_rate) * 100)}%", "paid": fmt_money(row.amount_paid, cur),
+            "vat_rate": f"{int(float(b.vat_rate) * 100)}%", "paid_so_far": fmt_money(row.amount_paid, cur),
+            "outstanding": fmt_money(row.total - row.amount_paid, cur),
             **_due(row.due_date, row.total, row.amount_paid),
             "lines": [f"{x.label}: {x.quantity:,} {x.unit} = {fmt_money(x.amount, cur)}" for x in b.lines],
             "usage": {"data": f"{b.usage.data_mb:,} MB of {b.usage.data_allowance_mb:,} MB",
@@ -100,7 +106,7 @@ def t_current_usage(args: dict, ctx: ToolContext) -> dict:
     b = rate(ctx.subscriber_id, cycle, plan, counters)
     u = b.usage
     pct = data_usage_pct(plan, counters)
-    days = 30
+    days = monthrange(now.year, now.month)[1]   # 28-31: the cycle is the calendar month
     proj = int(u.data_mb / max(now.day, 1) * days)
     return {"source": f"valkey:u:{{p{partition_for(ctx.subscriber_id, ctx.state.partitions)}}}:{cycle}",
             "as_of": now.strftime("%d %B %Y %H:%M UTC"), "day_of_cycle": now.day,
@@ -115,8 +121,8 @@ def t_search_knowledge(args: dict, ctx: ToolContext) -> dict:
     """L2: hybrid BM25 + vector (Oracle 23ai) + RRF over the context spine, graded (CRAG)."""
     from .retrieve import hybrid
 
-    docs, meta = hybrid(ctx.engine, ctx.embedder, args["query"], ctx.subscriber_id, top_k=6)
-    chunks = [{"id": d.id, "title": d.title, "text": d.body[:900], "source": d.source_ref, "scores": d.scores} for d in docs]
+    docs, _ = hybrid(ctx.engine, ctx.embedder, args["query"], ctx.subscriber_id, top_k=6)
+    chunks = [{"title": d.title, "text": d.body[:700]} for d in docs]   # only what answers the question
     grade = "ambiguous"
     if ctx.llm is not None and chunks:
         import json
@@ -137,33 +143,40 @@ def t_search_knowledge(args: dict, ctx: ToolContext) -> dict:
     if grade == "incorrect":
         return {"source": "spine:search", "grade": grade, "chunks": [],
                 "note": "Nothing relevant found. Do not guess; say what is missing."}
-    return {"source": "spine:search", "grade": grade, "vector_engine": meta["vector_engine"], "chunks": chunks}
+    return {"source": "spine:search", "chunks": chunks}
 
 
 def t_cdr_evidence(args: dict, ctx: ToolContext) -> dict:
     from ..services.evidence import cdr_evidence
 
     ev = cdr_evidence(ctx.state, ctx.subscriber_id, args["cycle"])
-    return {"source": ev["source"], "cdr_count": ev["cdr_count"], "first": ev["first_event"], "last": ev["last_event"],
-            "all_match": ev["all_match"], "totals": [f"{x['key']}: {x['cdr_records']} CDRs = {x['from_cdrs']:,} {x['unit']}"
-                                                      f" ({'matches' if x['match'] else 'differs from'} running total)"
-                                                      for x in ev["reconciliation"]]}
+    return {"source": ev["source"], "usage_records": ev["cdr_count"], "first": ev["first_event"], "last": ev["last_event"],
+            "everything_matches_the_bill": ev["all_match"],
+            "totals": [f"{x['key']}: {x['cdr_records']} usage records = {x['from_cdrs']:,} {x['unit']}"
+                       f" ({ {'match': 'matches the meter', 'arriving': 'newest records still being archived'}.get(x.get('state', 'match' if x['match'] else 'differs'), 'does not match the meter')})"
+                       for x in ev["reconciliation"]]}
 
 
 def t_payments(args: dict, ctx: ToolContext) -> dict:
     with ctx.engine.connect() as cx:
         rows = cx.execute(select(payments).where(payments.c.subscriber_id == ctx.subscriber_id)
                           .order_by(payments.c.created_at.desc()).limit(10)).all()
+    # Only what a customer would recognise as a payment: completed, declined or awaiting the bank. A checkout
+    # that was opened and closed without paying (CREATED / EXPIRED) is not a payment and is left out.
+    words = {"PAID": "paid", "FAILED": "declined, nothing was charged", "PENDING": "waiting for the bank to confirm"}
+    shown = [r for r in rows if r.status in words]
     return {"source": "adb:payments", "payments": [
-        {"date": r.created_at.date().isoformat(), "purpose": r.purpose.lower(), "amount": fmt_money(r.amount, r.currency),
-         "status": r.status, "bill": r.bill_id.split(":")[1] if r.bill_id else None} for r in rows]}
+        {"date": f"{r.created_at.day} {r.created_at:%B %Y}", "for": (f"{_month(r.bill_id.split(':')[1])} bill" if r.bill_id
+                                                                        else "usage paid in advance"),
+         "amount": fmt_money(r.amount, r.currency), "result": words[r.status]} for r in shown],
+        **({} if shown else {"note": "No payments made yet."})}
 
 
 def t_alerts(args: dict, ctx: ToolContext) -> dict:
     with ctx.engine.connect() as cx:
         rows = cx.execute(select(notifications).where(notifications.c.subscriber_id == ctx.subscriber_id)
                           .order_by(notifications.c.created_at.desc()).limit(10)).all()
-    return {"source": "adb:notifications", "alerts": [f"{r.created_at.date().isoformat()}: {r.title}" for r in rows]}
+    return {"source": "adb:notifications", "alerts": [f"{r.created_at.day} {r.created_at:%B %Y}: {r.title}" for r in rows]}
 
 
 def t_simulate(args: dict, ctx: ToolContext) -> dict:
@@ -216,8 +229,7 @@ def t_propose_payment(args: dict, ctx: ToolContext) -> dict:
         due = b.due_date if b.due_date.tzinfo else b.due_date.replace(tzinfo=UTC)
         return {"source": f"adb:bills:{b.cycle}", "proposal": True, "payment": True, "purpose": "BILL", "bill_id": b.id,
                 "cycle": b.cycle, "amount": fmt_money(b.total - b.amount_paid, b.currency),
-                "due_date": due.date().isoformat(), "overdue": due < datetime.now(UTC),
-                **{k: v for k, v in _due(b.due_date, b.total, b.amount_paid).items() if k != "due"},
+                "overdue": due + timedelta(days=1) <= datetime.now(UTC),   # after the end of the due day **_due(b.due_date, b.total, b.amount_paid),
                 "status": "waiting for the customer to pay in the secure checkout"}
     sub = _sub(ctx)
     cur = unbilled(ctx.state, ctx.subscriber_id, sub.plan_code, engine=ctx.engine)

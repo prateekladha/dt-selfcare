@@ -4,10 +4,11 @@ Pure: the caller gathers everything into an `InvoiceContext` (bill, previous bil
 this module only lays it out. No network, no clock: the same context always renders the same bytes
 (reportlab invariant mode), so a re-download matches the invoice the customer saw on bill day.
 
-Text uses an EMBEDDED TrueType font (Bitstream Vera, shipped inside reportlab), so every viewer draws exactly
-the glyphs and widths laid out here. The standard Helvetica is not embedded: viewers substitute their own
-font, and its "€" overlapped the following digit. Characters the font lacks (e.g. some Polish letters) are
-transliterated; PLN amounts are written with the ISO code.
+Text uses an EMBEDDED TrueType font (DejaVu Sans, bundled in core_api/assets/fonts with its licence), so every
+viewer draws exactly the glyphs and widths laid out here. The standard Helvetica is not embedded: viewers
+substituted their own font and its "€" overlapped the following digit. DejaVu covers Latin Extended-A, so Polish
+names and addresses print correctly (ą ę ń ś ź ż ł); anything still missing is transliterated. PLN amounts are
+written with the ISO code.
 """
 from __future__ import annotations
 
@@ -65,6 +66,22 @@ class PaymentEntry:
 
 
 @dataclass(frozen=True)
+class Seller:
+    name: str
+    address: str
+    vat_id: str
+
+
+# The seller block a VAT invoice needs (§14 UStG / Polish VAT act): name, address, VAT ID. Fictional demo operator
+# per market: no real company, address, registration or trademark. Production: from the operator's configuration.
+DEMO_SELLERS = {
+    "DE": Seller("Self-care Mobile GmbH (demo operator)", "Beispielstraße 1, 10115 Berlin, Germany", "DE000000000 (demo)"),
+    "PL": Seller("Self-care Mobile sp. z o.o. (demo operator)", "ul. Przykładowa 1, 00-001 Warszawa, Poland",
+                 "PL0000000000 (demo)"),
+}
+
+
+@dataclass(frozen=True)
 class InvoiceContext:
     bill: Bill
     invoice_number: str
@@ -77,6 +94,11 @@ class InvoiceContext:
     email: str | None = None
     previous_bill: Bill | None = None
     payments: list[PaymentEntry] = field(default_factory=list)
+    seller: Seller | None = None
+
+    @property
+    def seller_info(self) -> Seller:
+        return self.seller or DEMO_SELLERS.get(self.country) or DEMO_SELLERS["DE"]
 
     @property
     def outstanding(self) -> int:
@@ -99,9 +121,14 @@ def _register_fonts() -> tuple[str, str]:
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
 
-    d = os.path.join(os.path.dirname(reportlab.__file__), "fonts")
-    pdfmetrics.registerFont(TTFont("BillSans", os.path.join(d, "Vera.ttf")))
-    pdfmetrics.registerFont(TTFont("BillSans-Bold", os.path.join(d, "VeraBd.ttf")))
+    bundled = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts")
+    if os.path.exists(os.path.join(bundled, "DejaVuSans.ttf")):
+        regular, bold = os.path.join(bundled, "DejaVuSans.ttf"), os.path.join(bundled, "DejaVuSans-Bold.ttf")
+    else:   # fallback: the Vera font inside reportlab (no Polish ą ę ń ś ź ż; those are transliterated)
+        d = os.path.join(os.path.dirname(reportlab.__file__), "fonts")
+        regular, bold = os.path.join(d, "Vera.ttf"), os.path.join(d, "VeraBd.ttf")
+    pdfmetrics.registerFont(TTFont("BillSans", regular))
+    pdfmetrics.registerFont(TTFont("BillSans-Bold", bold))
     pdfmetrics.registerFontFamily("BillSans", normal="BillSans", bold="BillSans-Bold", italic="BillSans", boldItalic="BillSans-Bold")
     return "BillSans", "BillSans-Bold"
 
@@ -187,6 +214,8 @@ def fmt_mb(mb: int) -> str:
 
 
 def status_of(ctx: InvoiceContext) -> tuple[str, colors.Color]:
+    if ctx.bill.total <= 0:
+        return "Nothing to pay", GREEN
     if ctx.outstanding == 0:
         return "Paid", GREEN
     if ctx.amount_paid > 0:
@@ -226,7 +255,9 @@ def _h2(text: str, st) -> Paragraph:
 def _header(ctx: InvoiceContext, st) -> list:
     start, end = period_of(ctx.bill.cycle)
     status, status_colour = status_of(ctx)
-    left = [Paragraph("Self-care", st["brand"]), Paragraph("Mobile services", st["small"])]
+    seller = ctx.seller_info
+    left = [Paragraph("Self-care", st["brand"]), Paragraph("Mobile services", st["small"]), Spacer(1, 4),
+            Paragraph(f"{_x(seller.name)}<br/>{_x(seller.address)}<br/>VAT ID {_x(seller.vat_id)}", st["small"])]
     right = [Paragraph("Invoice", st["title"]),
              Paragraph(f"No. {_x(ctx.invoice_number)}", ParagraphStyle("r", parent=st["small"], alignment=TA_RIGHT))]
     top = Table([[left, right]], colWidths=[CONTENT_W * 0.5, CONTENT_W * 0.5])
@@ -272,11 +303,13 @@ def _customer_and_summary(ctx: InvoiceContext, st) -> Table:
         cust.append(Paragraph("Tariff changed during this period; fees are pro-rated by day.", st["small"]))
 
     vat_pct = f"{float(b.vat_rate) * 100:g}%"
-    due_label = "Amount due" if ctx.outstanding else "Amount due (paid in full)"
+    due_label = ("Amount due" if ctx.outstanding else "Amount due (nothing to pay)" if b.total <= 0
+                 else "Amount due (paid in full)")
     rows = [
         [Paragraph(_x(due_label.upper()), st["label"]), ""],
         [Paragraph(_x(money(ctx.outstanding, cur)), st["big"]), ""],
-        [Paragraph(f"by {_x(fmt_date(ctx.due_date))}" if ctx.outstanding else "Thank you for your payment.",
+        [Paragraph(f"by {_x(fmt_date(ctx.due_date))}" if ctx.outstanding
+                   else "No payment is needed for this invoice." if b.total <= 0 else "Thank you for your payment.",
                    st["small"]), ""],
         ["Subtotal (net)", money(b.subtotal, cur)],
         [f"VAT {vat_pct}", money(b.vat, cur)],
@@ -422,7 +455,8 @@ def _usage(ctx: InvoiceContext, st) -> list:
         rows.append(["Third-party services", money(u.third_party_charges, ctx.bill.currency), "-",
                      "Paid to providers"])
     rows = [[safe(c) for c in r] for r in rows]
-    t = Table(rows, colWidths=[CONTENT_W * w for w in (0.35, 0.21, 0.19, 0.25)], repeatRows=1)
+    # Used / Included wide enough for "30,000 MB (30.00 GB)" (it overlapped the next column at 0.21/0.19)
+    t = Table(rows, colWidths=[CONTENT_W * w for w in (0.30, 0.245, 0.245, 0.21)], repeatRows=1)
     t.setStyle(_table_style([
         ("FONTNAME", (0, 0), (-1, 0), BOLD), ("FONTSIZE", (0, 0), (-1, 0), 8),
         ("TEXTCOLOR", (0, 0), (-1, 0), MUTED), ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK),
@@ -506,13 +540,15 @@ def _how_to_pay(ctx: InvoiceContext, st) -> list:
     cur = ctx.bill.currency
     if ctx.outstanding:
         text = (f"Please pay <b>{_x(money(ctx.outstanding, cur))}</b> by <b>{_x(fmt_date(ctx.due_date))}</b>. "
-                "Open the Self-care app, go to <b>Bills</b> and tap <b>Pay now</b>; payments are applied to this "
-                f"invoice ({_x(ctx.invoice_number)}) automatically and usually show within a few minutes.")
+                "In the Self-care app, open this bill under <b>Bills</b> and tap <b>Pay</b>; the payment is applied "
+                f"to this invoice ({_x(ctx.invoice_number)}) automatically and usually shows within a few minutes.")
+    elif ctx.bill.total <= 0:
+        text = "There is nothing to pay for this invoice. No action is needed."
     else:
         text = "This invoice is paid in full. No action is needed."
     body = [Paragraph("<b>How to pay</b>", st["base"]), Spacer(1, 3), Paragraph(text, st["base"]), Spacer(1, 4),
-            Paragraph("Questions about a charge? The Self-care app shows the usage records behind every line "
-                      "under <b>Bills &gt; Evidence</b>.", st["small"])]
+            Paragraph("Questions about a charge? Open this bill in the Self-care app: it explains every change and "
+                      "can add up the usage records behind it.", st["small"])]
     box = Table([[body]], colWidths=[CONTENT_W])
     box.setStyle(_table_style([("BACKGROUND", (0, 0), (-1, -1), PANEL), ("LINEBEFORE", (0, 0), (0, -1), 3, MAGENTA),
                              ("LEFTPADDING", (0, 0), (-1, -1), 12), ("RIGHTPADDING", (0, 0), (-1, -1), 12),

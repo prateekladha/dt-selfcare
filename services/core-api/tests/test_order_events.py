@@ -317,3 +317,20 @@ def test_assistant_payment_tool_prepares_the_oldest_unpaid_bill(world):
     out = t_propose_payment({"purpose": "bill"}, ctx)
     assert out["proposal"] and out["payment"] and out["bill_id"] == f"{SUB}:2026-08" and out["overdue"] is True
     assert out["amount"].startswith("11.90") or "11.90" in out["amount"]
+
+
+def test_approve_and_decline_at_the_same_moment_only_one_wins():
+    """set_status is a compare-and-set: a decline that arrives after the approval was written changes nothing."""
+    from core_api.db import create_schema, orders
+    from core_api.workflows.orders import set_status
+    from sqlalchemy import create_engine, insert, select
+    from sqlalchemy.pool import StaticPool
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    create_schema(engine)
+    with engine.begin() as cx:
+        cx.execute(insert(orders).values(id="ord-race", subscriber_id="s1", kind="ADDON", addon_code="DE-DATA-5GB",
+                                         price=999, currency="EUR", status="PROPOSED", source="assistant"))
+    assert set_status(engine, "ord-race", "APPROVED", expect=("PROPOSED", "DECLINED"))     # approve wins
+    assert not set_status(engine, "ord-race", "DECLINED", expect=("PROPOSED",))            # late decline: no-op
+    with engine.connect() as cx:
+        assert cx.execute(select(orders.c.status)).scalar_one() == "APPROVED"

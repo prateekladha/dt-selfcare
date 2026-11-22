@@ -39,7 +39,7 @@ for g = 0, n_groups - 1 do
   a = a + 4
   local addon_changed = false
   for _ = 1, n_fields do
-    local field, inc = ARGV[a], tonumber(ARGV[a + 1])
+    local field, inc = ARGV[a], ARGV[a + 1]   -- the integer string as sent: tonumber() would make it a double
     a = a + 2
     redis.call('HINCRBY', ukey, field, inc)
     if field == 'addon_bytes' then addon_changed = true end
@@ -57,7 +57,9 @@ for g = 0, n_groups - 1 do
       if pct >= level then
         if redis.call('HSETNX', ukey, flag, offset) == 1 then
           redis.call('XADD', KEYS[3], 'MAXLEN', '~', 1000000, '*',
-            'alert_id', sub .. ':' .. cycle .. ':' .. level, 'subscriber_id', sub, 'country', country,
+            -- one id per arming (the offset that set the flag): after an add-on re-arms a level, the next crossing is
+            -- a NEW alert (the old id was a duplicate and was dropped); a replay of this message gives the same id
+            'alert_id', sub .. ':' .. cycle .. ':' .. level .. ':' .. offset, 'subscriber_id', sub, 'country', country,
             'cycle', cycle, 'level', level, 'used_bytes', string.format('%.0f', used),
             'allowance_bytes', string.format('%.0f', allowance), 'pct', string.format('%.1f', pct))
           alerts = alerts + 1

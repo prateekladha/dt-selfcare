@@ -1,3 +1,4 @@
+import { isOverdue } from "~/lib/format";
 import type { Home } from "./types";
 
 /** Derived, display-ready facts computed ONCE on the server from the snapshot's as_of time, in the
@@ -14,7 +15,7 @@ export function derive(home: Home) {
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
   const asOfLabel = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: tz }).format(asOf);
   const due = home.trend.find((b) => b.id === home.outstanding.bill_id) ?? null;
-  const overdue = !!due && new Date(due.due_date) < asOf;
+  const overdue = !!due && isOverdue(due.due_date, asOf);
   const unread = home.notifications.filter((n) => !n.read).length;
   return { tz, day, daysInCycle, daysLeft, projectedMb, greeting, asOfLabel, due, overdue, unread };
 }

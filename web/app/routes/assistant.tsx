@@ -12,7 +12,7 @@ export const meta = () => [{ title: "Assistant · Self-care" }];
 
 type Step = { label: string; done: boolean; ok?: boolean };
 type Proposal = { kind?: string; order_id: string; add_on: string; extra_data: string; price: string; purpose?: "BILL" | "ADVANCE"; bill_id?: string | null; cycle?: string; overdue?: boolean };
-type Turn = { q: string; text: string; steps: Step[]; proposals?: Proposal[]; status?: string; citations: ToolSource[]; trace?: AgentTrace; error?: string; repairing?: boolean };
+type Turn = { q: string; text: string; steps: Step[]; proposals?: Proposal[]; status?: string; citations: ToolSource[]; trace?: AgentTrace; error?: string };
 
 const TOOL_TITLES: Record<string, (a: Record<string, unknown>) => string> = {
   list_bills: () => "Your recent bills",
@@ -28,11 +28,27 @@ const TOOL_TITLES: Record<string, (a: Record<string, unknown>) => string> = {
 function month(c: unknown) {
   return typeof c === "string" && /^\d{4}-\d{2}$/.test(c) ? new Date(`${c}-01T00:00:00Z`).toLocaleString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" }) : "";
 }
+/** One readable line per value: lists of records (bills, payments) become "October 2026: 41.59 EUR, overdue";
+ *  nested objects become "key value" pairs. Never "[object Object]". */
+function show(v: unknown): string {
+  if (v === null || v === undefined) return "-";
+  if (Array.isArray(v)) return v.slice(0, 4).map(show).join("; ") + (v.length > 4 ? ` (+${v.length - 4} more)` : "");
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    const head = o.month ?? o.cycle ?? o.date ?? o.paid_at ?? o.label ?? o.title;
+    const amount = o.total ?? o.amount ?? o.price;
+    const status = o.payment_status ?? o.status;
+    if (head !== undefined && (amount !== undefined || status !== undefined))
+      return `${head}: ${[amount, status].filter((x) => x !== undefined).map(String).join(", ")}`;
+    return Object.entries(o).slice(0, 4).map(([k, x]) => `${k.replace(/_/g, " ")} ${typeof x === "object" ? show(x) : x}`).join(", ");
+  }
+  return String(v);
+}
 function detailOf(body: string) {
   try {
     const o = JSON.parse(body.replace(/…"\(truncated\)"$/, "}"));
     delete o.source_label; delete o.source;
-    return Object.entries(o).slice(0, 6).map(([k, v]) => `${k.replace(/_/g, " ")}: ${Array.isArray(v) ? v.slice(0, 4).join("; ") : typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ");
+    return Object.entries(o).slice(0, 6).map(([k, v]) => `${k.replace(/_/g, " ")}: ${show(v)}`).join(" · ");
   } catch { return body.slice(0, 300); }
 }
 
@@ -68,12 +84,10 @@ function Answer({ t }: { t: Turn }) {
                            amount={p.price} overdue={!!p.overdue} />
             : <OrderCard key={p.order_id} orderId={p.order_id} title={p.add_on} extra={p.extra_data} price={`${p.price} + VAT`} kind={p.kind === "PLAN" ? "PLAN" : "ADDON"} />)}</div>
         )}
-        {t.repairing && <p className="mt-3 text-xs text-[var(--warn)]">Double-checking a number against your records…</p>}
-        {t.status && t.status !== "CONVERSATIONAL" && (
+        {ok && (   // only checked answers carry the badge; apologies and error messages don't need one
           <p className="mt-4 flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
-            <ShieldCheck size={13} className={ok ? "text-[var(--good)]" : "text-[var(--warn)]"} />
-            {ok ? (t.status === "REPAIRED" ? "Checked against your records (corrected once)" : "Checked against your records") : "Couldn't be fully checked"}
-            {items.length > 0 && <> · tap a number to see its source</>}
+            <ShieldCheck size={13} className="text-[var(--good)]" />
+            Checked against your records{items.length > 0 && <> · tap a number to see its source</>}
           </p>
         )}
       </div>
@@ -131,7 +145,7 @@ export default function Assistant() {
     const t: Turn[] = [];
     for (const m of s.messages) {
       if (m.role === "user") t.push({ q: m.content, text: "", steps: [], citations: [] });
-      else if (t.length) Object.assign(t[t.length - 1], { text: m.content, status: m.status ?? "VERIFIED", citations: m.citations ?? [] });
+      else if (t.length) Object.assign(t[t.length - 1], { text: m.content, status: m.status ?? "VERIFIED", citations: m.citations ?? [], proposals: m.cards ?? [] });
     }
     setTurns(t); setSessionId(id);
   }
@@ -239,9 +253,11 @@ export default function Assistant() {
           else if (ev.type === "step") patch((t) => ({ ...t, steps: [...t.steps, { label: ev.label, done: false }] }));
           else if (ev.type === "step_done") patch((t) => ({ ...t, steps: t.steps.map((s, i) => (i === t.steps.length - 1 ? { ...s, done: true, ok: ev.ok } : s)) }));
           else if (ev.type === "proposal") patch((t) => ({ ...t, proposals: [...(t.proposals ?? []), ev] }));
-          else if (ev.type === "repairing") patch((t) => ({ ...t, repairing: true }));
           else if (ev.type === "replace") patch((t) => ({ ...t, text: ev.text }));
-          else if (ev.type === "done") { patch((t) => ({ ...t, text: ev.answer, status: ev.status, citations: ev.citations ?? [], trace: ev.trace, repairing: false })); loadChats(); }
+          else if (ev.type === "done") {   // the answer is complete: free the input now (the chat title may still follow)
+            patch((t) => ({ ...t, text: ev.answer, status: ev.status, citations: ev.citations ?? [], trace: ev.trace }));
+            setBusy(false); loadChats();
+          }
         }
       }
     } catch {

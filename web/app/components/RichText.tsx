@@ -59,21 +59,31 @@ function Cited({ text, cites, onCite }: { text: string; cites: CiteMap; onCite?:
 
 /** Paragraphs and "- " bullet lists with consistent spacing; citations rendered as superscripts. */
 export function RichText({ text, cites, onCite, className = "" }: { text: string; cites: CiteMap; onCite?: (n: number) => void; className?: string }) {
-  const blocks = text.trim().split(/\n\s*\n/);
+  // Group consecutive lines into paragraphs, bullet lists ("- ", "* ", "• ") and numbered lists ("1." / "1)").
+  // An intro line directly followed by a list (no blank line) is a paragraph and then the list.
+  const BULLET = /^[-*•]\s+/, NUMBERED = /^\d{1,2}[.)]\s+/;
+  type Block = { kind: "p" | "ul" | "ol"; lines: string[] };
+  const blocks: Block[] = [];
+  for (const raw of text.trim().split("\n")) {
+    const l = raw.trim();
+    if (!l) { blocks.push({ kind: "p", lines: [] }); continue; }   // blank line ends the block
+    const kind = BULLET.test(l) ? "ul" : NUMBERED.test(l) ? "ol" : "p";
+    const last = blocks[blocks.length - 1];
+    if (last && last.kind === kind && last.lines.length) last.lines.push(l);
+    else blocks.push({ kind, lines: [l] });
+  }
   return (
     <div className={`space-y-3 text-[15.5px] leading-[1.7] text-[var(--ink)] ${className}`}>
-      {blocks.map((block, bi) => {
-        const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
-        const bullets = lines.every((l) => /^[-*•]\s+/.test(l));
-        if (bullets) {
-          return (
-            <ul key={bi} className="list-disc space-y-1.5 pl-5 marker:text-[var(--ink-3)]">
-              {lines.map((l, li) => <li key={li} className="pl-1"><Inline text={l.replace(/^[-*•]\s+/, "")} cites={cites} onCite={onCite} /></li>)}
-            </ul>
-          );
-        }
-        return <p key={bi}><Inline text={lines.join(" ")} cites={cites} onCite={onCite} /></p>;
-      })}
+      {blocks.filter((b) => b.lines.length).map((b, bi) => b.kind === "p"
+        ? <p key={bi}><Inline text={b.lines.join(" ")} cites={cites} onCite={onCite} /></p>
+        : (() => {
+            const List = b.kind === "ul" ? "ul" : "ol";
+            return (
+              <List key={bi} className={`${b.kind === "ul" ? "list-disc" : "list-decimal"} space-y-1.5 pl-5 marker:text-[var(--ink-3)]`}>
+                {b.lines.map((l, li) => <li key={li} className="pl-1"><Inline text={l.replace(b.kind === "ul" ? BULLET : NUMBERED, "")} cites={cites} onCite={onCite} /></li>)}
+              </List>
+            );
+          })())}
     </div>
   );
 }
