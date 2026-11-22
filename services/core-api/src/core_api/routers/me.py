@@ -192,7 +192,7 @@ def bill_evidence(cycle: Annotated[str, CYCLE], response: Response, p: Principal
     row = None if cycle == "current" else get_bill_row(get_engine(), p.subscriber_id, cycle)
     ev["bill_lines"] = [x.model_dump() for x in row_to_bill(row).lines] if row else []
     ev["bill_id"] = row.id if row else None
-    ev["note"] = ("Current cycle: the archive is flushed every ~60 s, so the newest CDRs may not be archived yet."
+    ev["note"] = ("This month: the audit copy is written about once a minute, so the newest records may not be in it yet."
                   if cycle == "current" else None)
     return ev
 

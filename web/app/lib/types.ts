@@ -31,8 +31,8 @@ export type ToolSource = { label: string; tool: string; args: Record<string, unk
 export type AgentAnswer = { status: string; answer: string; citations: ToolSource[]; trace: AgentTrace };
 export type Evidence = {
   subscriber_id: string; cycle: string; partition: number; source: string; objects_scanned: number; cdr_count: number;
-  first_event: string | null; last_event: string | null; all_match: boolean; note: string | null; bill_id: string | null;
-  reconciliation: { key: string; unit: string; cdr_records: number; from_cdrs: number; valkey_counter: number; match: boolean }[];
+  first_event: string | null; last_event: string | null; all_match: boolean; still_arriving?: boolean; note: string | null; bill_id: string | null;
+  reconciliation: { key: string; unit: string; cdr_records: number; from_cdrs: number; valkey_counter: number; match: boolean; state?: "match" | "arriving" | "differs" }[];
   sample: { record_id: string; event_time: string; key: string; quantity: number; unit: string; archive_object: string }[];
   bill_lines: Line[];
 };

@@ -133,7 +133,7 @@ function Body({ r, cycle }: { r: ExplanationResponse; cycle?: string }) {
   llm.drivers.forEach((d) => cites.scan(d.why, d.sources ?? []));
   llm.top_usage.forEach((d) => cites.scan(d.why, d.sources ?? []));
   cites.scan(llm.tip, llm.tip_sources ?? []);
-  const summary = <Inline text={llm.summary} cites={cites} />;
+  const summary = <Inline text={llm.summary} cites={cites} onCite={onCite} />;
   const drivers = llm.drivers.map((d, i) => <ItemRow key={i} item={d} value={d.impact} tone={up(d.impact) ? "up" : down(d.impact) ? "down" : "neutral"} cites={cites} onCite={onCite} />);
   const usage = llm.top_usage.map((d, i) => <ItemRow key={i} item={d} value={d.amount} tone="neutral" cites={cites} onCite={onCite} />);
   const tipCites = (llm.tip_sources ?? []).map((l) => { const n = cites.num(l); return <CiteMark key={l} n={n} onClick={() => onCite(n)} />; });
@@ -148,12 +148,12 @@ function Body({ r, cycle }: { r: ExplanationResponse; cycle?: string }) {
           {llm.tip && (
             <div className="mt-4 flex gap-3 rounded-lg bg-[var(--surface-2)] px-4 py-3 ring-1 ring-[var(--line)]">
               <Lightbulb size={17} className="mt-0.5 shrink-0 text-[var(--warn)]" />
-              <p className="text-[14px] leading-relaxed text-[var(--ink-2)]"><Inline text={llm.tip} cites={cites} />{tipCites}</p>
+              <p className="text-[14px] leading-relaxed text-[var(--ink-2)]"><Inline text={llm.tip} cites={cites} onCite={onCite} />{tipCites}</p>
             </div>
           )}
           <p className="mt-4 flex items-center gap-1.5 pb-5 text-xs text-[var(--ink-3)]">
             <ShieldCheck size={13} className="text-[var(--good)]" />
-            {r.status === "REPAIRED" ? "Checked against your records (corrected once)" : "Checked against your records"} · tap a number to see its source
+            Checked against your records · tap a number to see its source
           </p>
         </div>
         <div className="border-t border-[var(--line)]">
@@ -182,7 +182,9 @@ function Body({ r, cycle }: { r: ExplanationResponse; cycle?: string }) {
           <CardHeader title="What changed" subtitle="Biggest changes first" />
           <div className="px-6 pb-6 pt-4">
             {drivers.length ? <ul className="divide-y divide-[var(--line)]">{drivers}</ul>
-              : <p className="text-[14px] text-[var(--ink-2)]">Nothing changed compared with the previous month.</p>}
+              : <p className="text-[14px] text-[var(--ink-2)]">{r.explanation.delta_total === null
+                  ? "This is your first bill, so there's nothing to compare with yet."
+                  : "Nothing changed compared with the previous month."}</p>}
           </div>
         </Card>
         <Card>

@@ -373,3 +373,19 @@ def test_reopened_chat_keeps_the_pay_card_its_answer_points_to(world):
     msgs = hist.get_session(engine, SUB, sid)["messages"]
     assert msgs[1]["cards"] == [card] and msgs[1]["citations"][0]["label"] == "S1"
     assert msgs[3]["cards"] == [] and msgs[3]["citations"] == []
+
+
+def test_explanation_json_missing_lists_is_normalised_so_the_bill_page_cannot_crash(world):
+    engine, r, _state = world
+    cur, prev = row_to_bill(get_bill_row(engine, SUB, "2026-10")), row_to_bill(get_bill_row(engine, SUB, "2026-09"))
+    out = explain_bill(scripted_llm(r, [("json", {"summary": "Your bill went up because of roaming in zone Z2."})]),
+                       r, cur, prev)
+    assert out["status"] == "VERIFIED" and out["explanation"]["drivers"] == [] and out["explanation"]["top_usage"] == []
+
+
+def test_may_as_a_verb_is_not_read_as_the_may_bill():
+    from core_api.agent.retrieve import cycle_hint
+    known = ["2026-05", "2026-10"]
+    assert cycle_hint("may I pay in parts?", None, known) is None
+    assert cycle_hint("why was my bill in May higher?", None, known) == "2026-05"
+    assert cycle_hint("october roaming", None, known) == "2026-10"

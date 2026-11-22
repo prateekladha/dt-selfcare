@@ -153,7 +153,8 @@ def t_cdr_evidence(args: dict, ctx: ToolContext) -> dict:
     return {"source": ev["source"], "usage_records": ev["cdr_count"], "first": ev["first_event"], "last": ev["last_event"],
             "everything_matches_the_bill": ev["all_match"],
             "totals": [f"{x['key']}: {x['cdr_records']} usage records = {x['from_cdrs']:,} {x['unit']}"
-                       f" ({'matches' if x['match'] else 'does not match'} what was billed)" for x in ev["reconciliation"]]}
+                       f" ({ {'match': 'matches the meter', 'arriving': 'newest records still being archived'}.get(x.get('state', 'match' if x['match'] else 'differs'), 'does not match the meter')})"
+                       for x in ev["reconciliation"]]}
 
 
 def t_payments(args: dict, ctx: ToolContext) -> dict:

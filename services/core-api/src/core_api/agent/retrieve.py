@@ -85,7 +85,10 @@ def cycle_hint(query: str, explicit: str | None, known: list[str]) -> str | None
         return explicit
     q = query.lower()
     for name, m in MONTHS.items():
-        if name in q:
+        # whole words only ("marching" isn't March), and "may" only in a month context ("may I pay" isn't May)
+        pat = (r"\b(in|for|of|since|last|this)\s+may\b|\bmay\s+(\d{4}|bill|invoice|usage)\b" if name == "may"
+               else rf"\b{name}\b")
+        if re.search(pat, q):
             hits = [c for c in known if c and int(c[5:]) == m]
             return max(hits) if hits else None
     return None
