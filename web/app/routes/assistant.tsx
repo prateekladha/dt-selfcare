@@ -12,7 +12,7 @@ export const meta = () => [{ title: "Assistant · Self-care" }];
 
 type Step = { label: string; done: boolean; ok?: boolean };
 type Proposal = { kind?: string; order_id: string; add_on: string; extra_data: string; price: string; purpose?: "BILL" | "ADVANCE"; bill_id?: string | null; cycle?: string; overdue?: boolean };
-type Turn = { q: string; text: string; steps: Step[]; proposals?: Proposal[]; status?: string; citations: ToolSource[]; trace?: AgentTrace; error?: string; repairing?: boolean };
+type Turn = { q: string; text: string; steps: Step[]; proposals?: Proposal[]; status?: string; citations: ToolSource[]; trace?: AgentTrace; error?: string };
 
 const TOOL_TITLES: Record<string, (a: Record<string, unknown>) => string> = {
   list_bills: () => "Your recent bills",
@@ -84,7 +84,6 @@ function Answer({ t }: { t: Turn }) {
                            amount={p.price} overdue={!!p.overdue} />
             : <OrderCard key={p.order_id} orderId={p.order_id} title={p.add_on} extra={p.extra_data} price={`${p.price} + VAT`} kind={p.kind === "PLAN" ? "PLAN" : "ADDON"} />)}</div>
         )}
-        {t.repairing && <p className="mt-3 text-xs text-[var(--warn)]">Double-checking a number against your records…</p>}
         {t.status && t.status !== "CONVERSATIONAL" && (
           <p className="mt-4 flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
             <ShieldCheck size={13} className={ok ? "text-[var(--good)]" : "text-[var(--warn)]"} />
@@ -255,9 +254,8 @@ export default function Assistant() {
           else if (ev.type === "step") patch((t) => ({ ...t, steps: [...t.steps, { label: ev.label, done: false }] }));
           else if (ev.type === "step_done") patch((t) => ({ ...t, steps: t.steps.map((s, i) => (i === t.steps.length - 1 ? { ...s, done: true, ok: ev.ok } : s)) }));
           else if (ev.type === "proposal") patch((t) => ({ ...t, proposals: [...(t.proposals ?? []), ev] }));
-          else if (ev.type === "repairing") patch((t) => ({ ...t, repairing: true }));
           else if (ev.type === "replace") patch((t) => ({ ...t, text: ev.text }));
-          else if (ev.type === "done") { patch((t) => ({ ...t, text: ev.answer, status: ev.status, citations: ev.citations ?? [], trace: ev.trace, repairing: false })); loadChats(); }
+          else if (ev.type === "done") { patch((t) => ({ ...t, text: ev.answer, status: ev.status, citations: ev.citations ?? [], trace: ev.trace })); loadChats(); }
         }
       }
     } catch {

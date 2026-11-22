@@ -8,7 +8,7 @@
   verify: every number in the final answer must appear in the tool results it cites [S#];
           on failure the model is told exactly what is unsupported and repairs (≤2) WITH the tools, so it
           can look a fact up instead of dropping it — no templates. A repair that drops the facts is rejected.
-Events (SSE): step · step_done · token · reset · repairing · replace · done · error
+Events (SSE): step · step_done · proposal · token (only the final, checked answer) · done
 """
 from __future__ import annotations
 
@@ -38,6 +38,9 @@ their bills, usage, plan, roaming and payments. Talk like a friendly, competent 
 calm, respectful and clear. Never sound like a system, a report or a developer.
 
 GETTING THE FACTS RIGHT
+- Think it through before you answer: gather everything the question needs first, then read every tool
+  result, including refusals and blockers (e.g. a plan change refused because a bill is overdue), and build
+  ONE consistent answer around them. Never offer something a tool just refused.
 - Look facts up with the tools; never answer from memory. Earlier messages in this chat are context only:
   if you state a fact again, fetch it again in this turn.
 - Use only figures the tools returned, written as they were returned. Don't work out new numbers (days,
@@ -86,6 +89,19 @@ def _label(tool: str, args: dict) -> str:
 SESSION_TURNS, SESSION_TTL_S = 6, 24 * 3600
 _HAS_FIGURE = re.compile(r"\d[\d.,]*\d")   # 2+ digit figure (amounts, dates, MB)
 HOLD_CHARS = 80   # ~a sentence: preambles before tool calls are shorter; an answer is visible within ~0.3 s
+STREAM_DRAFTS = False   # the model's draft is never streamed: it may still be corrected by the checks
+
+
+async def deliver(answer: str):
+    """Write the final answer out in small chunks (reads like typing, ~1 s for a long answer). Only ever the
+    checked answer, so nothing on screen is replaced afterwards."""
+    parts = re.findall(r"\S+\s*", answer)
+    step = max(2, len(parts) // 60)
+    for i in range(0, len(parts), step):
+        yield {"type": "token", "text": "".join(parts[i:i + step])}
+        await asyncio.sleep(0.015)
+
+
 def check_numbers(answer: str, labels: dict[str, str]) -> list[str]:
     """Every figure in the answer must appear in a tool result of THIS turn (earlier answers are not
     sources). The model doesn't have to place citation markers: attach_sources does that afterwards, so a
@@ -174,8 +190,8 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
             res = None  # before a tool call ("Let me check your bills...") is never shown and then taken back
             async for kind, val in llm.astream("agent" if stream_tokens else "repair", messages, tools if allow_tools else None):
                 if kind == "token":
-                    if not stream_tokens:
-                        continue
+                    if not STREAM_DRAFTS or not stream_tokens:
+                        continue   # drafts are never shown: only the final, checked answer is (see deliver)
                     if streamed:
                         yield {"type": "token", "text": val}
                     else:
@@ -188,7 +204,7 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                             yield {"type": "token", "text": held}
                 else:
                     res = val
-            if stream_tokens and not streamed and held and not res.tool_calls and not (st["calls"] == 0 and _HAS_FIGURE.search(held)):
+            if STREAM_DRAFTS and stream_tokens and not streamed and held and not res.tool_calls and not (st["calls"] == 0 and _HAS_FIGURE.search(held)):
                 streamed = True
                 yield {"type": "token", "text": held}   # a short final answer: release it at once
             trace["stages"].append(res.as_trace())
@@ -259,7 +275,7 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                 break
             if attempt == 2:
                 break
-            yield {"type": "repairing", "problems": problems[:4]}
+            # silent: the customer sees the steps of any extra lookup, never a "checking" notice or a draft
             messages += [{"role": "assistant", "content": answer},
                          {"role": "user", "content": "Problems: " + "; ".join(problems[:6]) +
                           ". Answer the customer's question again in the same warm, plain style. Look up every fact you"
@@ -272,8 +288,6 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
             answer = st["answer"]
         if status in ("VERIFIED", "REPAIRED"):
             answer = attach_sources(answer, dict(broker.sources))
-        if trace["attempts"] and len(trace["attempts"]) > 1:
-            yield {"type": "replace", "text": answer}  # one replacement with the checked answer
     except BudgetExceeded as e:
         status, answer = "BUDGET", "I can't answer right now because today's assistant budget has been used. Please try again tomorrow."
         trace.setdefault("degraded", []).append(str(e))
@@ -283,8 +297,9 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
         trace.setdefault("degraded", []).append(f"{type(e).__name__}: {e}"[:300])
 
     if status == "UNVERIFIED":
-        answer = "I couldn't put together an answer I can fully verify against your records. Try asking it differently."
-        yield {"type": "replace", "text": answer}
+        answer = "I'm sorry, I couldn't put together an answer I can stand behind. Could you ask it a little differently?"
+    async for ev in deliver(answer):   # the facts are all in and checked: now the answer is written out
+        yield ev
     cited = sorted(set(_CITE.findall(answer)) & set(broker.sources), key=lambda x: int(x[1:]))
     stages = trace["stages"]
     trace["totals"] = {"cost_usd": round(sum(s["cost_usd"] for s in stages), 6),

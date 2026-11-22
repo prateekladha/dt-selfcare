@@ -117,7 +117,10 @@ def test_unsupported_number_in_answer_is_repaired(world):
                            ("text", "Roaming in zone Z2 added 372 MB [S1].")])
     ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
     events = collect(run_stream("Why is it higher?", ctx, llm, engine))
-    assert "repairing" in [e["type"] for e in events] and events[-1]["status"] == "REPAIRED"
+    streamed = "".join(e["text"] for e in events if e["type"] == "token")
+    assert events[-1]["status"] == "REPAIRED" and "999" not in streamed            # the wrong draft never shown
+    assert not {"repairing", "replace"} & {e["type"] for e in events}             # no visible "checking"
+    assert streamed == events[-1]["answer"]                                        # only the final answer
 
 
 def test_structured_explanation_single_call_verified_and_cached(world):
@@ -238,7 +241,8 @@ def test_answer_from_chat_history_is_repaired_by_looking_the_fact_up_not_dropped
     assert "dropped the facts" in attempts[1]["problems"][0]
     assert done["status"] == "REPAIRED" and "[S1]" in done["answer"] and "don't have" not in done["answer"]
     kinds = [e["type"] for e in events]
-    assert "step" in kinds and kinds.count("replace") == 1   # the repair's lookup is shown, one replacement
+    assert "step" in kinds and "replace" not in kinds and "repairing" not in kinds   # lookup steps shown, no swap
+    assert "".join(e["text"] for e in events if e["type"] == "token") == done["answer"]
     assert done["citations"] and done["citations"][0]["tool"] == "get_bill"
 
 
