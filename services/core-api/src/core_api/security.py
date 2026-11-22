@@ -1,4 +1,8 @@
-"""Authentication: argon2id password hashes + short-lived signed JWTs.
+"""Authentication: argon2id password hashes + short-lived signed JWTs (RS256).
+
+Tokens are signed with an RSA private key that only core-api (the issuer) holds. Every other service
+verifies with the public key, which can check a token but never create one, so a compromised web or
+payments pod cannot forge a session for another customer. Only RS256 is accepted (no `alg` confusion).
 
 Every customer endpoint derives the subscriber from the token (`/v1/me/...`) and never from the
 URL, so one customer cannot address another customer's data (no IDOR by construction).
@@ -40,12 +44,46 @@ class Principal:
     role: str = "customer"
 
 
+_dev_keys: tuple[str, str] | None = None
+
+
+def _dev_keypair() -> tuple[str, str]:
+    """Process-local keypair for unit tests and local runs only (never used when keys are configured)."""
+    global _dev_keys
+    if get_settings().require_jwt_keys:
+        raise RuntimeError("JWT keys are not configured (APP_JWT_PUBLIC_KEY / APP_JWT_PRIVATE_KEY)")
+    if _dev_keys is None:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        k = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        _dev_keys = (k.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                     serialization.NoEncryption()).decode(),
+                     k.public_key().public_bytes(serialization.Encoding.PEM,
+                                                 serialization.PublicFormat.SubjectPublicKeyInfo).decode())
+    return _dev_keys
+
+
+def _signing_key() -> str:
+    s = get_settings()
+    if s.jwt_private_key:
+        return s.jwt_private_key
+    if s.jwt_public_key:  # a verifier-only service (no private key) must never issue tokens
+        raise RuntimeError("this service holds only the public key and cannot issue tokens")
+    return _dev_keypair()[0]
+
+
+def _verify_key() -> str:
+    s = get_settings()
+    return s.jwt_public_key or _dev_keypair()[1]
+
+
 def issue_token(subscriber_id: str, country: str, role: str = "customer") -> tuple[str, int]:
     s = get_settings()
     now = int(time.time())
     claims = {"sub": subscriber_id, "country": country, "role": role, "iat": now, "exp": now + s.jwt_ttl_s,
               "iss": ISSUER}
-    return jwt.encode(claims, s.jwt_secret, algorithm="HS256"), s.jwt_ttl_s
+    return jwt.encode(claims, _signing_key(), algorithm="RS256"), s.jwt_ttl_s
 
 
 REFRESH_TTL_S = 30 * 24 * 3600
@@ -96,7 +134,7 @@ def revoke_refresh(r, token: str) -> None:
 
 def decode_token(token: str) -> Principal:
     try:
-        c = jwt.decode(token, get_settings().jwt_secret, algorithms=["HS256"], issuer=ISSUER)
+        c = jwt.decode(token, _verify_key(), algorithms=["RS256"], issuer=ISSUER)
     except jwt.PyJWTError as e:
         raise HTTPException(401, "invalid or expired token") from e
     return Principal(c["sub"], c["country"], c.get("role", "customer"))

@@ -27,8 +27,8 @@ spec:
             - { name: CORE_API_URL, value: "http://core-api:8080" }
             - { name: PAYMENTS_URL, value: "http://payments-service:8080" }
             - { name: ASSISTANT_URL, value: "http://assistant-service:8080" }
-            - name: SESSION_SECRET
-              valueFrom: { secretKeyRef: { name: selfcare-secrets, key: jwt-secret } }
+            - name: SESSION_SECRET   # its own cookie-signing secret: the web pod holds no token-signing key
+              valueFrom: { secretKeyRef: { name: selfcare-secrets, key: session-secret } }
           ports: [{ name: http, containerPort: 3000 }]
           readinessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 10 }
           livenessProbe: { httpGet: { path: /healthz, port: http }, periodSeconds: 20 }

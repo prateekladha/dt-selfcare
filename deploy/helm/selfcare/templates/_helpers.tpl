@@ -34,8 +34,9 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
   valueFrom: { secretKeyRef: { name: selfcare-secrets, key: db-dsn } }
 - name: APP_DB_PASSWORD
   valueFrom: { secretKeyRef: { name: selfcare-secrets, key: db-app-password } }
-- name: APP_JWT_SECRET
-  valueFrom: { secretKeyRef: { name: selfcare-secrets, key: jwt-secret } }
+- name: APP_JWT_PUBLIC_KEY   # verify-only; the private key goes to core-api alone (workloads.yaml)
+  valueFrom: { secretKeyRef: { name: selfcare-secrets, key: jwt-public-key } }
+- { name: APP_REQUIRE_JWT_KEYS, value: "true" }
 - name: APP_DEMO_PASSWORD
   valueFrom: { secretKeyRef: { name: selfcare-secrets, key: demo-password } }
 - name: APP_SEED_DEMO

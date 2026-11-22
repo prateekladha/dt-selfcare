@@ -47,3 +47,13 @@ html, body { background: var(--bg); color: var(--ink); -webkit-font-smoothing: a
 @keyframes progress { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
 @keyframes fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .fade-up { animation: fade-up 0.35s ease-out both; }
+
+/* Phone keyboard open (a text field has focus): the bottom tab bar would ride on top of the keyboard and,
+   with the sticky question box above it, leave almost no room, so the browser keeps re-scrolling the
+   page on every keystroke. Hide the tab bar while typing and let the box sit just above the keyboard.
+   (The viewport's interactive-widget=resizes-content makes Android shrink the layout instead of
+   overlaying it; the 16px field font stops iOS Safari from zooming in on focus.) */
+@media (max-width: 767px) {
+  body:has(:is(input[type="text"], input:not([type]), input[type="tel"], input[type="password"], textarea):focus) .mobile-tabbar { display: none; }
+  body:has(:is(input:not([type]), input[type="text"], textarea):focus) .chat-composer { bottom: 12px; }
+}
