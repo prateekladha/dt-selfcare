@@ -53,6 +53,15 @@ SHARED KNOWLEDGE
 {knowledge}"""
 
 
+_SPACED = re.compile(r"\b\d{1,3}(?:[ \u00a0\u202f]\d{3})+\b")
+
+
+def canon_spaced_numbers(text: str) -> str:
+    """'1 676' / '1\u00a0676' (Polish, French: space as thousands separator) -> '1676', so a correct figure in a
+    PL/DE answer isn't split into '1' and '676'. Answer side only ('Z2 372' has no word boundary inside 'Z2')."""
+    return _SPACED.sub(lambda m: re.sub(r"[ \u00a0\u202f]", "", m.group(0)), text)
+
+
 def _norm(tok: str) -> str:
     return re.sub(r"[.,]", "", tok).lstrip("0") or "0"
 

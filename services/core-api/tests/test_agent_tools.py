@@ -408,3 +408,13 @@ def test_spine_drops_stale_docs_and_does_not_re_embed_an_unchanged_customer(worl
     assert again["embedded"] == 0 and again["removed"] == 1   # nothing changed: no re-embedding; stale doc gone
     with engine.connect() as cx:
         assert cx.execute(_select(context_docs.c.id).where(context_docs.c.id == f"{SUB}:usage:2025-01")).first() is None
+
+
+def test_polish_space_thousands_separator_is_one_figure():
+    """Prod: 'Dlaczego mój rachunek jest wyższy?' ended in the apology; the answer wrote '1 676 MB' (Polish style)
+    and the checker split it into '1' and '676'."""
+    from core_api.agent.loop import attach_sources, check_numbers
+    src = {"S1": '{"data": "1,676 MB of 5,000 MB", "total": "30.75 PLN"}'}
+    assert check_numbers("Zużyłeś 1 676 MB z 5 000 MB, rachunek wynosi 30,75 PLN.", src) == []
+    assert check_numbers("Zone Z2 372 MB", {"S1": "Z2: 372 MB"}) == []      # 'Z2 372' stays two numbers
+    assert "[S1]" in attach_sources("Zużyłeś 1 676 MB.", src)

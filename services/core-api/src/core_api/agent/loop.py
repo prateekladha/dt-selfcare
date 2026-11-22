@@ -24,7 +24,7 @@ import structlog
 from sqlalchemy import insert
 
 from ..db import agent_traces
-from .agent import _CITE, _NUM, _norm, numbers_in
+from .agent import _CITE, _NUM, _norm, canon_spaced_numbers, numbers_in
 from .broker import RESULT_CHARS, Broker
 from .llm import LLM, BudgetExceeded
 from .tools import TOOLS, ToolContext, declarations
@@ -110,7 +110,7 @@ def check_numbers(answer: str, labels: dict[str, str]) -> list[str]:
     """Every figure in the answer must appear in a tool result of THIS turn (earlier answers are not
     sources). The model doesn't have to place citation markers: attach_sources does that afterwards, so a
     correct answer is never rewritten just for a missing marker."""
-    body = _CITE.sub("", answer)
+    body = canon_spaced_numbers(_CITE.sub("", answer))
     supported = set().union(*(numbers_in(t) for t in labels.values())) if labels else set()
     bad = list(dict.fromkeys(t.strip() for t in _NUM.findall(body) if len(_norm(t)) > 1 and _norm(t) not in supported))
     if bad and not labels:
@@ -127,7 +127,7 @@ def attach_sources(answer: str, labels: dict[str, str]) -> str:
 
     def cite(sentence: str) -> str:
         found: list[str] = []
-        for tok in _NUM.findall(sentence):
+        for tok in _NUM.findall(canon_spaced_numbers(sentence)):
             n = _norm(tok)
             if len(n) < 2:
                 continue
