@@ -1,4 +1,4 @@
-import { Download, Receipt } from "lucide-react";
+import { FileText, Receipt } from "lucide-react";
 import { Link } from "react-router";
 import { Card, Pill } from "~/components/ui";
 import { cycleLabel, dateLabel, money } from "~/lib/format";
@@ -30,7 +30,7 @@ export default function Bills() {
                     {b.outstanding > 0 ? <Pill tone={overdue ? "bad" : "warn"}>{overdue ? `Overdue · due ${dateLabel(b.due_date, loc)}` : `Due ${dateLabel(b.due_date, loc)}`}</Pill> : <Pill tone="good">Paid</Pill>}
                   </div>
                 </Link>
-                <a href={`/bills/${b.cycle}/pdf`} download aria-label={`Download ${cycleLabel(b.cycle, loc)} PDF`} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-[var(--ink-3)] hover:bg-[var(--chip)]"><Download size={18} /></a>
+                <a href={`/bills/${b.cycle}/pdf`} target="_blank" rel="noopener" aria-label={`Open ${cycleLabel(b.cycle, loc)} PDF in a new tab`} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-[var(--ink-3)] hover:bg-[var(--chip)]"><FileText size={18} /></a>
               </li>
             );
           })}
@@ -51,7 +51,7 @@ export default function Bills() {
                   <td className="hidden px-6 py-4 text-sm text-[var(--ink-3)] sm:table-cell">{dateLabel(b.issued_at, loc)}</td>
                   <td className="tabular px-6 py-4 text-right font-bold">{money(b.total, b.currency, loc)}</td>
                   <td className="px-6 py-4">{b.outstanding > 0 ? <Pill tone={overdue ? "bad" : "warn"}>{overdue ? `Overdue · due ${dateLabel(b.due_date, loc)}` : `Due ${dateLabel(b.due_date, loc)}`}</Pill> : <Pill tone="good">Paid</Pill>}</td>
-                  <td className="px-4 py-4"><a href={`/bills/${b.cycle}/pdf`} download aria-label={`Download ${cycleLabel(b.cycle, loc)} PDF`} className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--ink-3)] hover:bg-[var(--chip)] hover:text-[var(--ink)]"><Download size={17} /></a></td>
+                  <td className="px-4 py-4"><a href={`/bills/${b.cycle}/pdf`} target="_blank" rel="noopener" aria-label={`Open ${cycleLabel(b.cycle, loc)} PDF in a new tab`} className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--ink-3)] hover:bg-[var(--chip)] hover:text-[var(--ink)]"><FileText size={17} /></a></td>
                 </tr>
               );
             })}

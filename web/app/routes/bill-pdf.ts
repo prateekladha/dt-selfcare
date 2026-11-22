@@ -6,5 +6,6 @@ export async function loader({ request, params }: Route.LoaderArgs) {
   const res = await api<Response>(request, `/v1/me/bills/${params.cycle}/pdf`);
   return new Response(res.body, { headers: {
     "Content-Type": "application/pdf", "Cache-Control": "private, no-store",
-    "Content-Disposition": `attachment; filename="bill-${params.cycle}.pdf"` } });
+    // inline: opens in the browser's PDF viewer (in a new tab from our links); its download button keeps the name
+    "Content-Disposition": `inline; filename="bill-${params.cycle}.pdf"` } });
 }

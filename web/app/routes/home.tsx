@@ -1,4 +1,4 @@
-import { ArrowRight, BarChart3, CalendarClock, CheckCircle2, Download, Gauge, MessageSquare, Phone, Plane, Receipt, Sparkles, Wallet } from "lucide-react";
+import { ArrowRight, BarChart3, CalendarClock, CheckCircle2, FileText, Gauge, MessageSquare, Phone, Plane, Receipt, Sparkles, Wallet } from "lucide-react";
 import { Link } from "react-router";
 import { ExplanationSection } from "~/components/Explain";
 import { Suspense } from "react";
@@ -80,7 +80,7 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
                 {d.due && home.features.payments && <PayLink purpose="BILL" cycle={d.due.cycle} label="Pay now" />}
                 {home.last_bill && <LinkButton to={`/bills/${home.last_bill.cycle}`} variant="secondary"><Receipt size={16} /> View bill</LinkButton>}
               </div>
-              {home.last_bill && <a href={`/bills/${home.last_bill.cycle}/pdf`} download className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-[var(--ink-2)] underline-offset-4 hover:underline"><Download size={15} /> Download PDF</a>}
+              {home.last_bill && <a href={`/bills/${home.last_bill.cycle}/pdf`} target="_blank" rel="noopener" className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-[var(--ink-2)] underline-offset-4 hover:underline"><FileText size={15} /> View PDF</a>}
             </div>
           </div>
         </Card>

@@ -1,4 +1,4 @@
-import { ArrowLeft, BarChart3, Download } from "lucide-react";
+import { ArrowLeft, BarChart3, FileText } from "lucide-react";
 import { Suspense } from "react";
 import { Await } from "react-router";
 import { DailyUsageChart, type DailyUsage } from "~/components/DailyUsageChart";
@@ -65,7 +65,7 @@ export default function BillPage({ loaderData }: Route.ComponentProps) {
             <div className="mt-4 flex flex-wrap gap-2 sm:justify-end">
               {bill && bill.outstanding > 0 && home.features.payments && <PayLink purpose="BILL" cycle={bill.cycle} label={`Pay ${money(bill.outstanding, cur, loc)}`} />}
               {isCurrent && home.features.payments && total > 0 && <PayLink purpose="ADVANCE" label="Pay in advance" />}
-              {bill && <LinkButton to={`/bills/${cycle}/pdf`} variant="secondary" download><Download size={16} /> PDF</LinkButton>}
+              {bill && <LinkButton to={`/bills/${cycle}/pdf`} variant="secondary" target="_blank" rel="noopener"><FileText size={16} /> PDF</LinkButton>}
             </div>
           </div>
         </div>

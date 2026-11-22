@@ -1,4 +1,4 @@
-import { CheckCircle2, Clock, Download, XCircle } from "lucide-react";
+import { CheckCircle2, Clock, FileText, XCircle } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useRevalidator } from "react-router";
 import { Card, LinkButton } from "~/components/ui";
@@ -77,7 +77,7 @@ export default function PayResult({ loaderData }: Route.ComponentProps) {
         <div className="flex flex-wrap justify-center gap-2 border-t border-[var(--line)] px-6 py-5">
           {p.status === "PAID" ? (<>
             <LinkButton to={billLink} variant="primary">View bill</LinkButton>
-            {p.purpose === "BILL" && <LinkButton to={`/bills/${p.cycle}/pdf`} variant="secondary" download><Download size={16} /> PDF</LinkButton>}
+            {p.purpose === "BILL" && <LinkButton to={`/bills/${p.cycle}/pdf`} variant="secondary" target="_blank" rel="noopener"><FileText size={16} /> PDF</LinkButton>}
             <LinkButton to="/" variant="ghost">Back to overview</LinkButton>
           </>) : p.status === "FAILED" || p.status === "EXPIRED" ? (<>
             <LinkButton to={retry} variant="primary">Try again</LinkButton>
