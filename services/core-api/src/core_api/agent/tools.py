@@ -154,6 +154,31 @@ def t_current_usage(args: dict, ctx: ToolContext) -> dict:
             "beyond_the_allowance": _overage(plan)}
 
 
+def _month_if_switched_today(ctx: ToolContext, sub, new_code: str) -> int | None:
+    """This month's whole unbilled total if the tariff changed today: the same rating path as the bill
+    (rate_cycle), with the real tariff segments up to yesterday and the new plan from today."""
+    from ..services.bills import cycle_bounds, first_billable_day, rate_cycle
+    from ..services.plan_history import segments
+
+    now = datetime.now(UTC)
+    cycle = cycle_of(now)
+    start, end = cycle_bounds(cycle)
+    total, before = (end.date() - start.date()).days, (now.date() - start.date()).days
+    seg = segments(ctx.engine, sub.id, cycle, sub.plan_code) or [(get_plan(sub.plan_code), total)]
+    out, day = [], 0
+    for p, n in seg:            # keep the days before today exactly as they were billed
+        keep = max(0, min(n, before - day))
+        if keep:
+            out.append((p, keep))
+        day += n
+    out.append((get_plan(new_code), total - sum(n for _, n in out)))
+    try:
+        return rate_cycle(ctx.state, sub.id, cycle, new_code, ctx.state.counters(sub.id, cycle), out,
+                          first_day=first_billable_day(ctx.engine, sub.id, cycle)).total
+    except Exception:  # noqa: BLE001 - a preview is optional; never fail the catalog for it
+        return None
+
+
 def t_catalog(args: dict, ctx: ToolContext) -> dict:
     """Tariffs and add-ons the customer can actually order (their country only), with the current plan marked."""
     from telco_common.catalog import ADDONS, plans_for
@@ -167,7 +192,9 @@ def t_catalog(args: dict, ctx: ToolContext) -> dict:
     return {"source": f"catalog:{cur.country}",
             "plans": [{"code": p.code, "name": p.name, "monthly_fee": money(p.monthly_fee), "data": f"{p.data_mb:,} MB",
                        "calls": "unlimited" if p.voice_min is None else f"{p.voice_min:,} min",
-                       "beyond_the_allowance": _overage(p), **({"current": True} if p.code == cur.code else {})}
+                       "beyond_the_allowance": _overage(p),
+                       **({"current": True} if p.code == cur.code else
+                          {"this_month_total_if_switched_today": money(v)} if (v := _month_if_switched_today(ctx, sub, p.code)) is not None else {})}
                       for p in plans],
             "largest_plan": plans[-1].name if plans else None,
             "add_ons": [{"code": a.code, "name": a.name, "data": f"{a.data_mb:,} MB", "price": money(a.price),
