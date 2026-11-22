@@ -61,12 +61,10 @@ def grounded(answer: str, facts: list[str], extra: list[str]) -> bool:
         if not 1 <= int(c) <= n_sources + 2:
             return False
     answer = _CITE.sub("", answer)
-    allowed: set[str] = set()
-    for f in [*facts, *extra]:
-        for tok in _NUM.findall(f):
-            allowed.add(_norm(tok))
-            allowed.add(_norm(re.split(r"[.,]", tok)[0]))  # integer part, e.g. "113" of "113.1"
-    return all(_norm(tok) in allowed or len(_norm(tok)) == 1 for tok in _NUM.findall(answer))
+    from ..agent.agent import numbers_in, supported_by
+
+    allowed = numbers_in("\n".join([*facts, *extra]))   # values + integer parts ("113" of "113.1")
+    return all(supported_by(tok, allowed) or len(_norm(tok)) == 1 for tok in _NUM.findall(answer))
 
 
 def template(ex: Explanation) -> str:

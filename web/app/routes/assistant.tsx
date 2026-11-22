@@ -24,6 +24,11 @@ const TOOL_TITLES: Record<string, (a: Record<string, unknown>) => string> = {
   get_payments: () => "Your payments",
   get_alerts: () => "Your data alerts",
   simulate_usage: () => "Scenario priced on your plan",
+  get_orders: () => "Your add-on and tariff orders",
+  get_plans_and_addons: () => "Tariffs and add-ons you can order",
+  propose_addon: () => "The add-on prepared for you",
+  propose_plan_change: () => "The tariff change prepared for you",
+  propose_payment: () => "The payment prepared for you",
 };
 function month(c: unknown) {
   return typeof c === "string" && /^\d{4}-\d{2}$/.test(c) ? new Date(`${c}-01T00:00:00Z`).toLocaleString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" }) : "";

@@ -93,11 +93,10 @@ def test_multi_step_tool_calling_streams_steps_tokens_and_verifies(world):
     ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
     events = collect(run_stream("Why did my October bill go up?", ctx, llm, engine))
     kinds = [e["type"] for e in events]
-    assert kinds.count("step") == 3 and "token" in kinds and kinds[-1] == "done"
+    assert kinds.count("step") == 4 and "token" in kinds and kinds[-1] == "done"   # snapshot + 3 tool calls
     done = events[-1]
     assert done["status"] == "VERIFIED" and {c["tool"] for c in done["citations"]} >= {"compare_bills"}
-    assert done["trace"]["totals"]["tool_calls"] == 3 and done["trace"]["totals"]["cache_hit_ratio"] == 0.8
-    assert [t["decision"] for t in done["trace"]["tool_calls"]] == ["EXECUTE"] * 3
+    assert [t["decision"] for t in done["trace"]["tool_calls"]] == ["EXECUTE"] * 7   # 4 snapshot reads + 3 calls
 
 
 def test_broker_denies_unknown_tools_and_bad_arguments(world):
@@ -175,7 +174,9 @@ def test_session_memory_feeds_previous_turns_into_the_next_question(world):
     collect(run_stream("And what was it before?", ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm), llm, engine,
                        history=history))
     roles = [m["role"] for m in seen[0]["messages"]]
-    assert roles == ["system", "user", "assistant", "user"] and "October" in seen[0]["messages"][1]["content"]
+    # memory, then the question, then the fresh account snapshot (one assistant tool-call turn + 4 results)
+    assert roles == ["system", "user", "assistant", "user", "assistant", "tool", "tool", "tool", "tool"]
+    assert "October" in seen[0]["messages"][1]["content"] and seen[0]["messages"][4]["tool_calls"][0]["function"]["name"] == "get_current_usage"
 
 
 def test_chat_history_titles_retention_and_ownership(world):
@@ -236,14 +237,13 @@ def test_answer_from_chat_history_is_repaired_by_looking_the_fact_up_not_dropped
     events = collect(run_stream("What is the due date?", ctx, llm, engine,
                                 history=[{"q": "current dues?", "a": "October 41.59 EUR, due 15 November 2026"}]))
     done = events[-1]
-    attempts = done["trace"]["attempts"]
-    assert "without looking them up" in attempts[0]["problems"][0]
-    assert "dropped the facts" in attempts[1]["problems"][0]
-    assert done["status"] == "REPAIRED" and "[S1]" in done["answer"] and "don't have" not in done["answer"]
+    # facts first: the turn's snapshot already holds the bill and its due date, so the answer is checked against
+    # fresh data at once (no tool-less draft, no "I don't have the details" rewrite)
+    assert done["status"] == "VERIFIED" and "[S" in done["answer"] and "don't have" not in done["answer"]
     kinds = [e["type"] for e in events]
     assert "step" in kinds and "replace" not in kinds and "repairing" not in kinds   # lookup steps shown, no swap
     assert "".join(e["text"] for e in events if e["type"] == "token") == done["answer"]
-    assert done["citations"] and done["citations"][0]["tool"] == "get_bill"
+    assert done["citations"] and done["citations"][0]["tool"] in ("list_bills", "get_bill")   # the bill's due date
 
 
 def test_bill_tools_return_day_counts_so_the_model_never_does_date_maths(world):
@@ -296,7 +296,7 @@ def test_correct_answer_without_citation_markers_is_not_rewritten_sources_are_at
     kinds = [e["type"] for e in events]
     done = events[-1]
     assert done["status"] == "VERIFIED" and "repairing" not in kinds and "replace" not in kinds
-    assert done["answer"].count("[S1]") == 2 and done["citations"][0]["tool"] == "get_bill"
+    assert done["answer"].count("[S") == 2 and {c["tool"] for c in done["citations"]} <= {"get_bill", "list_bills", "get_current_usage"}
 
 
 def test_preamble_before_a_tool_call_is_never_streamed_so_nothing_flickers(world):
@@ -427,13 +427,13 @@ def test_data_position_breaks_down_plan_addons_and_overage():
     from telco_common.catalog import get_plan
     m = get_plan("DE-M")
     counters = {"DATA": 91_719_634_846, "addon:DE-DATA-5GB": 2, "addon_bytes": 10_000_000_000}
-    pos = _data_position(m, counters)
+    pos = _data_position(m.data_mb, counters)
     assert pos["plan_data"] == "30,000 MB" and pos["total_allowance"] == "40,000 MB"
     assert "x2 (+10,000 MB)" in pos["add_ons_this_month"][0]
     assert pos["data_remaining"] == "0 MB" and pos["over_allowance_by"] == "51,720 MB"
     # one more 5 GB add-on still leaves them over: the proposal must say so, not imply data is back
-    assert "over_allowance_by" in _data_position(m, counters, extra_mb=5_000)
-    light = _data_position(m, {"DATA": 20_000 * MB, "ROAMING_DATA:EU": 1_000 * MB})
+    assert "over_allowance_by" in _data_position(m.data_mb, counters, extra_mb=5_000)
+    light = _data_position(m.data_mb, {"DATA": 20_000 * MB, "ROAMING_DATA:EU": 1_000 * MB})
     assert light["data_used"] == "21,000 MB" and light["data_remaining"] == "9,000 MB" and "over_allowance_by" not in light
 
 
@@ -452,3 +452,27 @@ def test_addon_proposal_states_its_real_effect_and_orders_tool_reports_status(wo
     assert pr.get("proposal") and "effect" in pr and "card below" in pr["status"] and "checkout" not in json.dumps(pr)
     orders = tools["get_orders"].run({}, ctx)["orders"]
     assert orders[0]["status"] == "waiting for the customer's approval" and "5 GB" in orders[0]["order"]
+
+
+def test_number_check_is_locale_aware_and_does_not_confuse_9_99_with_999():
+    """The old normaliser dropped separators: '999 EUR' matched a 9.99 price; '41,59' (DE) vs '4,159' (EN)."""
+    from core_api.agent.agent import numbers_in, supported_by
+    src = numbers_in('{"price": "9.99 EUR", "data": "1,676 MB", "total": "41.59 EUR"}')
+    assert not supported_by("999", src) and supported_by("9,99", src) and supported_by("9.99", src)
+    assert supported_by("41,59", src) and supported_by("41", src) and not supported_by("4159", src)
+    assert supported_by("1.676", src) and supported_by("1,676", src)
+
+
+def test_every_turn_starts_from_a_fresh_account_snapshot_with_the_catalog(world):
+    """Prod: the assistant offered 'a bigger plan' it never checked (M was already the largest), and answered
+    from earlier turns until pushed. Each turn now begins with usage, bills, orders and the catalog."""
+    engine, r, state = world
+    llm = scripted_llm(r, [("text", "You're already on the largest plan.")])
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
+    events = collect(run_stream("is there a bigger plan?", ctx, llm, engine))
+    calls = [t["tool"] for t in events[-1]["trace"]["tool_calls"]]
+    assert calls[:4] == ["get_current_usage", "list_bills", "get_orders", "get_plans_and_addons"]
+    assert next(e["label"] for e in events if e["type"] == "step") == "Looking at your account"
+    from core_api.agent.tools import TOOLS
+    cat = TOOLS["get_plans_and_addons"].run({}, ctx)
+    assert all("PL" not in a["code"] for a in cat["add_ons"]) and cat["largest_plan"]

@@ -24,14 +24,14 @@ import structlog
 from sqlalchemy import insert
 
 from ..db import agent_traces
-from .agent import _CITE, _NUM, _norm, canon_spaced_numbers, numbers_in
+from .agent import _CITE, _NUM, _norm, canon_spaced_numbers, numbers_in, supported_by
 from .broker import RESULT_CHARS, Broker
 from .llm import LLM, BudgetExceeded
 from .tools import TOOLS, ToolContext, declarations
 
 log = structlog.get_logger("agent.loop")
 MAX_TURNS, MAX_TOOL_CALLS = 6, 10
-PROMPT_VERSION = "assistant-tools-v3"
+PROMPT_VERSION = "assistant-tools-v4"
 
 SYSTEM = """You are the customer care assistant of a mobile operator, talking to one of its customers about
 their bills, usage, plan, roaming and payments. Talk like a friendly, competent person at a service desk: warm,
@@ -41,8 +41,13 @@ GETTING THE FACTS RIGHT
 - Think it through before you answer: gather everything the question needs first, then read every tool
   result, including refusals and blockers (e.g. a plan change refused because a bill is overdue), and build
   ONE consistent answer around them. Never offer something a tool just refused.
-- Look facts up with the tools; never answer from memory. Earlier messages in this chat are context only:
-  if you state a fact again, fetch it again in this turn.
+- Every turn starts with a fresh snapshot of the account, already looked up for you: current usage (plan
+  data, add-ons, remaining or over by, unbilled), recent bills and dues, orders, and every plan and add-on the
+  customer can order. It is the truth right now. Earlier messages in this chat may be out of date (the customer
+  may have paid, approved an add-on or changed plan since): never repeat a figure from them; use the snapshot,
+  and call other tools for anything else.
+- Plans and add-ons: only suggest what get_plans_and_addons lists. If they are already on the largest plan,
+  say so and don't promise a bigger one.
 - Use only figures the tools returned, written as they were returned. Don't work out new numbers (days,
   differences, totals); the tools already give things like days_overdue and outstanding.
 - The customer's own bills, due dates, days left or days overdue, usage and payments ARE known: answer them
@@ -51,8 +56,7 @@ GETTING THE FACTS RIGHT
   don't have those details and offer our care team. Never invent such rules, and never invent causes
   ("that may explain it") that the tools don't state.
 - Never ask for permission to look something up, and never say you don't have the customer's details.
-- More data or a different plan: check their usage first (get_current_usage: plan data, add-ons, remaining,
-  over by). Be honest about whether an add-on helps: propose_addon returns its effect this month; if they would
+- More data or a different plan: start from their usage (plan data, add-ons, remaining, over by). Be honest about whether an add-on helps: propose_addon returns its effect this month; if they would
   still be over the allowance, say so plainly (e.g. "even with 5 GB you'd still be 50 GB over, so the speed stays
   reduced") and suggest what would help (a bigger add-on that covers it, or a plan with more data from next
   month). Prepared add-ons and tariff changes are approved by the customer on the card below ("approve it
@@ -120,7 +124,7 @@ def check_numbers(answer: str, labels: dict[str, str]) -> list[str]:
     correct answer is never rewritten just for a missing marker."""
     body = canon_spaced_numbers(_CITE.sub("", answer))
     supported = set().union(*(numbers_in(t) for t in labels.values())) if labels else set()
-    bad = list(dict.fromkeys(t.strip() for t in _NUM.findall(body) if len(_norm(t)) > 1 and _norm(t) not in supported))
+    bad = list(dict.fromkeys(t.strip() for t in _NUM.findall(body) if len(_norm(t)) > 1 and not supported_by(t, supported)))
     if bad and not labels:
         return ["you stated figures without looking them up in this turn: fetch them with the tools"]
     return [f"the figure {t} is not in what the tools returned" for t in bad]
@@ -134,14 +138,18 @@ def attach_sources(answer: str, labels: dict[str, str]) -> str:
     order = sorted(labels, key=lambda x: int(x[1:]))
 
     def cite(sentence: str) -> str:
+        # fewest sources that cover the sentence's figures, best-covering first: "due 15 November 2026" cites
+        # the bill, not a usage reading that merely contains "2026" in its timestamp
+        toks = [t for t in _NUM.findall(canon_spaced_numbers(sentence)) if len(_norm(t)) >= 2]
         found: list[str] = []
-        for tok in _NUM.findall(canon_spaced_numbers(sentence)):
-            n = _norm(tok)
-            if len(n) < 2:
-                continue
-            lab = next((x for x in order if n in nums[x]), None)
-            if lab and lab not in found:
-                found.append(lab)
+        left = set(range(len(toks)))
+        while left:
+            best = max(order, key=lambda x: (sum(supported_by(toks[i], nums[x]) for i in left), -order.index(x)))
+            covered = {i for i in left if supported_by(toks[i], nums[best])}
+            if not covered:
+                break
+            found.append(best)
+            left -= covered
         if not found:
             return sentence
         tail = re.search(r"[.!?:]?\s*$", sentence)
@@ -171,6 +179,9 @@ def save_turn(r, sub: str, sid: str, q: str, a: str) -> None:
     pipe.ltrim(key, 0, SESSION_TURNS - 1)
     pipe.expire(key, SESSION_TTL_S)
     pipe.execute()
+
+
+SNAPSHOT = [("get_current_usage", {}), ("list_bills", {"months": 3}), ("get_orders", {}), ("get_plans_and_addons", {})]
 
 
 async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: str = "en",
@@ -260,6 +271,20 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
             return
 
     try:
+        # Facts first: every turn starts from a fresh read of the account (usage as the app shows it, bills and
+        # dues, orders, the plans and add-ons they can order), BEFORE the model writes a word. Without this it
+        # answered from earlier turns or assumptions ("a bigger plan would help", "not reflected yet") and only
+        # looked things up when the customer pushed back. Same broker path: these are cited and number-checked.
+        yield {"type": "step", "tool": "snapshot", "label": "Looking at your account"}
+        snap = [(f"snap{i}", name, a) for i, (name, a) in enumerate(SNAPSHOT)]
+        # one worker thread, in order: the broker numbers sources S1..S4 as it goes (not thread-safe, and the
+        # labels must be stable); these are fast DB / Valkey reads
+        outs = await asyncio.to_thread(lambda: [broker.request(name, a, ctx) for _, name, a in snap])
+        yield {"type": "step_done", "tool": "snapshot", "ok": all("error" not in o.result for o in outs)}
+        messages.append({"role": "assistant", "content": "", "tool_calls": [
+            {"id": cid, "type": "function", "function": {"name": name, "arguments": json.dumps(a)}} for cid, name, a in snap]})
+        for (cid, _, _), o in zip(snap, outs, strict=True):
+            messages.append({"role": "tool", "tool_call_id": cid, "content": json.dumps(o.result, default=str)[:RESULT_CHARS]})
         async for ev in tool_loop(stream_tokens=True):
             yield ev
         answer = st["answer"]
@@ -278,7 +303,11 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                                 "propose_payment (or propose_addon / propose_plan_change) first, or don't mention it")
             trace["attempts"].append({"attempt": attempt + 1, "verified": not problems, "problems": problems[:6]})
             if not problems:
-                status = ("VERIFIED" if attempt == 0 else "REPAIRED") if broker.sources else "CONVERSATIONAL"
+                # the snapshot always produces sources, so "conversational" = no facts stated, no own lookups,
+                # nothing pointed to below (small talk); anything else is a checked answer
+                small_talk = (st["calls"] == 0 and not POINTS_BELOW.search(answer)
+                              and not any(len(_norm(t)) > 1 for t in _NUM.findall(_CITE.sub("", answer))))
+                status = "CONVERSATIONAL" if small_talk else ("VERIFIED" if attempt == 0 else "REPAIRED")
                 break
             if attempt == 2:
                 break
@@ -289,6 +318,8 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                           " sentence with no figures. Otherwise answer it again in the same warm, plain style. Look up every fact you"
                           " state with the tools now (earlier answers in this chat are not sources) and use only figures"
                           " from those tool results; fetch only what this question needs. Change only what is wrong."
+                          " The customer has NOT seen your previous draft: never apologise for it or mention a"
+                          " correction (no \"you're right\", \"I was wrong\", \"to correct myself\")."
                           " Don't ask the customer for permission and don't say you lack their details."}]
             async for ev in tool_loop(stream_tokens=False):  # the repair may call tools (steps are shown)
                 if ev["type"] != "token":

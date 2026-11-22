@@ -66,12 +66,40 @@ def _norm(tok: str) -> str:
     return re.sub(r"[.,]", "", tok).lstrip("0") or "0"
 
 
+_EN = re.compile(r"^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$")   # 1,676.50  41.59  91720
+_DE = re.compile(r"^(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d+)?$")    # 1.676,50  41,59
+
+
+def values(tok: str) -> set[str]:
+    """The numeric value(s) a token can mean, canonical ('41.59', '1676'). Locale-aware: '9.99' is 9.99, never
+    999 (the old separator-stripping matched a wrong '999 EUR' against a 9.99 price); '1,676' is 1676 (EN) or
+    1.676 (DE), both kept; '41,59' is 41.59."""
+    from decimal import Decimal, InvalidOperation
+
+    tok = tok.strip()
+    out: set[str] = set()
+    for rx, thou, dec in ((_EN, ",", "."), (_DE, ".", ",")):
+        if rx.match(tok):
+            try:
+                v = Decimal(tok.replace(thou, "").replace(dec, "."))
+            except InvalidOperation:
+                continue
+            out.add(format(v.normalize(), "f") if v != v.to_integral() else str(int(v)))
+    return out or {_norm(tok)}
+
+
 def numbers_in(t: str) -> set[str]:
-    out = set()
+    """Values in a source text, plus their integer parts (a rounded '41 EUR' for 41.59 is fine)."""
+    out: set[str] = set()
     for tok in _NUM.findall(t):
-        out.add(_norm(tok))
-        out.add(_norm(re.split(r"[.,]", tok)[0]))
+        for v in values(tok):
+            out.add(v)
+            out.add(v.split(".")[0])
     return out
+
+
+def supported_by(tok: str, supported: set[str]) -> bool:
+    return bool(values(tok) & supported)
 
 
 def verify(answer: str, labels: dict[str, str]) -> list[str]:
@@ -86,8 +114,7 @@ def verify(answer: str, labels: dict[str, str]) -> list[str]:
     supported = set().union(*(numbers_in(labels[c]) for c in cited if c in labels))
     body = _CITE.sub("", answer)
     for tok in _NUM.findall(body):
-        n = _norm(tok)
-        if n not in supported and len(n) > 1:
+        if not supported_by(tok, supported) and len(_norm(tok)) > 1:
             problems.append(f"number {tok.strip()} is not in the cited documents")
     return problems
 

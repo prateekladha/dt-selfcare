@@ -18,7 +18,7 @@ from telco_common.billing import Bill
 from telco_common.catalog import COUNTRIES
 from telco_common.explainer import explain, fmt_money
 
-from .agent import canon_spaced_numbers, numbers_in
+from .agent import _NUM, _norm, canon_spaced_numbers, numbers_in, supported_by
 from .llm import LLM, BudgetExceeded
 from .spine import global_docs
 
@@ -79,8 +79,8 @@ def _items_problems(out: dict, sources: dict[str, str]) -> list[str]:
         if bad:
             problems.append(f"{name}: unknown sources {bad}")
         allowed = set().union(*(numbers_in(sources[c]) for c in cites if c in sources)) if cites else set()
-        for tok in numbers_in(canon_spaced_numbers(text)):
-            if tok not in allowed and len(tok) > 1:
+        for tok in _NUM.findall(canon_spaced_numbers(text)):
+            if len(_norm(tok)) > 1 and not supported_by(tok, allowed):
                 problems.append(f"{name}: number {tok} not in its sources")
                 break
     return problems
