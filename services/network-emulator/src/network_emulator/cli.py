@@ -52,33 +52,39 @@ def backfill(collector: str = typer.Option(..., envvar="COLLECTOR_URL"),
     asyncio.run(go())
 
 
+def due_records(since: datetime, now: datetime) -> list[dict]:
+    """The demo population's CDRs whose event time falls in (since, now]: the same deterministic day
+    the backfill would send, released as it happens. So live traffic runs at exactly the persona's
+    daily pace, and record ids are stable (the collector drops any record_id it has already accepted,
+    e.g. after a restart's catch-up or a later backfill of the same day)."""
+    out = []
+    for d in days_between(since.date(), now.date()):
+        for s in DEMO_SUBSCRIBERS:
+            for r in day_records(s.subscriber_id, s.country, s.persona, get_plan(s.plan_code).data_mb, d, now.date()):
+                if since < datetime.fromisoformat(r["event_time"]) <= now:
+                    out.append(r)
+    return out
+
+
 @app.command()
 def live(collector: str = typer.Option(..., envvar="COLLECTOR_URL"),
          token: str = typer.Option(..., envvar="SOURCE_TOKEN"),
          source: str = typer.Option("emu-mediation-01", envvar="SOURCE_ID"),
-         interval_s: int = typer.Option(60, help="one batch per interval"),
-         day_fraction: float = typer.Option(0.05, help="share of a persona's daily usage per interval")) -> None:
-    """Emits today's usage gradually: every interval a slice of each persona's day."""
+         interval_s: int = typer.Option(60, help="one batch per interval")) -> None:
+    """Emits today's usage as it happens: each interval, the records whose event time has passed.
+    On start it catches up from midnight (UTC); already-accepted records are dropped as duplicates."""
 
     async def go() -> None:
         sender = Sender(collector, source, token)
-        seq = 0
+        now = datetime.now(UTC)
+        since = datetime(now.year, now.month, now.day, tzinfo=UTC)
         while True:
             now = datetime.now(UTC)
-            recs = []
-            for s in DEMO_SUBSCRIBERS:
-                day = day_records(s.subscriber_id, s.country, s.persona, get_plan(s.plan_code).data_mb,
-                                  now.date(), now.date())
-                rng = random.Random(f"{s.subscriber_id}|{now.isoformat()}")
-                for r in day:
-                    if r.get("kind") == "PLAN_CHANGED" or rng.random() > day_fraction:
-                        continue
-                    r = r | {"record_id": f"{r['record_id']}-L{now:%H%M%S}-{seq}", "event_time": now.isoformat()}
-                    recs.append(r)
-                    seq += 1
+            recs = due_records(since, now)
             if recs:
                 await sender.send(f"{source}:live:{now:%Y%m%d%H%M%S}", recs)
                 typer.echo(f"{now:%H:%M:%S} sent {len(recs)} records {sender.stats}")
+            since = now
             await asyncio.sleep(interval_s)
 
     asyncio.run(go())
