@@ -224,6 +224,7 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
     async def tool_loop(stream_tokens: bool):
         """LLM turns with tools until the model answers in text; the answer lands in st["answer"]."""
         st["answer"] = ""
+        kept = ""   # a full answer written in the same turn as a card-preparing call (see below)
         for turn in range(MAX_TURNS):
             allow_tools = turn < MAX_TURNS - 1 and st["calls"] < MAX_TOOL_CALLS
             streamed = False
@@ -254,6 +255,12 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
             if res.tool_calls:
                 if streamed:
                     yield {"type": "reset"}  # text that preceded a tool call is not the answer
+                # ...unless the call only prepares a card (propose_*) after a real answer: the model explained
+                # the bill, then prepared the payment, and the follow-up said only "the payment is below". Prod
+                # (PL): the whole explanation was dropped. Lookups still discard pre-tool text (it's a draft).
+                if (res.text and len(res.text.strip()) > 80
+                        and all(TOOLS.get(c["name"]) and TOOLS[c["name"]].tier == "propose" for c in res.tool_calls)):
+                    kept = res.text.strip()
                 messages.append({"role": "assistant", "content": res.text or "", "tool_calls": [
                     {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["arguments"] or "{}"}}
                     for c in res.tool_calls]})
@@ -271,6 +278,8 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                     messages.append({"role": "tool", "tool_call_id": c["id"], "content": json.dumps(out.result, default=str)[:RESULT_CHARS]})
                 continue
             st["answer"] = res.text
+            if kept and kept not in (res.text or ""):
+                st["answer"] = f"{kept}\n\n{(res.text or '').strip()}".strip()
             return
 
     try:
@@ -334,6 +343,10 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                 # the answer sends the customer to the payment checkout: prepare it in code, no extra LLM round
                 out = await asyncio.to_thread(broker.request, "propose_payment", '{"purpose": "bill"}', ctx)
                 st["calls"] += 1
+                if not (out.decision == "PROPOSE" and out.result.get("proposal")):
+                    # no unpaid bill: the checkout it points to is the advance payment of this month's usage
+                    out = await asyncio.to_thread(broker.request, "propose_payment", '{"purpose": "advance"}', ctx)
+                    st["calls"] += 1
                 if out.decision == "PROPOSE" and out.result.get("proposal"):
                     add_card(out.result)
 
