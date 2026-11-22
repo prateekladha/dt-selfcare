@@ -123,8 +123,8 @@ export default function Assistant() {
   useEffect(() => { loadChats(); }, []);
   async function openChat(id: string) {
     setDrawer(false);
-    const r = await fetch(`/api/chats?id=${id}`);
-    if (!r.ok) return;
+    const r = await fetch(`/api/chats?id=${encodeURIComponent(id)}`);
+    if (!r.ok) { setTurns([]); setSessionId(null); return; }  // deleted, expired or not this customer's
     const s = await r.json();
     const t: Turn[] = [];
     for (const m of s.messages) {
@@ -139,6 +139,28 @@ export default function Assistant() {
     loadChats();
   }
   const newChat = () => { setTurns([]); setSessionId(null); setDrawer(false); };
+
+  // The open conversation lives in the URL (?c=<id>): reload, bookmark and share-to-self reopen it, and
+  // back/forward move between chats. Written with the History API (keeping React Router's state) so the
+  // layout's snapshot loader isn't re-run on every change, e.g. when the id arrives mid-stream.
+  useEffect(() => {
+    const fromUrl = () => new URLSearchParams(window.location.search).get("c");
+    const c = fromUrl();
+    if (c) openChat(c);
+    const onPop = () => { const id = fromUrl(); if (id) openChat(id); else { setTurns([]); setSessionId(null); } };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if ((url.searchParams.get("c") ?? null) === sessionId) return;
+    const hadChat = url.searchParams.has("c");
+    if (sessionId) url.searchParams.set("c", sessionId); else url.searchParams.delete("c");
+    // a new chat getting its id replaces the entry; switching between chats adds one (back returns)
+    if (hadChat && sessionId) window.history.pushState(window.history.state, "", url);
+    else window.history.replaceState(window.history.state, "", url);
+  }, [sessionId]);
   const endRef = useRef<HTMLDivElement>(null);
   // Follow the answer while it streams, like a chat app: keep the end of the conversation just above the
   // sticky question box. Stop following as soon as the customer scrolls up to read; resume if they
