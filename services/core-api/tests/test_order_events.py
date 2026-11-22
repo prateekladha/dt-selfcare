@@ -334,3 +334,26 @@ def test_approve_and_decline_at_the_same_moment_only_one_wins():
     assert not set_status(engine, "ord-race", "DECLINED", expect=("PROPOSED",))            # late decline: no-op
     with engine.connect() as cx:
         assert cx.execute(select(orders.c.status)).scalar_one() == "APPROVED"
+
+
+def test_addon_waits_for_its_own_record_on_the_meter(monkeypatch):
+    """Read-your-writes: the msg id the order workflow waits for is exactly the one the collector produces
+    for the order's batch, and message_applied flips once the aggregator applied it."""
+    import fakeredis
+    import pytest
+    from core_api.workflows.addon import _order_msg_id
+    from telco_common.models import UsageRecord
+    from telco_common.usage_state import UsageState
+    pub = pytest.importorskip("usage_collector.publisher")
+    monkeypatch.delenv("APP_ORDER_SOURCE_TOKEN", raising=False)
+    sub = "4915100000099"
+    rec = UsageRecord.model_validate({"record_id": "order-o1", "subscriber_id": sub, "country": "DE", "kind": "PLAN_CHANGED",
+                                      "addon_code": "DE-DATA-5GB", "event_time": "2026-11-22T21:00:00+00:00"})
+    src = "emu-mediation-01"
+    produced = pub.build_messages(f"{src}:{src}:order:o1", [rec], 4)[0].msg_id
+    assert _order_msg_id("o1", sub) == produced
+    st = UsageState(fakeredis.FakeRedis(), 4)
+    assert not st.message_applied(sub, produced)
+    from telco_common.partitioning import partition_for, slot_tag
+    st.r.set(f"seen:{slot_tag(partition_for(sub, 4))}:{produced}", 1)   # what apply.lua writes
+    assert st.message_applied(sub, produced)
