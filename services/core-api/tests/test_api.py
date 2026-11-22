@@ -529,7 +529,7 @@ def test_lost_payment_event_is_applied_by_the_sweep():
 
 
 def test_advance_is_charged_only_for_usage_not_already_paid(env):
-    client, engine, state, gw = env
+    client, _engine, state, gw = env
     from datetime import UTC, datetime
     add_usage(state, SUB, datetime.now(UTC), [(UsageType.DATA, None, 100 * MB)])
     h = login(client)

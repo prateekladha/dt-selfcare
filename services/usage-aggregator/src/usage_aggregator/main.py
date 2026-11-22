@@ -94,6 +94,13 @@ def handle(state: UsageState, levels: AlertLevels, m) -> None:
             log.warning("valkey_unavailable_retrying", error=str(e), backoff=backoff)
             time.sleep(backoff)
             backoff = min(backoff * 2, 10)
+        except Exception as e:  # noqa: BLE001 - a message that can never apply (bad data / script error)
+            # would otherwise crash the pod and be re-read on every restart, stalling the whole partition
+            MSGS.labels("poison").inc()
+            state.r.lpush(f"dlq:{{p{m.partition()}}}", m.value())
+            state.r.ltrim(f"dlq:{{p{m.partition()}}}", 0, 9999)
+            log.error("unappliable_message", partition=m.partition(), offset=m.offset(), error=str(e)[:300])
+            return
 
     MSGS.labels(res.reason).inc()
     if res.applied:

@@ -150,6 +150,18 @@ async def apply_plan(order_id: str, subscriber_id: str, plan_code: str) -> str:
             cx.execute(update(subscribers).where(subscribers.c.id == subscriber_id).values(plan_code=plan_code))
     except IntegrityError:
         pass  # already applied by an earlier attempt
+    # The real-time pipeline computes alerts from its own profile copy: without this, an upgrade kept the old
+    # allowance (false "data used up" alerts) for good. A bigger allowance re-arms the levels now below.
+    from telco_common.models import cycle_of
+
+    from ..deps import get_usage_state
+
+    state = get_usage_state()
+    before = int(state.profile(subscriber_id).get("allowance_bytes", 0) or 0)
+    state.upsert_profile(subscriber_id, plan_code)
+    after = int(state.profile(subscriber_id).get("allowance_bytes", 0) or 0)
+    if after > before:
+        state.rearm_alerts(subscriber_id, cycle_of(datetime.now(UTC)))
     return plan_code
 
 

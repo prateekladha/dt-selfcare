@@ -14,10 +14,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from pydantic import ValidationError
-from telco_common.models import UsageRecord
+from telco_common.catalog import ADDONS, PLANS
+from telco_common.models import EventKind, UsageRecord
 
 RECORD_TTL_S = 7 * 24 * 3600
 MAX_FUTURE = timedelta(minutes=10)
+# Values the rating engine knows. Anything else used to pass ingest and then fail downstream: an unknown add-on
+# code crash-looped the aggregator on that partition; an unknown roaming zone broke the bill run.
+KNOWN_ZONES = {"EU"} | {z for p in PLANS.values() for z in p.roaming}
+MAX_QUANTITY = 10**13   # 10 TB / 10^13 s / units in one record: far beyond any real CDR, and int64-safe in totals
 
 
 @dataclass
@@ -40,6 +45,12 @@ def screen(raw: list[dict], r, now: datetime | None = None) -> Screened:
             continue
         if u.event_time > now + MAX_FUTURE:
             out.quarantined.append({"index": i, "record_id": u.record_id, "reason": "event_time is in the future"})
+            continue
+        reason = (f"unknown add-on code {u.addon_code!r}" if u.kind == EventKind.PLAN_CHANGED and u.addon_code not in ADDONS
+                  else f"unknown roaming zone {u.roaming_zone!r}" if u.roaming_zone and u.roaming_zone not in KNOWN_ZONES
+                  else "quantity is implausibly large" if u.quantity > MAX_QUANTITY else None)
+        if reason:
+            out.quarantined.append({"index": i, "record_id": u.record_id, "reason": reason})
             continue
         parsed.append(u)
     seen_in_batch: set[str] = set()

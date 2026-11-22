@@ -55,32 +55,38 @@ def alerts_loop(stop: threading.Event) -> None:
         for m in c.consume(num_messages=100, timeout=1.0):
             if m.error():
                 continue
-            alert = json.loads(m.value())
-            if alert["cycle"] < datetime.now(UTC).strftime("%Y-%m"):
-                continue  # replay/backfill of a closed cycle: history, not something to notify now
-            with engine.connect() as cx:
-                plan_code = cx.execute(select(subscribers.c.plan_code)
-                                       .where(subscribers.c.id == alert["subscriber_id"])).scalar()
-            if plan_code is None:
-                continue  # not a customer of this platform (e.g. load-test traffic)
-            kind, title, body = render(alert, plan_code)
             try:
-                with engine.begin() as cx:
-                    cx.execute(insert(notifications_table()).values(
-                        subscriber_id=alert["subscriber_id"], alert_id=alert["alert_id"], kind=kind,
-                        title=title, body=body))
-            except IntegrityError:
-                DUPES.inc()
-                continue
-            from .services.home_cache import bump
-
-            bump(r, alert["subscriber_id"])  # home read model: rebuild on next read
-            r.publish(f"notif:{alert['subscriber_id']}", json.dumps({"kind": kind, "title": title, "body": body}))
-            SPINE_DIRTY.add(alert["subscriber_id"])  # event-driven: re-embed this customer's context now
-            NOTIFIED.labels(alert["level"]).inc()
-            log.info("notified", alert_id=alert["alert_id"], kind=kind)
+                notify_alert(engine, r, json.loads(m.value()))
+            except Exception as e:  # noqa: BLE001 - a DB blip or bad alert must not end the thread silently
+                log.warning("alert_failed", error=str(e)[:200])
         c.commit(asynchronous=True)
     c.close()
+
+
+def notify_alert(engine, r, alert: dict) -> None:
+    if alert["cycle"] < datetime.now(UTC).strftime("%Y-%m"):
+        return  # replay/backfill of a closed cycle: history, not something to notify now
+    with engine.connect() as cx:
+        plan_code = cx.execute(select(subscribers.c.plan_code)
+                               .where(subscribers.c.id == alert["subscriber_id"])).scalar()
+    if plan_code is None:
+        return  # not a customer of this platform (e.g. load-test traffic)
+    kind, title, body = render(alert, plan_code)
+    try:
+        with engine.begin() as cx:
+            cx.execute(insert(notifications_table()).values(
+                subscriber_id=alert["subscriber_id"], alert_id=alert["alert_id"], kind=kind,
+                title=title, body=body))
+    except IntegrityError:
+        DUPES.inc()
+        return
+    from .services.home_cache import bump
+
+    bump(r, alert["subscriber_id"])  # home read model: rebuild on next read
+    r.publish(f"notif:{alert['subscriber_id']}", json.dumps({"kind": kind, "title": title, "body": body}))
+    SPINE_DIRTY.add(alert["subscriber_id"])  # event-driven: re-embed this customer's context now
+    NOTIFIED.labels(alert["level"]).inc()
+    log.info("notified", alert_id=alert["alert_id"], kind=kind)
 
 
 def notifications_table():
