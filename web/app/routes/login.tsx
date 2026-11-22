@@ -21,9 +21,9 @@ export async function action({ request }: Route.ActionArgs) {
   let res: Response;
   try {
     res = await rawCore("/v1/auth/login", {
-      // X-Real-Ip is set by the ingress from the TCP peer (the LB keeps the client address:
-      // externalTrafficPolicy=Local) and overwrites any value the browser sends; core-api uses it for
-      // its per-IP failed-login limit.
+      // X-Real-Ip is set by the ingress from the TCP peer and overwrites any value the browser sends;
+      // core-api uses it for its per-IP failed-login limit (and ignores it while it is a private
+      // address, i.e. a proxying load balancer hid the client).
       method: "POST", headers: { "Content-Type": "application/json", "X-Client-IP": request.headers.get("x-real-ip") ?? "" },
       body: JSON.stringify({ subscriber_id, password: form.get("password") }),
     });

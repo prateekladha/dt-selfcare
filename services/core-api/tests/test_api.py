@@ -126,21 +126,23 @@ def test_failed_logins_are_limited_per_client_ip_across_accounts(env):
     """Password spraying: one password against many accounts from one IP stops after 20 failures,
     while other IPs (and the per-account limit) are unaffected; successes don't count."""
     client, *_ = env
-    spray = {"X-Client-IP": "203.0.113.7"}
+    spray = {"X-Client-IP": "81.2.69.160"}
     for i in range(20):
         r = client.post("/v1/auth/login", headers=spray, json={"subscriber_id": f"49151999{i:04d}", "password": "Summer2026"})
         assert r.status_code == 401
     r = client.post("/v1/auth/login", headers=spray, json={"subscriber_id": SUB, "password": "demo-pass-123"})
     assert r.status_code == 429  # blocked even with the right password: the IP is cooling down
-    ok = client.post("/v1/auth/login", headers={"X-Client-IP": "198.51.100.9"}, json={"subscriber_id": SUB, "password": "demo-pass-123"})
+    ok = client.post("/v1/auth/login", headers={"X-Client-IP": "93.184.216.34"}, json={"subscriber_id": SUB, "password": "demo-pass-123"})
     assert ok.status_code == 200
 
 
 def test_ipv6_clients_are_limited_per_64_and_garbage_ip_is_ignored():
     from core_api.routers.auth import client_net
-    assert client_net("2001:db8:1:2::1") == client_net("2001:db8:1:2:ffff::9") == "2001:db8:1:2::/64"
-    assert client_net("203.0.113.7") == "203.0.113.7"
+    assert client_net("2a02:8070:1:2::1") == client_net("2a02:8070:1:2:ffff::9") == "2a02:8070:1:2::/64"
+    assert client_net("81.2.69.160") == "81.2.69.160"
     assert client_net("not-an-ip") is None and client_net(None) is None
+    # the load balancer's own (private) address must never become one shared bucket for every visitor
+    assert client_net("10.20.1.5") is None and client_net("192.168.0.1") is None and client_net("127.0.0.1") is None
 
 
 def test_tokens_are_rs256_and_a_verifier_only_service_cannot_issue_or_accept_forgeries(monkeypatch):
