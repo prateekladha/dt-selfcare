@@ -47,16 +47,23 @@ def prune(engine: Engine, sub: str) -> int:
     return len(old)
 
 
+GOOD_STATUSES = {"VERIFIED", "REPAIRED", "CONVERSATIONAL"}
+
+
 def recent_turns(engine: Engine, sid: str, n: int = CONTEXT_TURNS) -> list[dict]:
     with engine.connect() as cx:
-        rows = cx.execute(select(chat_messages.c.role, chat_messages.c.content).where(chat_messages.c.session_id == sid)
+        rows = cx.execute(select(chat_messages.c.role, chat_messages.c.content, chat_messages.c.status)
+                          .where(chat_messages.c.session_id == sid)
                           .order_by(chat_messages.c.id.desc()).limit(n * 2)).all()[::-1]
     turns, q = [], None
-    for role, content in rows:
+    for role, content, status in rows:
         if role == "user":
             q = content
         elif q is not None:
-            turns.append({"q": q, "a": _CITE.sub("", content)[:1200]})
+            # only answers that passed verification become context: a failed, budget or error reply
+            # ("I couldn't verify...") would otherwise steer the next answers
+            if status in GOOD_STATUSES:
+                turns.append({"q": q, "a": _CITE.sub("", content)[:1200]})
             q = None
     return turns[-n:]
 

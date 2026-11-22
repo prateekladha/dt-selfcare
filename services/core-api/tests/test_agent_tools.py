@@ -209,3 +209,47 @@ def test_title_camelcase_is_split(world):
     _engine, r, _state = world
     llm = scripted_llm(r, [("text", "RoamingCostSurprise")])
     assert _a.run(hist.make_title(llm, "Why did my bill go up?", "x"))[0] == "Roaming Cost Surprise"
+
+
+def test_answer_from_chat_history_is_repaired_by_looking_the_fact_up_not_dropped(world):
+    """Prod bug: the model answered "due 15 November 2026" from an earlier answer without calling a tool;
+    the old tool-less repair invented [S1], then replied "I don't have the bill details" and that
+    replaced the correct answer. Now the repair may call tools, and fact-dropping rewrites are rejected."""
+    engine, r, state = world
+    due = get_bill_row(engine, SUB, "2026-10").due_date.date().isoformat()
+    llm = scripted_llm(r, [
+        ("text", "Your October bill was due on 15 November 2026."),                 # from history, no tools
+        ("text", "I don't have the bill details in front of me right now."),       # repair 1: drops the facts
+        ("tools", [("get_bill", {"cycle": "2026-10"})]),                            # repair 2: looks it up
+        ("text", f"Your October bill is due on {due} [S1]."),
+    ])
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
+    events = collect(run_stream("What is the due date?", ctx, llm, engine,
+                                history=[{"q": "current dues?", "a": "October 41.59 EUR, due 15 November 2026"}]))
+    done = events[-1]
+    attempts = done["trace"]["attempts"]
+    assert attempts[0]["problems"] == ["numbers without citations"]
+    assert "dropped the facts" in attempts[1]["problems"][0]
+    assert done["status"] == "REPAIRED" and "[S1]" in done["answer"] and "don't have" not in done["answer"]
+    kinds = [e["type"] for e in events]
+    assert "step" in kinds and kinds.count("replace") == 1   # the repair's lookup is shown, one replacement
+    assert done["citations"] and done["citations"][0]["tool"] == "get_bill"
+
+
+def test_bill_tools_return_day_counts_so_the_model_never_does_date_maths(world):
+    from datetime import timedelta
+
+    from core_api.agent.tools import _due
+    now = datetime.now(UTC)
+    assert _due(now - timedelta(days=7), 41, 0) == {"due": (now - timedelta(days=7)).date().isoformat(), "days_overdue": 7}
+    assert _due(now + timedelta(days=3), 41, 0)["days_until_due"] == 3
+    assert "days_overdue" not in _due(now - timedelta(days=7), 41, 41)   # paid: no count
+
+
+def test_failed_answers_are_not_fed_back_as_conversation_context(world):
+    from core_api.agent import history as hist
+    engine, _r, _state = world
+    sid, _ = hist.ensure_session(engine, SUB, None)
+    hist.append_turn(engine, sid, "What is the due date?", "I couldn't put together an answer I can verify.", "UNVERIFIED", [])
+    hist.append_turn(engine, sid, "Why higher?", "Roaming in zone Z2 [S1].", "VERIFIED", [])
+    assert [t["q"] for t in hist.recent_turns(engine, sid)] == ["Why higher?"]

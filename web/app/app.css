@@ -57,3 +57,10 @@ html, body { background: var(--bg); color: var(--ink); -webkit-font-smoothing: a
   body:has(:is(input[type="text"], input:not([type]), input[type="tel"], input[type="password"], textarea):focus) .mobile-tabbar { display: none; }
   body:has(:is(input:not([type]), input[type="text"], textarea):focus) .chat-composer { bottom: 12px; }
 }
+
+/* Solid page background under the sticky question box, so the answer never shows through the gap between
+   the box and the bottom of the screen (or the tab bar). */
+.chat-composer::after {
+  content: ""; position: absolute; left: -12px; right: -12px; top: 100%; height: 140px;
+  background: var(--bg); pointer-events: none;
+}

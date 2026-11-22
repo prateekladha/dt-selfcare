@@ -27,7 +27,7 @@ export default function Bills() {
                   <p className="font-semibold">{cycleLabel(b.cycle, loc)}</p>
                   <div className="mt-1 flex flex-wrap items-center gap-2">
                     <span className="tabular font-bold">{money(b.total, b.currency, loc)}</span>
-                    {b.outstanding > 0 ? <Pill tone={overdue ? "bad" : "warn"}>{overdue ? "Overdue" : `Due ${dateLabel(b.due_date, loc)}`}</Pill> : <Pill tone="good">Paid</Pill>}
+                    {b.outstanding > 0 ? <Pill tone={overdue ? "bad" : "warn"}>{overdue ? `Overdue · due ${dateLabel(b.due_date, loc)}` : `Due ${dateLabel(b.due_date, loc)}`}</Pill> : <Pill tone="good">Paid</Pill>}
                   </div>
                 </Link>
                 <a href={`/bills/${b.cycle}/pdf`} download aria-label={`Download ${cycleLabel(b.cycle, loc)} PDF`} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-[var(--ink-3)] hover:bg-[var(--chip)]"><Download size={18} /></a>
@@ -50,7 +50,7 @@ export default function Bills() {
                   <td className="px-6 py-4"><Link to={`/bills/${b.cycle}`} className="flex items-center gap-3 font-semibold after:absolute"><span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--chip)] text-[var(--ink-2)]"><Receipt size={16} /></span>{cycleLabel(b.cycle, loc)}</Link></td>
                   <td className="hidden px-6 py-4 text-sm text-[var(--ink-3)] sm:table-cell">{dateLabel(b.issued_at, loc)}</td>
                   <td className="tabular px-6 py-4 text-right font-bold">{money(b.total, b.currency, loc)}</td>
-                  <td className="px-6 py-4">{b.outstanding > 0 ? <Pill tone={overdue ? "bad" : "warn"}>{overdue ? "Overdue" : `Due ${dateLabel(b.due_date, loc)}`}</Pill> : <Pill tone="good">Paid</Pill>}</td>
+                  <td className="px-6 py-4">{b.outstanding > 0 ? <Pill tone={overdue ? "bad" : "warn"}>{overdue ? `Overdue · due ${dateLabel(b.due_date, loc)}` : `Due ${dateLabel(b.due_date, loc)}`}</Pill> : <Pill tone="good">Paid</Pill>}</td>
                   <td className="px-4 py-4"><a href={`/bills/${b.cycle}/pdf`} download aria-label={`Download ${cycleLabel(b.cycle, loc)} PDF`} className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--ink-3)] hover:bg-[var(--chip)] hover:text-[var(--ink)]"><Download size={17} /></a></td>
                 </tr>
               );

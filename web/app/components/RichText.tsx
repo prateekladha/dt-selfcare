@@ -28,8 +28,19 @@ export function CiteMark({ n, onClick }: { n: number; onClick?: () => void }) {
 
 const CITE = /\[([DGS]\d{1,2})\]/g;
 
-/** Inline text with [S#]-style markers turned into numbered superscripts (adjacent markers grouped). */
+/** Inline text: **bold** spans, and [S#]-style markers turned into numbered superscripts.
+ *  While an answer streams, a bold span may not be closed yet: an unmatched "**" is hidden, not shown raw. */
 export function Inline({ text, cites, onCite }: { text: string; cites: CiteMap; onCite?: (n: number) => void }) {
+  const parts = text.split(/\*\*(.+?)\*\*/g);   // odd indexes are the bold spans
+  return <>{parts.map((part, i) => {
+    const clean = part.replace(/\*\*/g, "");
+    if (!clean) return null;
+    return i % 2 ? <strong key={i} className="font-semibold"><Cited text={clean} cites={cites} onCite={onCite} /></strong>
+                 : <Cited key={i} text={clean} cites={cites} onCite={onCite} />;
+  })}</>;
+}
+
+function Cited({ text, cites, onCite }: { text: string; cites: CiteMap; onCite?: (n: number) => void }) {
   const out: ReactNode[] = [];
   let last = 0;
   let m: RegExpExecArray | null;

@@ -54,7 +54,7 @@ export default function BillPage({ loaderData }: Route.ComponentProps) {
             <p className="text-sm font-semibold text-[var(--ink-3)]">{isCurrent ? "This month so far · not billed yet" : `Bill · ${home.plan.name}`}</p>
             <h1 className="display mt-1 text-[34px] font-extrabold leading-tight">{cycleLabel(isCurrent ? home.unbilled.cycle : cycle, loc)}</h1>
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              {bill && (bill.outstanding > 0 ? <Pill tone={new Date(bill.due_date) < new Date(home.as_of) ? "bad" : "warn"}>Due {dateLabel(bill.due_date, loc)}</Pill> : <Pill tone="good">Paid</Pill>)}
+              {bill && (bill.outstanding > 0 ? <Pill tone={new Date(bill.due_date) < new Date(home.as_of) ? "bad" : "warn"}>{new Date(bill.due_date) < new Date(home.as_of) ? "Overdue · due" : "Due"} {dateLabel(bill.due_date, loc)}</Pill> : <Pill tone="good">Paid</Pill>)}
               <DeltaPill ex={ex} locale={loc} />
             </div>
           </div>

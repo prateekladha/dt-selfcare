@@ -43,6 +43,16 @@ def _sub(ctx: ToolContext):
         return cx.execute(select(subscribers).where(subscribers.c.id == ctx.subscriber_id)).one()
 
 
+def _due(due_date, total, paid) -> dict:
+    """Due date plus the day counts the assistant may quote (computed here: the model must not do date maths)."""
+    d = (due_date if due_date.tzinfo else due_date.replace(tzinfo=UTC)).date()
+    out: dict = {"due": d.isoformat()}
+    if total > paid:
+        days = (datetime.now(UTC).date() - d).days
+        out.update({"days_overdue": days} if days > 0 else {"days_until_due": -days})
+    return out
+
+
 def _month(cycle: str) -> str:
     return datetime(int(cycle[:4]), int(cycle[5:]), 1).strftime("%B %Y")
 
@@ -51,7 +61,7 @@ def t_list_bills(args: dict, ctx: ToolContext) -> dict:
     rows = list_bills(ctx.engine, ctx.subscriber_id, int(args.get("months", 12)))
     return {"source": "adb:bills", "bills": [
         {"cycle": r.cycle, "month": _month(r.cycle), "total": fmt_money(r.total, r.currency), "status": r.status,
-         "paid": fmt_money(r.amount_paid, r.currency), "due": r.due_date.date().isoformat()} for r in rows]}
+         "paid": fmt_money(r.amount_paid, r.currency), **_due(r.due_date, r.total, r.amount_paid)} for r in rows]}
 
 
 def t_get_bill(args: dict, ctx: ToolContext) -> dict:
@@ -62,7 +72,8 @@ def t_get_bill(args: dict, ctx: ToolContext) -> dict:
     cur = b.currency
     return {"source": f"adb:bills:{row.id}", "month": _month(b.cycle), "status": row.status,
             "total": fmt_money(b.total, cur), "net": fmt_money(b.subtotal, cur), "vat": fmt_money(b.vat, cur),
-            "vat_rate": f"{int(float(b.vat_rate) * 100)}%", "due": row.due_date.date().isoformat(),
+            "vat_rate": f"{int(float(b.vat_rate) * 100)}%", "paid": fmt_money(row.amount_paid, cur),
+            **_due(row.due_date, row.total, row.amount_paid),
             "lines": [f"{x.label}: {x.quantity:,} {x.unit} = {fmt_money(x.amount, cur)}" for x in b.lines],
             "usage": {"data": f"{b.usage.data_mb:,} MB of {b.usage.data_allowance_mb:,} MB",
                       "calls": f"{b.usage.voice_min:,} min", "sms": b.usage.sms,
@@ -206,6 +217,7 @@ def t_propose_payment(args: dict, ctx: ToolContext) -> dict:
         return {"source": f"adb:bills:{b.cycle}", "proposal": True, "payment": True, "purpose": "BILL", "bill_id": b.id,
                 "cycle": b.cycle, "amount": fmt_money(b.total - b.amount_paid, b.currency),
                 "due_date": due.date().isoformat(), "overdue": due < datetime.now(UTC),
+                **{k: v for k, v in _due(b.due_date, b.total, b.amount_paid).items() if k != "due"},
                 "status": "waiting for the customer to pay in the secure checkout"}
     sub = _sub(ctx)
     cur = unbilled(ctx.state, ctx.subscriber_id, sub.plan_code, engine=ctx.engine)

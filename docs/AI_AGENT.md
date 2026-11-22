@@ -70,6 +70,10 @@ flowchart LR
   - an answer with no citations is rejected
   - **every number in the answer must appear in the documents it cites**
 - **Repair loop:** on failure the model gets the exact problems ("number 999 is not in the cited documents") and rewrites, up to 2 times. Status: `VERIFIED`, or `REPAIRED` if a rewrite was needed.
+  - Repairs run **with the tools**, so the model can look a fact up instead of dropping it. A real failure on prod showed why: the model answered a due date from an earlier chat answer without calling a tool. The tool-less repair then invented a citation, and the next one replied "I don't have the bill details", which replaced a correct answer.
+  - A rewrite that verifies only because it dropped every fact is rejected.
+  - Earlier chat answers are context, not sources. The prompt says so, and only answers that passed verification are fed back as history.
+  - Day counts (`days_overdue`, `days_until_due`) come from the tools, so the model never does date maths, which the verifier would rightly reject.
 - **If it still can't be verified,** the answer says so (`UNVERIFIED`). It never substitutes canned text. The deterministic breakdown and CDR evidence on the page are always exact.
 
 ## L3: prompt caching
