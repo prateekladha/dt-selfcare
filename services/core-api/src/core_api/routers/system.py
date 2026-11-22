@@ -98,9 +98,13 @@ def _db() -> dict:
         by_status = dict(cx.execute(select(payments.c.status, func.count()).group_by(payments.c.status)).all())
         providers = dict(cx.execute(select(explanations.c.provider, func.count()).group_by(explanations.c.provider)).all())
         backlog = cx.execute(select(func.count()).select_from(outbox).where(outbox.c.published_at.is_(None))).scalar_one()
+        oldest = cx.execute(select(func.min(outbox.c.created_at)).where(outbox.c.published_at.is_(None))).scalar()
     return {"engine": "Oracle Autonomous Database 23ai (Always Free)" if eng.dialect.name == "oracle" else eng.dialect.name,
             "schema_user": get_settings().db_user, "tables": counts, "migrations": migrations,
-            "payments_by_status": by_status, "ai_cache_by_provider": providers, "outbox_unpublished": backlog}
+            "payments_by_status": by_status, "ai_cache_by_provider": providers, "outbox_unpublished": backlog,
+            # age of the oldest event not yet relayed: > a minute means the relay is down (paid bills not updated)
+            "outbox_oldest_unpublished_s": (int((datetime.now(UTC) - (oldest if oldest.tzinfo else oldest.replace(tzinfo=UTC)))
+                                                .total_seconds()) if oldest else None)}
 
 
 @router.get("/overview")

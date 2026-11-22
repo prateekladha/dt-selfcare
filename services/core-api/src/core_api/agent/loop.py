@@ -24,7 +24,7 @@ import structlog
 from sqlalchemy import insert
 
 from ..db import agent_traces
-from .agent import _CITE, _NUM, _norm, numbers_in
+from .agent import _CITE, _NUM, _norm, canon_spaced_numbers, numbers_in
 from .broker import RESULT_CHARS, Broker
 from .llm import LLM, BudgetExceeded
 from .tools import TOOLS, ToolContext, declarations
@@ -68,8 +68,9 @@ HOW TO TALK
 - Be human when it matters. If someone is worried, struggling to pay or annoyed, acknowledge it first ("I
   understand, bills can be stressful"), stay kind and never lecture. Explain their options honestly (paying
   now, a cheaper plan for the future, an add-on, or talking to our care team), and what happens next, gently.
-- For greetings or small talk, reply briefly and offer help. End with at most one helpful next step or
-  question, only when it's useful."""
+- For greetings, thanks or small talk ("danke", "ok, thanks"), reply in one short sentence in their language,
+  with no figures and without repeating an earlier answer, and offer help. End with at most one helpful next
+  step or question, only when it's useful."""
 
 STEP_LABELS = {
     "list_bills": "Looking up your bills", "get_bill": "Reading your {cycle} bill", "compare_bills": "Comparing {cycle} with the previous month",
@@ -110,7 +111,7 @@ def check_numbers(answer: str, labels: dict[str, str]) -> list[str]:
     """Every figure in the answer must appear in a tool result of THIS turn (earlier answers are not
     sources). The model doesn't have to place citation markers: attach_sources does that afterwards, so a
     correct answer is never rewritten just for a missing marker."""
-    body = _CITE.sub("", answer)
+    body = canon_spaced_numbers(_CITE.sub("", answer))
     supported = set().union(*(numbers_in(t) for t in labels.values())) if labels else set()
     bad = list(dict.fromkeys(t.strip() for t in _NUM.findall(body) if len(_norm(t)) > 1 and _norm(t) not in supported))
     if bad and not labels:
@@ -127,7 +128,7 @@ def attach_sources(answer: str, labels: dict[str, str]) -> str:
 
     def cite(sentence: str) -> str:
         found: list[str] = []
-        for tok in _NUM.findall(sentence):
+        for tok in _NUM.findall(canon_spaced_numbers(sentence)):
             n = _norm(tok)
             if len(n) < 2:
                 continue
@@ -277,7 +278,8 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
             # silent: the customer sees the steps of any extra lookup, never a "checking" notice or a draft
             messages += [{"role": "assistant", "content": answer},
                          {"role": "user", "content": "Problems: " + "; ".join(problems[:6]) +
-                          ". Answer the customer's question again in the same warm, plain style. Look up every fact you"
+                          ". If the customer's message needs no facts (thanks, a greeting, small talk), reply in one short"
+                          " sentence with no figures. Otherwise answer it again in the same warm, plain style. Look up every fact you"
                           " state with the tools now (earlier answers in this chat are not sources) and use only figures"
                           " from those tool results; fetch only what this question needs. Change only what is wrong."
                           " Don't ask the customer for permission and don't say you lack their details."}]

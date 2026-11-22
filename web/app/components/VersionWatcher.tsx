@@ -49,8 +49,10 @@ export function VersionWatcher() {
 
     const intercept = (e: Event) => {
       if (!outdated) return;
-      const el = (e.target as Element | null)?.closest?.("a[href], button, [role=button], [role=tab], input[type=submit]");
-      if (!el) return;
+      const el = (e.target as Element | null)?.closest?.("a[href], button, [role=button], input[type=submit]");
+      // in-page tabs (e.g. the explanation's language) only fetch data the old page handles fine: no reload for
+      // them (it looked like the language switch refreshed the page); the next real navigation loads the new version
+      if (!el || el.closest("[role=tab], [role=tablist]")) return;
       const a = el instanceof HTMLAnchorElement ? el : null;
       if (a && (a.target === "_blank" || a.hasAttribute("download") || new URL(a.href, location.href).origin !== location.origin)) return;
       e.preventDefault();
