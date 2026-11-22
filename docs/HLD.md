@@ -1,6 +1,6 @@
 # High-Level Design: Telecom Self-Care (Usage & Bill Explainer)
 
-> Companion docs: [LLD.md](LLD.md) (APIs, schemas, algorithms) · [OPERATIONS.md](OPERATIONS.md) (how to look inside DB, Valkey, streams) · [LOADTEST.md](LOADTEST.md) · [WALKTHROUGH.md](WALKTHROUGH.md)
+> Companion docs: [LLD.md](LLD.md) (APIs, schemas, algorithms) · [OPERATIONS.md](OPERATIONS.md) (how to look inside DB, Valkey, streams) · [LOADTEST.md](LOADTEST.md)
 
 ## 1. Context and goals
 
