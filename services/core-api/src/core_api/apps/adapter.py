@@ -91,7 +91,14 @@ def read(order_id: str) -> dict:
 
 
 async def legacy_emulator(stop: asyncio.Event) -> None:
-    """Emulated legacy systems: process SUBMITTED orders after 20-60 s and publish the outcome."""
+    """Emulated legacy systems: process SUBMITTED orders after LEGACY_MIN_S..LEGACY_MAX_S (default 2-5 s) and
+    publish the outcome; LEGACY_REJECT_RATE (default 0) rejects that share of orders, to exercise the
+    compensation path on demand. (It was 20-60 s with 10% random rejections: a customer approving an add-on
+    waited ~40 s, and one in ten approvals failed for no visible reason.)"""
+    import os
+
+    lo, hi = float(os.environ.get("LEGACY_MIN_S", "2")), float(os.environ.get("LEGACY_MAX_S", "5"))
+    reject_rate = float(os.environ.get("LEGACY_REJECT_RATE", "0"))
     from confluent_kafka import Producer
     from telco_common.streaming import StreamSettings
 
@@ -104,9 +111,9 @@ async def legacy_emulator(stop: asyncio.Event) -> None:
             now = datetime.now(UTC)
             for b in due:
                 created = b.created_at if b.created_at.tzinfo else b.created_at.replace(tzinfo=UTC)
-                if now - created < timedelta(seconds=random.randint(20, 60)):
+                if now - created < timedelta(seconds=random.uniform(lo, hi)):
                     continue
-                result = "REJECTED" if random.random() < 0.1 else "CONFIRMED"
+                result = "REJECTED" if random.random() < reject_rate else "CONFIRMED"
                 reason = None if result == "CONFIRMED" else "offer not eligible"
                 with engine.begin() as cx:
                     cx.execute(update(bss_orders).where(bss_orders.c.id == b.id, bss_orders.c.status == "SUBMITTED")
@@ -118,7 +125,7 @@ async def legacy_emulator(stop: asyncio.Event) -> None:
             producer.flush(10)
         except Exception as e:  # noqa: BLE001 - keep emulating; next tick retries
             log.warning("legacy_emulator_error", error=str(e)[:200])
-        await asyncio.sleep(5)
+        await asyncio.sleep(1)
 
 
 @asynccontextmanager

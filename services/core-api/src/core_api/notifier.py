@@ -108,6 +108,7 @@ def outbox_loop(stop: threading.Event) -> None:
 
     p = Producer(stream.client_config() | {"acks": "all", "error_cb": on_error})
     while not stop.is_set():
+        rows = []   # defined even if the query fails (the idle wait below reads it)
         try:
             with engine.connect() as cx:
                 rows = cx.execute(select(outbox).where(outbox.c.published_at.is_(None))
@@ -134,7 +135,7 @@ def outbox_loop(stop: threading.Event) -> None:
         except Exception as e:  # noqa: BLE001 - a DB blip / full queue must not end the relay
             log.warning("outbox_relay_failed", error=str(e)[:200])
             stop.wait(5)
-        stop.wait(2)
+        stop.wait(0.5 if not rows else 0)   # drain a backlog at once; idle polls every 0.5 s (was 2 s)
 
 
 def billing_loop(stop: threading.Event) -> None:

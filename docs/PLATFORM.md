@@ -193,7 +193,7 @@ about 72 days of usage per day, which inflated November.)
 - **Approve** → `start_workflow(AddonPurchaseWorkflow, id=order_id)`. Because the workflow id is the order id, a double click can't start two workflows.
 - **Workflow steps:**
   1. Validate.
-  2. Submit to the legacy BSS (simulated: 20–60 s, ~10% rejections).
+  2. Submit to the legacy BSS (simulated: 2–5 s by default; LEGACY_MIN_S / LEGACY_MAX_S / LEGACY_REJECT_RATE turn on slower or failing orders to show retries and compensation).
   3. Durable wait for its signal, re-checking with `bss_status` every 45 s in case the callback was lost (an adapter outage just means "ask again"); one last status check, then give up after 30 min. The first result wins: a later, conflicting callback can't flip it.
   4. On confirmation, apply as `PLAN_CHANGED` through the **real usage pipeline**, as source `core-orders` with its own token when `order-source-token` is configured (the collector then accepts add-on events only from it). The record id is `order-<id>`, so a retried activity is deduplicated by the collector; a quarantined record fails the activity so it retries. After confirmation, apply and finish retry without an attempt cap.
   5. Complete and notify.

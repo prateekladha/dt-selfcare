@@ -237,10 +237,12 @@ def test_payment_is_idempotent_and_settles_once_from_both_paths(env):
     wh = client.post("/v1/webhooks/razorpay", content=json.dumps(hook), headers={"X-Razorpay-Signature": "good"})
     assert wh.json()["settled"] is False and wh.json()["result"] == "already_paid"  # settled by the browser path
 
-    assert drain_outbox_into_billing(engine) == 1  # payment-events -> billing (exactly once)
-    assert drain_outbox_into_billing(engine) == 0  # redelivery is a no-op
+    # the bill is paid the moment the payment is (applied in the confirm request, no event round trip) ...
     bill = client.get("/v1/me/bills/2026-10", headers=h).json()
     assert bill["status"] == "PAID" and bill["outstanding"] == 0
+    # ... and the PAYMENT_SUCCEEDED event reaching billing afterwards (and any redelivery) is a no-op
+    assert drain_outbox_into_billing(engine) == 0
+    assert client.get("/v1/me/bills/2026-10", headers=h).json()["amount_paid"] == bill["amount_paid"]
     from core_api.db import outbox
     from sqlalchemy import select
     with engine.connect() as cx:

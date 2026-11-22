@@ -149,6 +149,18 @@ def mark_paid(engine: Engine, order_id: str, gateway_payment_id: str) -> tuple[b
             "amount": row.amount, "currency": row.currency, "purpose": row.purpose, "bill_id": row.bill_id,
             "gateway": row.gateway, "gateway_payment_id": gateway_payment_id})))
         settled = cx.execute(select(payments).where(payments.c.id == row.id)).one()
+    if row.bill_id:
+        # The bill shows paid the moment the payment is: apply it now, in this request, instead of waiting for
+        # the event round trip (outbox -> stream -> billing consumer). Idempotent (bill_payments is keyed by
+        # payment), so the consumer applying the same event later is a no-op; if this fails, the event and the
+        # apply_missing sweep still deliver it.
+        from .billing_ledger import apply_payment_event
+        try:
+            apply_payment_event(engine, {"type": "PAYMENT_SUCCEEDED", "payment_id": row.id, "bill_id": row.bill_id,
+                                         "amount": row.amount})
+        except Exception as e:  # noqa: BLE001
+            import structlog
+            structlog.get_logger("payments").warning("inline_bill_apply_failed", payment=row.id, error=str(e)[:200])
     return True, _public(settled)
 
 
