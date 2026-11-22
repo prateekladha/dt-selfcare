@@ -14,7 +14,7 @@ type Overview = {
   stream: { engine?: string; usage_topic?: string; partitions?: Part[]; topics?: Record<string, { partitions: number; messages_retained: number; end: number }>; consumer_groups?: string[]; error?: string };
   valkey: { engine?: string; keys?: number; used_memory?: string; maxmemory_policy?: string; ops_per_sec?: number; aof_enabled?: boolean; uptime_s?: number; connected_clients?: number; error?: string };
   database: { engine?: string; schema_user?: string; tables?: Record<string, number>; migrations?: string[]; payments_by_status?: Record<string, number>; ai_cache_by_provider?: Record<string, number>; outbox_unpublished?: number; error?: string };
-  cdr?: { by_type?: Record<string, number>; collector?: Record<string, number>; quarantine_sample?: { record_id: string | null; reason: string; batch_id: string }[]; error?: string };
+  cdr?: { by_type?: Record<string, number>; collector?: Record<string, number>; quarantine_sample?: { reason: string }[]; error?: string };
   flags: Record<string, unknown>; breakers: Record<string, string>;
   ai: { providers_configured: string[]; daily_limit_per_subscriber: number }; payments: { gateway: string; webhook: string };
   you: { subscriber: string; partition: number; valkey_usage_key: string; valkey_usage_hash: Record<string, string>; valkey_profile: Record<string, string>;
@@ -64,7 +64,6 @@ export default function System({ loaderData }: Route.ComponentProps) {
   useEffect(() => { const t = setInterval(() => rv.state === "idle" && document.visibilityState === "visible" && rv.revalidate(), 5000); return () => clearInterval(t); }, [rv]);
   const parts = o.stream.partitions ?? [];
   const totalLag = parts.reduce((s, p) => s + p.lag, 0);
-  const applied = parts.reduce((s, p) => s + (p.applied ?? 0), 0);
   const t = o.database.tables ?? {};
 
   return (
@@ -88,7 +87,7 @@ export default function System({ loaderData }: Route.ComponentProps) {
           <div className="flex flex-col gap-2 lg:flex-row">
             <Node icon={Radio} title="Network emulator" sub="mediation batches" stat="live, every 60 s" />
             <Arrow /><Node icon={Server} title="usage-collector" sub="validate · dedupe · gzip" stat="batch idempotency" />
-            <Arrow /><Node icon={Layers} title="OCI Streaming" sub={`${o.stream.usage_topic ?? "usage-events"} · ${parts.length} partitions`} stat={`${n(applied)} msgs applied · lag ${n(totalLag)}`} tone="store" />
+            <Arrow /><Node icon={Layers} title="OCI Streaming" sub={`${o.stream.usage_topic ?? "usage-events"} · ${parts.length} partitions`} stat={`lag ${n(totalLag)} messages`} tone="store" />
             <Arrow /><Node icon={Zap} title="usage-aggregator" sub="atomic Lua apply" stat="exactly-once alerts" tone="brand" />
             <Arrow /><Node icon={Database} title="Valkey" sub="running totals" stat={`${n(o.valkey.keys)} keys · ${o.valkey.used_memory ?? "?"}`} tone="store" />
             <Arrow /><Node icon={Radio} title="relay → notifier" sub="outbox → usage-alerts" stat={`${n(o.stream.topics?.["usage-alerts"]?.end)} alerts published`} />
@@ -144,7 +143,7 @@ export default function System({ loaderData }: Route.ComponentProps) {
           <div>
             <KV rows={[["Quarantined (malformed / future-dated)", n(o.cdr?.collector?.quarantined)], ["Duplicates dropped", n(o.cdr?.collector?.duplicates)]]} />
             {!!o.cdr?.quarantine_sample?.length && (
-              <ul className="mt-3 space-y-1 text-xs text-[var(--ink-3)]">{o.cdr.quarantine_sample.map((q, i) => <li key={i}><span className="font-mono">{q.record_id ?? "?"}</span>: {q.reason}</li>)}</ul>
+              <ul className="mt-3 space-y-1 text-xs text-[var(--ink-3)]">{o.cdr.quarantine_sample.map((q, i) => <li key={i}>{q.reason}</li>)}</ul>
             )}
           </div>
         </div>

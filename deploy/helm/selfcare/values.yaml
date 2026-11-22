@@ -120,10 +120,10 @@ flags:
     defaultVariant: "on"
   # Provider-agnostic AI layer. Demo: DeepSeek API. EU production: "mistral" (EU-hosted) or
   # "selfhosted" (open weights on vLLM in an EU region) - customer data never leaves the EU.
-  demo-accounts-panel:   # public per-demo-line summary on the login page (never enable in production)
+  demo-accounts-panel:   # public per-demo-line summary (no longer shown on the login page): off
     state: ENABLED
     variants: { "on": true, "off": false }
-    defaultVariant: "on"
+    defaultVariant: "off"
   ai-provider:
     state: ENABLED
     variants: { deepseek: deepseek, mistral: mistral, selfhosted: selfhosted, template: template }
