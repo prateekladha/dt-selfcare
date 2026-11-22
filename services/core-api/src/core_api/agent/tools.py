@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
-from telco_common.billing import data_usage_pct, rate
-from telco_common.catalog import COUNTRIES, get_plan
+from telco_common.billing import data_usage_pct, rate, split_counters
+from telco_common.catalog import COUNTRIES, MB, get_addon, get_plan
 from telco_common.explainer import explain, fmt_money
 from telco_common.models import cycle_of
 from telco_common.partitioning import partition_for
@@ -97,6 +97,27 @@ def t_compare_bills(args: dict, ctx: ToolContext) -> dict:
             "changes": [{"item": d.label, "change": fmt_money(d.delta, ex.currency), "detail": d.detail} for d in ex.drivers]}
 
 
+OVERAGE_WORDS = {"THROTTLE": "beyond the allowance the speed is reduced; there is no extra charge",
+                 "CHARGE": "every MB beyond the allowance is charged"}
+
+
+def _data_position(plan, counters: dict[str, int], extra_mb: int = 0) -> dict:
+    """Plan allowance, add-ons, total, used, remaining / over, in MB: what the customer actually has left."""
+    _, _, addons = split_counters(counters)
+    used_mb = -(-(counters.get("DATA", 0) + counters.get("ROAMING_DATA:EU", 0)) // MB)
+    addon_mb = sum(get_addon(c).data_mb * n for c, n in addons.items())
+    total = plan.data_mb + addon_mb + extra_mb
+    pos = {"plan_data": f"{plan.data_mb:,} MB",
+           "add_ons_this_month": [f"{get_addon(c).name} x{n} (+{get_addon(c).data_mb * n:,} MB)" for c, n in addons.items()] or "none",
+           "total_allowance": f"{total:,} MB", "data_used": f"{used_mb:,} MB"}
+    if used_mb <= total:
+        pos["data_remaining"] = f"{total - used_mb:,} MB"
+    else:
+        pos["data_remaining"] = "0 MB"
+        pos["over_allowance_by"] = f"{used_mb - total:,} MB"
+    return pos
+
+
 def t_current_usage(args: dict, ctx: ToolContext) -> dict:
     sub = _sub(ctx)
     plan = get_plan(sub.plan_code)
@@ -110,11 +131,11 @@ def t_current_usage(args: dict, ctx: ToolContext) -> dict:
     proj = int(u.data_mb / max(now.day, 1) * days)
     return {"source": f"valkey:u:{{p{partition_for(ctx.subscriber_id, ctx.state.partitions)}}}:{cycle}",
             "as_of": now.strftime("%d %B %Y %H:%M UTC"), "day_of_cycle": now.day,
-            "data_used": f"{u.data_mb:,} MB", "data_allowance": f"{u.data_allowance_mb:,} MB", "data_used_pct": f"{pct:.0f}%",
+            **_data_position(plan, counters), "data_used_pct": f"{pct:.0f}%",
             "projected_month_end": f"{proj:,} MB", "calls": f"{u.voice_min:,} min", "sms": u.sms,
             "unbilled_total": fmt_money(b.total, b.currency),
             "unbilled_lines": [f"{x.label}: {fmt_money(x.amount, b.currency)}" for x in b.lines],
-            "overage_policy": plan.overage_policy}
+            "beyond_the_allowance": OVERAGE_WORDS.get(str(plan.overage_policy).split(".")[-1].upper(), str(plan.overage_policy))}
 
 
 def t_search_knowledge(args: dict, ctx: ToolContext) -> dict:
@@ -172,6 +193,26 @@ def t_payments(args: dict, ctx: ToolContext) -> dict:
         **({} if shown else {"note": "No payments made yet."})}
 
 
+ORDER_WORDS = {"PROPOSED": "waiting for the customer's approval", "APPROVED": "approved, being processed",
+               "SUBMITTED": "approved, waiting for the network to confirm", "COMPLETED": "active",
+               "FAILED": "could not be completed (not charged)", "DECLINED": "declined by the customer",
+               "EXPIRED": "offer expired"}
+
+
+def t_orders(args: dict, ctx: ToolContext) -> dict:
+    """The customer's recent add-on and tariff orders and their real status (e.g. after 'I just approved it')."""
+    from ..db import orders
+    with ctx.engine.connect() as cx:
+        rows = cx.execute(select(orders).where(orders.c.subscriber_id == ctx.subscriber_id)
+                          .order_by(orders.c.created_at.desc()).limit(8)).all()
+    out = []
+    for r in rows:
+        item = (get_addon(r.addon_code).name if r.kind == "ADDON" else f"switch to {get_plan(r.addon_code).name}")
+        out.append({"date": f"{r.created_at.day} {r.created_at:%B %Y}", "order": item,
+                    "status": ORDER_WORDS.get(r.status, r.status.lower())})
+    return {"source": "adb:orders", "orders": out or "no orders yet"}
+
+
 def t_alerts(args: dict, ctx: ToolContext) -> dict:
     with ctx.engine.connect() as cx:
         rows = cx.execute(select(notifications).where(notifications.c.subscriber_id == ctx.subscriber_id)
@@ -209,9 +250,19 @@ def t_propose_addon(args: dict, ctx: ToolContext) -> dict:
     except OrderError as e:
         return {"error": e.message}
     pv = o["preview"]
+    # the honest effect of this add-on on THIS month: does it actually give the customer data back?
+    sub = _sub(ctx)
+    plan = get_plan(sub.plan_code)
+    counters = ctx.state.counters(ctx.subscriber_id, cycle_of(datetime.now(UTC)))
+    after = _data_position(plan, counters, extra_mb=pv["data_mb"])
+    helps = "over_allowance_by" not in after
     return {"source": f"orders:{o['order_id']}", "proposal": True, "order_id": o["order_id"],
             "add_on": pv["name"], "extra_data": f"{pv['data_mb']:,} MB", "price": fmt_money(pv["price"], pv["currency"]),
-            "status": "waiting for the customer's approval"}
+            "after_this_add_on": after,
+            "effect": ("after it, the customer has data left this month" if helps else
+                       f"even after it the customer is still {after['over_allowance_by']} over the allowance: "
+                       + OVERAGE_WORDS.get(str(plan.overage_policy).split(".")[-1].upper(), "")),
+            "status": "waiting for the customer's approval in the card below (charged on the next bill)"}
 
 
 def t_propose_payment(args: dict, ctx: ToolContext) -> dict:
@@ -279,6 +330,9 @@ TOOLS: dict[str, Tool] = {t.name: t for t in [
     Tool("get_payments", "Recent payments and their status (status comes from the payment gateway's status API).",
          NONE, t_payments),
     Tool("get_alerts", "Data alerts sent to the customer.", NONE, t_alerts),
+    Tool("get_orders", "The customer's recent add-on and tariff-change orders and their status (proposed, being "
+         "processed, active, declined, failed). Use it when they mention an order or say they approved something.",
+         NONE, t_orders),
     Tool("simulate_usage", "Price a what-if scenario on top of the customer's last month of real usage.",
          {"type": "object", "properties": {"scenario": {"type": "string", "enum": [
              "us-trip-2-weeks", "eu-summer-holiday", "heavy-streaming", "calling-family-abroad", "light-month"]}},

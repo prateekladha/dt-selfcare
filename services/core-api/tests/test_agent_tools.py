@@ -418,3 +418,37 @@ def test_polish_space_thousands_separator_is_one_figure():
     assert check_numbers("Zużyłeś 1 676 MB z 5 000 MB, rachunek wynosi 30,75 PLN.", src) == []
     assert check_numbers("Zone Z2 372 MB", {"S1": "Z2: 372 MB"}) == []      # 'Z2 372' stays two numbers
     assert "[S1]" in attach_sources("Zużyłeś 1 676 MB.", src)
+
+
+def test_data_position_breaks_down_plan_addons_and_overage():
+    """Prod: after approving a 5 GB add-on the customer was told it 'isn't reflected'. The tool only gave a total
+    (40,000 MB); the breakdown (30,000 plan + 2x5 GB add-ons) and the real overage must be explicit."""
+    from core_api.agent.tools import _data_position
+    from telco_common.catalog import get_plan
+    m = get_plan("DE-M")
+    counters = {"DATA": 91_719_634_846, "addon:DE-DATA-5GB": 2, "addon_bytes": 10_000_000_000}
+    pos = _data_position(m, counters)
+    assert pos["plan_data"] == "30,000 MB" and pos["total_allowance"] == "40,000 MB"
+    assert "x2 (+10,000 MB)" in pos["add_ons_this_month"][0]
+    assert pos["data_remaining"] == "0 MB" and pos["over_allowance_by"] == "51,720 MB"
+    # one more 5 GB add-on still leaves them over: the proposal must say so, not imply data is back
+    assert "over_allowance_by" in _data_position(m, counters, extra_mb=5_000)
+    light = _data_position(m, {"DATA": 20_000 * MB, "ROAMING_DATA:EU": 1_000 * MB})
+    assert light["data_used"] == "21,000 MB" and light["data_remaining"] == "9,000 MB" and "over_allowance_by" not in light
+
+
+def test_addon_proposal_states_its_real_effect_and_orders_tool_reports_status(world):
+    """The add-on proposal says honestly whether it gives data back this month; get_orders shows real status."""
+    from core_api.agent.tools import TOOLS
+    engine, _r, state = world
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder())
+    tools = TOOLS if isinstance(TOOLS, dict) else {t.name: t for t in TOOLS}
+    from core_api.db import bills
+    with engine.begin() as cx:   # an overdue bill blocks orders; this test is about the proposal itself
+        cx.execute(bills.update().values(status="PAID"))
+    usage = tools["get_current_usage"].run({}, ctx)
+    assert {"plan_data", "total_allowance", "data_remaining", "beyond_the_allowance"} <= usage.keys()
+    pr = tools["propose_addon"].run({"addon_code": "DE-DATA-5GB"}, ctx)
+    assert pr.get("proposal") and "effect" in pr and "card below" in pr["status"] and "checkout" not in json.dumps(pr)
+    orders = tools["get_orders"].run({}, ctx)["orders"]
+    assert orders[0]["status"] == "waiting for the customer's approval" and "5 GB" in orders[0]["order"]
