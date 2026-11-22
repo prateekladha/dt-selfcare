@@ -140,13 +140,27 @@ export default function Assistant() {
   }
   const newChat = () => { setTurns([]); setSessionId(null); setDrawer(false); };
   const endRef = useRef<HTMLDivElement>(null);
+  // Follow the answer while it streams, like a chat app: keep the end of the conversation just above the
+  // sticky question box. Stop following as soon as the customer scrolls up to read; resume if they
+  // scroll back to the bottom. Scrolls are instant (a smooth scroll would be mistaken for the user).
+  const follow = useRef(false);
+  const toEnd = () => endRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
+  useEffect(() => {
+    const onScroll = () => {
+      const fromBottom = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight);
+      follow.current = fromBottom < 160;
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+  useEffect(() => { if (follow.current) toEnd(); }, [turns]);
   const patch = (fn: (t: Turn) => Turn) => setTurns((ts) => ts.map((t, i) => (i === ts.length - 1 ? fn(t) : t)));
 
   async function ask(question: string) {
     if (question.trim().length < 2 || busy) return;
     setBusy(true); setQ("");
+    follow.current = true;   // a new question always brings the conversation end into view
     setTurns((ts) => [...ts, { q: question, text: "", steps: [], citations: [] }]);
-    setTimeout(() => endRef.current?.scrollIntoView({ behavior: "smooth" }), 30);
     try {
       const res = await fetch("/api/ask/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question, lang: "en", session_id: sessionId ?? undefined }) });
       if (!res.ok || !res.body) { const j = await res.json().catch(() => ({})); patch((t) => ({ ...t, error: j.detail ?? "The assistant is unavailable right now." })); return; }
@@ -243,7 +257,7 @@ export default function Assistant() {
             <Card className="overflow-hidden"><Answer t={t} /></Card>
           </div>
         ))}
-        <div ref={endRef} />
+        <div ref={endRef} className="scroll-mb-[170px] md:scroll-mb-[110px]" />
       </div>
 
       {assistantDown && (
