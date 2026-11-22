@@ -120,9 +120,13 @@ async def bss_status(bss_order_id: str) -> str:
 
 async def _publish_record(order_id: str, rec: dict) -> str:
     async with httpx.AsyncClient(timeout=httpx.Timeout(connect=1.0, read=10.0, write=10.0, pool=1.0)) as c:
+        # its own source + token when configured (Vault: order-source-token): the collector then accepts add-on
+        # events only from "core-orders", so no network element (or the emulator) can grant allowance
+        token = os.environ.get("APP_ORDER_SOURCE_TOKEN") or os.environ["APP_SOURCE_TOKEN"]
+        src = "core-orders" if os.environ.get("APP_ORDER_SOURCE_TOKEN") else "emu-mediation-01"
         r = await c.post(os.environ.get("APP_COLLECTOR_URL", "http://usage-collector:8080") + "/v1/usage-batches",
-                         headers={"Authorization": f"Bearer {os.environ['APP_SOURCE_TOKEN']}", "X-Source": "emu-mediation-01"},
-                         json={"batch_id": f"emu-mediation-01:order:{order_id}", "source": "emu-mediation-01", "records": [rec]})
+                         headers={"Authorization": f"Bearer {token}", "X-Source": src},
+                         json={"batch_id": f"{src}:order:{order_id}", "source": src, "records": [rec]})
     r.raise_for_status()
     return r.json().get("status", "accepted")
 

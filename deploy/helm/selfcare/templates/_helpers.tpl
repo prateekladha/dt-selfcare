@@ -41,6 +41,8 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
   valueFrom: { secretKeyRef: { name: selfcare-secrets, key: demo-password } }
 - name: APP_SEED_DEMO
   value: {{ .Values.demo.seed | quote }}
+- name: APP_ORDER_SOURCE_TOKEN   # optional: dedicated source for add-on events (core-api sends, collector accepts)
+  valueFrom: { secretKeyRef: { name: selfcare-order-source-token, key: value, optional: true } }
 - name: APP_SOURCE_TOKENS
   valueFrom: { secretKeyRef: { name: selfcare-secrets, key: collector-source-tokens } }
 - name: APP_ARCHIVE_BUCKET

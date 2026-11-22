@@ -4,6 +4,7 @@
 #   jwt-private-key  RSA-2048 PEM: signs login tokens (RS256). Synced only into core-api.
 #   jwt-public-key   its public half: every other service verifies tokens with it but can't create one.
 #   session-secret   the web BFF's own cookie-signing secret (independent of the token keys).
+#   order-source-token  the order workflow's own collector token (source "core-orders") for add-on events.
 #
 #   ./deploy/scripts/auth-keys.sh            create whichever of the three is missing (safe to re-run)
 #   ./deploy/scripts/auth-keys.sh --rotate   new versions of all three, then restart the workloads:
@@ -46,6 +47,14 @@ if [[ $ROTATE == 1 ]] || ! exists jwt-private-key || ! exists jwt-public-key; th
   unset priv pub
 else
   echo "  JWT key pair: already present (use --rotate for a new one)"
+fi
+
+# Dedicated token for add-on events from the order workflow (source "core-orders"): once present, the collector
+# accepts add-on events only from that source.
+if [[ $ROTATE == 1 ]] || ! exists order-source-token; then
+  t=$(openssl rand -hex 24); store order-source-token "$t"; unset t
+else
+  echo "  order-source-token: already present"
 fi
 
 if [[ $ROTATE == 1 ]] || ! exists session-secret; then

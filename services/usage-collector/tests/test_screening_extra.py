@@ -34,3 +34,11 @@ def test_overlapping_batches_count_a_record_once_and_a_failed_publish_releases_i
     assert len(retry.valid) == 3                   # the retry goes through
     remember(retry.valid, r)
     assert screen(batch, r).duplicates == 3        # and afterwards it's remembered
+
+
+def test_add_on_events_only_from_the_dedicated_order_source_once_its_token_exists():
+    from usage_collector import app as collector
+    collector.S.settings = collector.Settings(order_source_token="", order_sources="emu-mediation-01")
+    assert collector.order_sources() == {"emu-mediation-01"}          # older setup: fallback list
+    collector.S.settings = collector.Settings(order_source_token="t0k3n")
+    assert collector.order_sources() == {"core-orders"}               # dedicated token: only the order workflow

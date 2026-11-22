@@ -41,9 +41,21 @@ class Settings(BaseSettings):
     # JSON map source -> token, e.g. {"pgw-fra-01": "…"}; mounted as a secret.
     source_tokens: str = "{}"
     batch_done_ttl_s: int = 7 * 24 * 3600
-    # sources allowed to send PLAN_CHANGED (add-on purchases): the order workflow, not network elements.
-    # Production: give core-api its own source id + token and list only that one.
+    # Add-on purchases (PLAN_CHANGED) come from the order workflow, never from network elements. With a dedicated
+    # order token (Vault: order-source-token) core-api sends them as source "core-orders" and ONLY that source may
+    # send them; without it (older setup) the fallback list below applies.
+    order_source_token: str = ""
     order_sources: str = "emu-mediation-01"
+
+
+ORDER_SOURCE = "core-orders"
+
+
+def order_sources() -> set[str]:
+    """Who may send add-on events: only the dedicated order source once its token is configured."""
+    if S.settings.order_source_token:
+        return {ORDER_SOURCE}
+    return {s.strip() for s in S.settings.order_sources.split(",") if s.strip()}
 
 
 class State:
@@ -67,6 +79,8 @@ def _poll_loop() -> None:
 async def lifespan(_: FastAPI):
     S.settings, S.stream = Settings(), StreamSettings()
     S.tokens = json.loads(S.settings.source_tokens)
+    if S.settings.order_source_token:
+        S.tokens[ORDER_SOURCE] = S.settings.order_source_token
     S.r = valkey.Valkey.from_url(S.settings.valkey_url, socket_timeout=3)
     S.producer = Producer(S.stream.client_config() | {
         "acks": "all", "linger.ms": 10, "compression.type": "none",  # payload already gzip
@@ -123,7 +137,7 @@ async def ingest(batch: RawBatch, response: Response, source: str = Depends(auth
         BATCHES.labels("inflight").inc()
         raise HTTPException(409, "batch is being processed; retry later")
 
-    if source not in {s.strip() for s in S.settings.order_sources.split(",")}:
+    if source not in order_sources():
         # add-on purchases come from the order workflow; a network source can't grant allowance
         raw = [x for x in batch.records if not (isinstance(x, dict) and x.get("kind") == "PLAN_CHANGED")]
         refused = [{"index": i, "record_id": x.get("record_id"), "reason": "add-on events are not accepted from this source"}
