@@ -145,7 +145,7 @@ export default function Assistant() {
     const t: Turn[] = [];
     for (const m of s.messages) {
       if (m.role === "user") t.push({ q: m.content, text: "", steps: [], citations: [] });
-      else if (t.length) Object.assign(t[t.length - 1], { text: m.content, status: m.status ?? "VERIFIED", citations: m.citations ?? [] });
+      else if (t.length) Object.assign(t[t.length - 1], { text: m.content, status: m.status ?? "VERIFIED", citations: m.citations ?? [], proposals: m.cards ?? [] });
     }
     setTurns(t); setSessionId(id);
   }

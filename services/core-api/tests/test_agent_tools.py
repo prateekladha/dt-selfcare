@@ -360,3 +360,16 @@ def test_long_tool_results_are_not_cut_for_the_checker():
         assert len(b.sources["S1"]) < RESULT_CHARS and check_numbers("The last one is 1149.50 EUR.", b.sources) == []
     finally:
         del TOOLS["_long"]
+
+
+def test_reopened_chat_keeps_the_pay_card_its_answer_points_to(world):
+    from core_api.agent import history as hist
+    engine, _r, _state = world
+    sid, _ = hist.ensure_session(engine, SUB, None)
+    card = {"type": "proposal", "kind": "PAYMENT", "cycle": "2026-10", "price": "41.59 EUR", "order_id": "pay:BILL:2026-10"}
+    hist.append_turn(engine, sid, "pay?", "You can pay it in the secure checkout below.", "VERIFIED",
+                     [{"label": "S1", "tool": "list_bills"}], [card])
+    hist.append_turn(engine, sid, "thanks", "You're welcome!", "CONVERSATIONAL", [])        # older/plain format
+    msgs = hist.get_session(engine, SUB, sid)["messages"]
+    assert msgs[1]["cards"] == [card] and msgs[1]["citations"][0]["label"] == "S1"
+    assert msgs[3]["cards"] == [] and msgs[3]["citations"] == []

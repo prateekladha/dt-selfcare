@@ -330,4 +330,5 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
         await asyncio.to_thread(persist)
     except Exception as e:  # noqa: BLE001
         log.warning("trace_persist_failed", error=str(e)[:200])
-    yield {"type": "done", "status": status, "answer": answer, "citations": citations, "trace": trace}
+    sent = list(cards.values()) if status in ("VERIFIED", "REPAIRED", "CONVERSATIONAL") else []
+    yield {"type": "done", "status": status, "answer": answer, "citations": citations, "cards": sent, "trace": trace}

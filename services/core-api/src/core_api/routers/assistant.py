@@ -72,7 +72,7 @@ async def _events(p: Principal, body: AskIn):
     async for ev in run_stream(body.question, ctx, llm, engine, body.lang, history):
         if ev["type"] == "done" and ev.get("answer"):
             await asyncio.to_thread(hist.append_turn, engine, sid, body.question, ev["answer"], ev["status"],
-                                    ev.get("citations", []))
+                                    ev.get("citations", []), ev.get("cards", []))
             ev["session_id"] = sid
             yield ev
             if is_new:
