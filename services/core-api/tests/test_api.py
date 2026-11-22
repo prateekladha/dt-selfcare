@@ -181,7 +181,7 @@ def test_home_snapshot_bills_explanation_and_pdf(env):
     add_usage(state, SUB, datetime(2026, 10, 10, tzinfo=UTC), [(UsageType.DATA, None, 2_000 * MB),
                                                                (UsageType.ROAMING_DATA, "Z2", 500 * MB)])
     add_usage(state, SUB, datetime.now(UTC), [(UsageType.DATA, None, 2_600 * MB)])
-    assert issue(engine, state, "2026-09", settle_before="2026-10") == {"created": N_DEMO, "skipped_existing": 0}
+    assert issue(engine, state, "2026-09", settle_before="2026-10") == {"created": N_DEMO, "skipped_existing": 0, "failed": 0}
     assert issue(engine, state, "2026-10")["created"] == N_DEMO
     assert issue(engine, state, "2026-10")["skipped_existing"] == N_DEMO  # bill run is idempotent
 
@@ -541,3 +541,19 @@ def test_advance_is_charged_only_for_usage_not_already_paid(env):
     assert first["amount"] == due["amount"] and after["already_paid"] == first["amount"] and after["amount"] == 0
     again = client.post("/v1/me/payments", json={"purpose": "ADVANCE"}, headers=h | {"Idempotency-Key": "adv-2-000001"})
     assert again.status_code == 409   # used to charge the full month-to-date amount a second time
+
+
+def test_a_month_is_billed_on_the_tariff_in_force_then_not_todays(env):
+    """A switch on the 1st before the bill run used to re-price the closed month on the new tariff."""
+    from datetime import UTC, datetime
+
+    from core_api.db import plan_changes
+    from core_api.services.bills import plan_at
+    from sqlalchemy import insert
+    _client, engine, _state, _gw = env
+    with engine.begin() as cx:
+        cx.execute(insert(plan_changes).values(order_id="o-1", subscriber_id=SUB, from_plan="DE-FLEX", to_plan="DE-M",
+                                               effective_at=datetime(2026, 11, 1, 0, 30, tzinfo=UTC)))
+    assert plan_at(engine, SUB, datetime(2026, 11, 1, tzinfo=UTC), "DE-M") == "DE-FLEX"   # October: FLEX
+    assert plan_at(engine, SUB, datetime(2026, 12, 1, tzinfo=UTC), "DE-M") == "DE-M"      # November: M
+    assert plan_at(engine, "4915100000004", datetime(2026, 11, 1, tzinfo=UTC), "DE-S") == "DE-S"   # no history

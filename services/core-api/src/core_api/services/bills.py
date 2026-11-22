@@ -70,60 +70,93 @@ def close_cycle(engine: Engine, state: UsageState, cycle: str, settle_before: st
     with engine.connect() as cx:
         subs = cx.execute(select(subscribers.c.id, subscribers.c.plan_code)).all()
     prev = previous_cycle(cycle)
+    failed: list[str] = []
     for sub_id, plan_code in subs:
-        plan = get_plan(plan_code)
-        counters = state.counters(sub_id, cycle)
-        with engine.begin() as cx:
-            if cx.execute(select(bills.c.id).where(bills.c.id == f"{sub_id}:{cycle}")).first():
-                skipped += 1
-                continue
-            # Late usage: CDRs for the previous cycle that arrived after its bill was issued
-            adjustments: list[BillLine] = []
-            prev_row = cx.execute(select(bills).where(bills.c.id == f"{sub_id}:{prev}")).first()
-            late_counters = None
-            if prev_row is not None and prev_row.rated_counters:
-                billed = {k: int(v) for k, v in json.loads(prev_row.rated_counters).items()}
-                now_prev = state.counters(sub_id, prev)
-                if now_prev != billed:
-                    pseg = segments(engine, sub_id, prev, plan_code)
-                    delta = (rate(sub_id, prev, plan, now_prev, segments=pseg).subtotal
-                             - rate(sub_id, prev, plan, billed, segments=pseg).subtotal)
-                    if delta:
-                        y, m = map(int, prev.split("-"))
-                        adjustments.append(BillLine(
-                            code=f"ADJ:{prev}", category=LineCategory.ADJUSTMENT, quantity=1, unit="adjustment",
-                            label=f"Late usage from {datetime(y, m, 1).strftime('%B %Y')} (CDRs received after that bill)",
-                            amount=delta))
-                    late_counters = now_prev
-            bill = rate_cycle(state, sub_id, cycle, plan_code, counters, segments(engine, sub_id, cycle, plan_code),
-                              adjustments)
-            # Advance payments: every PAID advance up to the end of this cycle that no bill has credited yet. Keyed
-            # by payment (bill_payments), so one that settled late (PENDING at bill run) is credited by the next run
-            # instead of being lost, and none is ever credited twice.
-            adv = cx.execute(select(payments.c.id, payments.c.amount).where(
-                payments.c.subscriber_id == sub_id, payments.c.purpose == "ADVANCE", payments.c.status == "PAID",
-                payments.c.created_at < end, payments.c.id.not_in(select(bill_payments.c.payment_id)))).all()
-            paid = min(sum(int(a.amount) for a in adv), bill.total)
-            if settle_before is not None and cycle < settle_before:
-                paid = bill.total  # historical import: earlier invoices settled by direct debit
-            try:
-                cx.execute(insert(bills).values(
-                    id=f"{sub_id}:{cycle}", subscriber_id=sub_id, cycle=cycle, plan_code=bill.plan_code,
-                    currency=bill.currency, subtotal=bill.subtotal, vat=bill.vat, total=bill.total,
-                    amount_paid=paid, status="PAID" if paid >= bill.total else "ISSUED",
-                    issued_at=issued_at, due_date=issued_at + timedelta(days=due_days),
-                    payload=bill.model_dump_json(), rated_counters=json.dumps(counters)))
-                for a in adv:   # mark the advances as credited to this bill
-                    cx.execute(insert(bill_payments).values(payment_id=a.id, bill_id=f"{sub_id}:{cycle}", amount=int(a.amount)))
-                if late_counters is not None:  # the adjustment now accounts for those late CDRs
-                    cx.execute(update(bills).where(bills.c.id == prev_row.id).values(rated_counters=json.dumps(late_counters)))
-                created += 1
-                from .home_cache import bump_default
+        try:
+            res = _close_one(engine, state, cycle, sub_id, plan_code, prev, end, issued_at, settle_before, due_days)
+        except Exception as e:  # noqa: BLE001 - one customer's bad data must not stop everyone else's bill
+            import structlog
+            structlog.get_logger("bill-run").error("bill_failed", subscriber=sub_id[-4:], error=str(e)[:200])
+            failed.append(sub_id)
+            continue
+        created += res == "created"
+        skipped += res == "skipped"
+    return {"created": created, "skipped_existing": skipped, "failed": len(failed)}
 
-                bump_default(sub_id)
-            except IntegrityError:
-                skipped += 1
-    return {"created": created, "skipped_existing": skipped}
+
+def plan_at(engine: Engine, sub_id: str, when, current: str) -> str:
+    """The tariff in force at `when` (from the tariff history): bills and late-usage adjustments are priced on
+    the tariff of THAT month, not today's (a switch on the 1st before the bill run re-priced the closed month)."""
+    from ..db import plan_changes
+
+    with engine.connect() as cx:
+        before = cx.execute(select(plan_changes.c.to_plan).where(
+            plan_changes.c.subscriber_id == sub_id, plan_changes.c.effective_at < when)
+            .order_by(plan_changes.c.effective_at.desc())).first()
+        if before:
+            return before.to_plan
+        after = cx.execute(select(plan_changes.c.from_plan).where(
+            plan_changes.c.subscriber_id == sub_id, plan_changes.c.effective_at >= when)
+            .order_by(plan_changes.c.effective_at)).first()
+    return after.from_plan if after else current
+
+
+def _close_one(engine: Engine, state: UsageState, cycle: str, sub_id: str, current_plan: str, prev: str, end,
+               issued_at, settle_before: str | None, due_days: int) -> str:
+    bill_id = f"{sub_id}:{cycle}"
+    plan_code = plan_at(engine, sub_id, end, current_plan)
+    counters = state.counters(sub_id, cycle)
+    with engine.begin() as cx:
+        if cx.execute(select(bills.c.id).where(bills.c.id == bill_id)).first():
+            return "skipped"
+        # Late usage: CDRs for the previous cycle that arrived after its bill was issued
+        adjustments: list[BillLine] = []
+        prev_row = cx.execute(select(bills).where(bills.c.id == f"{sub_id}:{prev}")).first()
+        late_counters = None
+        if prev_row is not None and prev_row.rated_counters:
+            billed = {k: int(v) for k, v in json.loads(prev_row.rated_counters).items()}
+            now_prev = state.counters(sub_id, prev)
+            if now_prev != billed:
+                prev_plan_code = plan_at(engine, sub_id, cycle_bounds(prev)[1], current_plan)
+                prev_plan = get_plan(prev_plan_code)
+                pseg = segments(engine, sub_id, prev, prev_plan_code)
+                delta = (rate(sub_id, prev, prev_plan, now_prev, segments=pseg).subtotal
+                         - rate(sub_id, prev, prev_plan, billed, segments=pseg).subtotal)
+                if delta:
+                    y, m = map(int, prev.split("-"))
+                    adjustments.append(BillLine(
+                        code=f"ADJ:{prev}", category=LineCategory.ADJUSTMENT, quantity=1, unit="adjustment",
+                        label=f"Late usage from {datetime(y, m, 1).strftime('%B %Y')} (records received after that bill)",
+                        amount=delta))
+                late_counters = now_prev
+        bill = rate_cycle(state, sub_id, cycle, plan_code, counters, segments(engine, sub_id, cycle, plan_code),
+                          adjustments)
+        # Advance payments: every PAID advance up to the end of this cycle that no bill has credited yet. Keyed
+        # by payment (bill_payments), so one that settled late (PENDING at bill run) is credited by the next run
+        # instead of being lost, and none is ever credited twice.
+        adv = cx.execute(select(payments.c.id, payments.c.amount).where(
+            payments.c.subscriber_id == sub_id, payments.c.purpose == "ADVANCE", payments.c.status == "PAID",
+            payments.c.created_at < end, payments.c.id.not_in(select(bill_payments.c.payment_id)))).all()
+        paid = min(sum(int(a.amount) for a in adv), bill.total)
+        if settle_before is not None and cycle < settle_before:
+            paid = bill.total  # historical import: earlier invoices settled by direct debit
+        try:
+            cx.execute(insert(bills).values(
+                id=bill_id, subscriber_id=sub_id, cycle=cycle, plan_code=bill.plan_code,
+                currency=bill.currency, subtotal=bill.subtotal, vat=bill.vat, total=bill.total,
+                amount_paid=paid, status="PAID" if paid >= bill.total else "ISSUED",
+                issued_at=issued_at, due_date=issued_at + timedelta(days=due_days),
+                payload=bill.model_dump_json(), rated_counters=json.dumps(counters)))
+            for a in adv:   # mark the advances as credited to this bill
+                cx.execute(insert(bill_payments).values(payment_id=a.id, bill_id=bill_id, amount=int(a.amount)))
+            if late_counters is not None:  # the adjustment now accounts for those late CDRs
+                cx.execute(update(bills).where(bills.c.id == prev_row.id).values(rated_counters=json.dumps(late_counters)))
+        except IntegrityError:
+            return "skipped"
+    from .home_cache import bump_default
+
+    bump_default(sub_id)
+    return "created"
 
 
 def bill_summary(row) -> dict:

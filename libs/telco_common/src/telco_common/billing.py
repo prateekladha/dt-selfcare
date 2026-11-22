@@ -77,6 +77,12 @@ def _money(x: Decimal) -> int:
     return int(x.quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
 
+def _zone(plan, zone: str):
+    """Rates for a roaming zone. An unknown zone (should be quarantined at ingest) is priced as the plan's most
+    expensive zone instead of raising: a KeyError here used to stop the whole bill run."""
+    return plan.roaming.get(zone) or max(plan.roaming.values(), key=lambda z: z.data_per_mb)
+
+
 def _ceil_div(a: int, b: int) -> int:
     return -(-a // b) if a > 0 else 0
 
@@ -184,7 +190,7 @@ def rate(subscriber_id: str, cycle: str, plan: Plan, counters: dict[str, int],
         roaming_data_mb[zone] = mb
         lines.append(BillLine(code=f"ROAMING_DATA:{zone}", category=LineCategory.ROAMING,
                               label=f"Roaming data, zone {zone}", quantity=mb, unit="MB",
-                              amount=_money(plan.roaming[zone].data_per_mb * mb)))
+                              amount=_money(_zone(plan, zone).data_per_mb * mb)))
     for zone, s in sorted(roam_voice.items()):
         if zone == ROAM_LIKE_AT_HOME_ZONE or s <= 0:
             continue
@@ -192,7 +198,7 @@ def rate(subscriber_id: str, cycle: str, plan: Plan, counters: dict[str, int],
         roaming_voice_min[zone] = m
         lines.append(BillLine(code=f"ROAMING_VOICE:{zone}", category=LineCategory.ROAMING,
                               label=f"Roaming calls, zone {zone}", quantity=m, unit="min",
-                              amount=_money(plan.roaming[zone].voice_per_min * m)))
+                              amount=_money(_zone(plan, zone).voice_per_min * m)))
 
     # incoming calls: free at home; charged per zone when roaming outside the EU
     roam_mt = zoned.get(UsageType.ROAMING_VOICE_MT, {})
@@ -204,7 +210,7 @@ def rate(subscriber_id: str, cycle: str, plan: Plan, counters: dict[str, int],
             continue
         lines.append(BillLine(code=f"ROAMING_VOICE_MT:{zone}", category=LineCategory.ROAMING,
                               label=f"Incoming calls while roaming, zone {zone}", quantity=m, unit="min",
-                              amount=_money(plan.roaming[zone].voice_mt_per_min * m)))
+                              amount=_money(_zone(plan, zone).voice_mt_per_min * m)))
     rates = MESSAGE_RATES[plan.country]
     mms = plain.get(UsageType.MMS, 0)
     if mms:
