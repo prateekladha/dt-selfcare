@@ -4,20 +4,24 @@ Re-reads the subscriber's raw CDRs from the Object Storage archive (written by r
 the stream, independently of the real-time aggregator), re-sums them per usage key, and reconciles
 the result against (a) the Valkey running totals and (b) the issued bill. Any mismatch is shown.
 
-Demo-scale implementation: scans the archive objects of the subscriber's stream partition (the
-archive is laid out raw/<topic>/dt=<day>/p=<partition>/<offsets>.jsonl.gz). In production this
-query runs on the lakehouse (e.g. ADW external tables over the same objects) by subscriber + cycle.
+Demo-scale implementation: reads the archive objects of the subscriber's stream partition (the
+archive is laid out raw/<topic>/dt=<day>/p=<partition>/<offsets>.jsonl.gz), using a per-object
+customer index so only the subscriber's own objects are downloaded. In production this query runs
+on the lakehouse (e.g. ADW external tables over the same objects) by subscriber + cycle.
 """
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import os
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from functools import lru_cache
 
+from sqlalchemy import select
 from telco_common.catalog import MB, get_addon
 from telco_common.codec import iter_json_lines
 from telco_common.models import cycle_of
@@ -53,31 +57,83 @@ def _key(rec: dict) -> list[tuple[str, int]]:
     return [((f"{t}:{rec['roaming_zone']}" if rec.get("roaming_zone") else t), int(rec["quantity"]))]
 
 
-def _scan(subscriber_id: str, cycle: str, partitions: int) -> dict:
+INDEX_TTL_S = 35 * 24 * 3600
+_listing: dict[int, tuple[float, list[str]]] = {}
+_known: tuple[float, frozenset[str]] = (0.0, frozenset())
+
+
+def _partition_objects(part: int) -> list[str]:
+    """Archive object names of one stream partition (cached 30 s; a list call returns 1,000 names)."""
+    hit = _listing.get(part)
+    if hit and time.monotonic() - hit[0] < 30:
+        return hit[1]
     client, ns = _client()
-    part = partition_for(subscriber_id, partitions)
     names, start = [], None
     while True:
-        resp = client.list_objects(ns, BUCKET, prefix=f"raw/{TOPIC}/", start=start, fields="name,size")
+        resp = client.list_objects(ns, BUCKET, prefix=f"raw/{TOPIC}/", start=start, fields="name")
         names += [o.name for o in resp.data.objects if f"/p={part}/" in o.name]
         start = resp.data.next_start_with
         if not start:
             break
+    _listing[part] = (time.monotonic(), names)
+    return names
 
-    def read(name: str) -> list[dict]:
-        body = client.get_object(ns, BUCKET, name).data.content
-        text = gzip.decompress(body).decode()
+
+def _customers() -> frozenset[str]:
+    """Provisioned customers (the only subscribers anyone can ask evidence for). Cached 5 min."""
+    global _known
+    if time.monotonic() - _known[0] > 300:
+        from ..db import get_engine, subscribers
+
+        with get_engine().connect() as cx:
+            _known = (time.monotonic(), frozenset(r[0] for r in cx.execute(select(subscribers.c.id))))
+    return _known[1]
+
+
+def subscriber_records(state: UsageState, subscriber_id: str) -> dict:
+    """All archived CDRs of one subscriber (every cycle), deduped by record_id.
+
+    Archive objects are immutable (named by offset range), so each one is read at most once to learn
+    which customers it contains; that index lives in Valkey (`evidx:{p}:<customer-set hash>`, 35 days).
+    After that a scan only downloads the subscriber's own objects instead of the whole partition, so
+    the cost grows with the customer's own history, not with the archive (load tests, other customers).
+    The index is a superset (substring match), records are then filtered exactly by subscriber_id.
+    """
+    client, ns = _client()
+    part = partition_for(subscriber_id, state.partitions)
+    names = _partition_objects(part)
+    customers = _customers() | {subscriber_id}
+    fp = hashlib.sha1(",".join(sorted(customers)).encode()).hexdigest()[:10]
+    idx = f"evidx:{{p{part}}}:{fp}"
+    known = state.r.hmget(idx, names) if names else []
+    todo = [(n, v is None) for n, v in zip(names, known) if v is None or subscriber_id in v.decode().split()]
+
+    def read(item: tuple[str, bool]) -> tuple[str, str | None, list[dict]]:
+        name, unindexed = item
+        text = gzip.decompress(client.get_object(ns, BUCKET, name).data.content).decode()
+        present = " ".join(sorted(c for c in customers if c in text)) if unindexed else None
         if subscriber_id not in text:  # cheap pre-filter before JSON parsing
-            return []
-        return [r | {"_object": name} for r in iter_json_lines(text)
-                if r["subscriber_id"] == subscriber_id and cycle_of(datetime.fromisoformat(r["event_time"])) == cycle]
+            return name, present, []
+        return name, present, [r | {"_object": name} for r in iter_json_lines(text) if r["subscriber_id"] == subscriber_id]
 
     seen: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        for recs in pool.map(read, names):
+    learned: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        for name, present, recs in pool.map(read, todo):
+            if present is not None:
+                learned[name] = present
             for r in recs:
                 seen.setdefault(r["record_id"], r)  # archive is at-least-once: dedupe by record_id
-    return {"partition": part, "objects_scanned": len(names), "records": list(seen.values())}
+    if learned:
+        state.r.hset(idx, mapping=learned)
+        state.r.expire(idx, INDEX_TTL_S)
+    return {"partition": part, "objects_scanned": len(names), "objects_read": len(todo), "records": list(seen.values())}
+
+
+def _scan(subscriber_id: str, cycle: str, state: UsageState) -> dict:
+    out = subscriber_records(state, subscriber_id)
+    out["records"] = [r for r in out["records"] if cycle_of(datetime.fromisoformat(r["event_time"])) == cycle]
+    return out
 
 
 def cdr_evidence(state: UsageState, subscriber_id: str, cycle: str, sample_per_key: int = 4) -> dict:
@@ -85,8 +141,14 @@ def cdr_evidence(state: UsageState, subscriber_id: str, cycle: str, sample_per_k
     cached = state.r.get(cache_key)
     if cached:
         return json.loads(cached)
+    # single flight: concurrent requests for the same evidence (several tabs/devices) wait for the first
+    if not state.r.set(f"{cache_key}:lock", 1, nx=True, ex=60):
+        for _ in range(90):
+            time.sleep(0.5)
+            if cached := state.r.get(cache_key):
+                return json.loads(cached)
 
-    scan = _scan(subscriber_id, cycle, state.partitions)
+    scan = _scan(subscriber_id, cycle, state)
     recs = scan["records"]
     sums: dict[str, int] = defaultdict(int)
     counts: dict[str, int] = defaultdict(int)
@@ -118,4 +180,5 @@ def cdr_evidence(state: UsageState, subscriber_id: str, cycle: str, sample_per_k
     }
     is_current = cycle == cycle_of(datetime.now().astimezone())
     state.r.set(cache_key, json.dumps(out), ex=60 if is_current else 900)
+    state.r.delete(f"{cache_key}:lock")
     return out

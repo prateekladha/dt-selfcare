@@ -132,9 +132,12 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
       </header>
       <main className="mx-auto max-w-[1200px] px-5 py-8" onClick={() => menu !== "none" && setMenu("none")}>
         {loaderData.stale && (
-          <div role="status" className="mb-5 rounded-[var(--radius)] border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-4 py-3 text-[14px]">
-            <strong>Showing your account as of {new Date(loaderData.home.as_of).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}.</strong>{" "}
-            Live updates are delayed right now; your usage and bills are safe and this page refreshes automatically when we're back.
+          // sticky under the header: while the page shows saved data, the notice stays in view when scrolling
+          <div className="sticky top-16 z-40 -mx-5 mb-5 bg-[var(--bg)] px-5 pt-3">
+            <div role="status" className="rounded-[var(--radius)] border border-[var(--warn)]/40 bg-[var(--warn-bg)] px-4 py-3 text-[14px]">
+              <strong>Showing your account as of {new Date(loaderData.home.as_of).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}.</strong>{" "}
+              Live updates are delayed right now; your usage and bills are safe and this page refreshes automatically when we're back.
+            </div>
           </div>
         )}
         <Outlet />
