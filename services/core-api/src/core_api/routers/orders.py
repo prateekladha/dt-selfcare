@@ -91,14 +91,20 @@ async def approve(order_id: str, p: Principal = Depends(current_principal)) -> d
     except OrderError as e:
         raise HTTPException(e.status, e.message) from e
     previous = row.status
-    set_status(get_engine(), order_id, "APPROVED", "Approved: processing")
+    if previous != "APPROVED" and not set_status(get_engine(), order_id, "APPROVED", "Approved: processing",
+                                                  expect=("PROPOSED", "DECLINED")):
+        return public(get(get_engine(), p.subscriber_id, order_id))   # someone else changed it meanwhile
     try:
+        from temporalio.common import WorkflowIDReusePolicy
+
         wf = PlanChangeWorkflow.run if row.kind == "PLAN" else AddonPurchaseWorkflow.run
-        await (await temporal()).start_workflow(wf, order_id, id=order_id, task_queue=TASK_QUEUE)
+        await (await temporal()).start_workflow(wf, order_id, id=order_id, task_queue=TASK_QUEUE,
+                                                id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY)
     except WorkflowAlreadyStartedError:
         pass
     except Exception as e:  # workflow service unavailable: undo, so the order isn't "processing" forever
-        set_status(get_engine(), order_id, previous, "Not processed yet: please approve again in a moment")
+        set_status(get_engine(), order_id, previous, "Not processed yet: please approve again in a moment",
+                   expect=("APPROVED",))
         raise HTTPException(503, "We couldn't start your order right now. Nothing was charged; please try again.") from e
     return public(get(get_engine(), p.subscriber_id, order_id))
 
@@ -108,8 +114,8 @@ def decline(order_id: str, p: Principal = Depends(current_principal)) -> dict:
     row = get(get_engine(), p.subscriber_id, order_id)
     if row is None:
         raise HTTPException(404, "order not found")
-    if row.status == "PROPOSED":
-        set_status(get_engine(), order_id, "DECLINED", "Declined by the customer")
+    if row.status == "PROPOSED":   # only from PROPOSED, atomically: an approval that won the race stands
+        set_status(get_engine(), order_id, "DECLINED", "Declined by the customer", expect=("PROPOSED",))
     return public(get(get_engine(), p.subscriber_id, order_id))
 
 

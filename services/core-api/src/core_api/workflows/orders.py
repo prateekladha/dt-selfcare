@@ -124,15 +124,23 @@ def propose_plan_change(engine: Engine, subscriber_id: str, plan_code: str, sour
                                       "old_data": gb(cur_plan.data_mb), "currency": cur, "plan": cur_plan.name}}
 
 
-def set_status(engine: Engine, order_id: str, status: str, detail: str | None = None, **extra) -> None:
+def set_status(engine: Engine, order_id: str, status: str, detail: str | None = None,
+               expect: tuple[str, ...] | None = None, **extra) -> bool:
+    """-> True if changed. `expect`: compare-and-set, the change only happens from one of these statuses (approve
+    and decline arriving at the same moment can't both win; a late write can't undo a completed order)."""
     values = {"status": status, "updated_at": utcnow(), **extra}
     if detail is not None:
         values["detail"] = detail[:500]
     with engine.begin() as cx:
-        cx.execute(update(orders).where(orders.c.id == order_id).values(**values))
+        q = update(orders).where(orders.c.id == order_id)
+        if expect:
+            q = q.where(orders.c.status.in_(expect))
+        if cx.execute(q.values(**values)).rowcount == 0:
+            return False
         row = cx.execute(select(orders).where(orders.c.id == order_id)).first()
         if row is not None:
             _event(cx, row)
+    return True
 
 
 def get(engine: Engine, subscriber_id: str, order_id: str):
