@@ -4,10 +4,11 @@ Pure: the caller gathers everything into an `InvoiceContext` (bill, previous bil
 this module only lays it out. No network, no clock: the same context always renders the same bytes
 (reportlab invariant mode), so a re-download matches the invoice the customer saw on bill day.
 
-Text uses an EMBEDDED TrueType font (Bitstream Vera, shipped inside reportlab), so every viewer draws exactly
-the glyphs and widths laid out here. The standard Helvetica is not embedded: viewers substitute their own
-font, and its "€" overlapped the following digit. Characters the font lacks (e.g. some Polish letters) are
-transliterated; PLN amounts are written with the ISO code.
+Text uses an EMBEDDED TrueType font (DejaVu Sans, bundled in core_api/assets/fonts with its licence), so every
+viewer draws exactly the glyphs and widths laid out here. The standard Helvetica is not embedded: viewers
+substituted their own font and its "€" overlapped the following digit. DejaVu covers Latin Extended-A, so Polish
+names and addresses print correctly (ą ę ń ś ź ż ł); anything still missing is transliterated. PLN amounts are
+written with the ISO code.
 """
 from __future__ import annotations
 
@@ -65,6 +66,22 @@ class PaymentEntry:
 
 
 @dataclass(frozen=True)
+class Seller:
+    name: str
+    address: str
+    vat_id: str
+
+
+# The seller block a VAT invoice needs (§14 UStG / Polish VAT act): name, address, VAT ID. Fictional demo operator
+# per market: no real company, address, registration or trademark. Production: from the operator's configuration.
+DEMO_SELLERS = {
+    "DE": Seller("Self-care Mobile GmbH (demo operator)", "Beispielstraße 1, 10115 Berlin, Germany", "DE000000000 (demo)"),
+    "PL": Seller("Self-care Mobile sp. z o.o. (demo operator)", "ul. Przykładowa 1, 00-001 Warszawa, Poland",
+                 "PL0000000000 (demo)"),
+}
+
+
+@dataclass(frozen=True)
 class InvoiceContext:
     bill: Bill
     invoice_number: str
@@ -77,6 +94,11 @@ class InvoiceContext:
     email: str | None = None
     previous_bill: Bill | None = None
     payments: list[PaymentEntry] = field(default_factory=list)
+    seller: Seller | None = None
+
+    @property
+    def seller_info(self) -> Seller:
+        return self.seller or DEMO_SELLERS.get(self.country) or DEMO_SELLERS["DE"]
 
     @property
     def outstanding(self) -> int:
@@ -99,9 +121,14 @@ def _register_fonts() -> tuple[str, str]:
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
 
-    d = os.path.join(os.path.dirname(reportlab.__file__), "fonts")
-    pdfmetrics.registerFont(TTFont("BillSans", os.path.join(d, "Vera.ttf")))
-    pdfmetrics.registerFont(TTFont("BillSans-Bold", os.path.join(d, "VeraBd.ttf")))
+    bundled = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts")
+    if os.path.exists(os.path.join(bundled, "DejaVuSans.ttf")):
+        regular, bold = os.path.join(bundled, "DejaVuSans.ttf"), os.path.join(bundled, "DejaVuSans-Bold.ttf")
+    else:   # fallback: the Vera font inside reportlab (no Polish ą ę ń ś ź ż; those are transliterated)
+        d = os.path.join(os.path.dirname(reportlab.__file__), "fonts")
+        regular, bold = os.path.join(d, "Vera.ttf"), os.path.join(d, "VeraBd.ttf")
+    pdfmetrics.registerFont(TTFont("BillSans", regular))
+    pdfmetrics.registerFont(TTFont("BillSans-Bold", bold))
     pdfmetrics.registerFontFamily("BillSans", normal="BillSans", bold="BillSans-Bold", italic="BillSans", boldItalic="BillSans-Bold")
     return "BillSans", "BillSans-Bold"
 
@@ -228,7 +255,9 @@ def _h2(text: str, st) -> Paragraph:
 def _header(ctx: InvoiceContext, st) -> list:
     start, end = period_of(ctx.bill.cycle)
     status, status_colour = status_of(ctx)
-    left = [Paragraph("Self-care", st["brand"]), Paragraph("Mobile services", st["small"])]
+    seller = ctx.seller_info
+    left = [Paragraph("Self-care", st["brand"]), Paragraph("Mobile services", st["small"]), Spacer(1, 4),
+            Paragraph(f"{_x(seller.name)}<br/>{_x(seller.address)}<br/>VAT ID {_x(seller.vat_id)}", st["small"])]
     right = [Paragraph("Invoice", st["title"]),
              Paragraph(f"No. {_x(ctx.invoice_number)}", ParagraphStyle("r", parent=st["small"], alignment=TA_RIGHT))]
     top = Table([[left, right]], colWidths=[CONTENT_W * 0.5, CONTENT_W * 0.5])

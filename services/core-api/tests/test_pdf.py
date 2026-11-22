@@ -54,7 +54,7 @@ def test_polish_bill_without_previous_bill_or_payments():
     pdf = render_bill_pdf(ctx_for(bill, name="Zofia Now\u0105k-\u0141ukasz", country="PL", email=None),
                           compress=False)
     text = check_pdf(pdf)
-    for s in [f"{PL_SUB}:2026-10", "Zofia Nowak-Łukasz", "+48 600 000 001", "Poland", "VAT 23%", "PLN",
+    for s in [f"{PL_SUB}:2026-10", "Zofia Nowąk-Łukasz", "+48 600 000 001", "Poland", "VAT 23%", "PLN",
               "Roaming data, zone Z3", "International calls", "No payments yet", "first invoice", "Due",
               "Page 1 of", "Amounts in PLN"]:
         assert s in text, s
@@ -126,3 +126,12 @@ def test_font_is_embedded_so_viewers_draw_the_euro_sign_exactly_as_laid_out():
     pdf = render_bill_pdf(ctx_for(rate(DE_SUB, "2026-10", plan, {"DATA": 500 * MB})), compress=False)
     assert b"/FontFile2" in pdf and b"/Helvetica" not in pdf
     assert re.search(r"€\d", text_of(pdf))
+
+
+
+def test_polish_letters_print_as_written():
+    """Vera lacked ą ę ń ś ź ż ('Wiśniewska' printed as 'Wisniewska'): the bundled DejaVu covers them."""
+    plan = get_plan("PL-FLEX")
+    pdf = render_bill_pdf(ctx_for(rate(PL_SUB, "2026-10", plan, {"DATA": 100 * MB}), name="Zażółć Gęślą Jaźń Wiśniewska",
+                                  country="PL", email=None), compress=False)
+    assert "Zażółć Gęślą Jaźń Wiśniewska" in text_of(pdf)
