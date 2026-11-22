@@ -21,8 +21,10 @@ type BillDetail = { id: string; cycle: string; total: number; subtotal: number; 
 const GROUPS: [string, string][] = [["PLAN", "Plan"], ["ADDON", "Add-ons"], ["OVERAGE", "Beyond your allowance"], ["ROAMING", "Roaming"], ["INTERNATIONAL", "International"]];
 
 export async function loader({ request, params }: Route.LoaderArgs) {
-  const lang = new URL(request.url).searchParams.get("lang") ?? "en";
+  const asked = new URL(request.url).searchParams.get("lang") ?? "en";
+  const lang = ["en", "de", "pl"].includes(asked) ? asked : "en";
   const cycle = params.cycle;
+  if (!/^(\d{4}-(0[1-9]|1[0-2])|current)$/.test(cycle)) throw new Response("Not found", { status: 404 });  // never forwarded raw into an API path
   const [facts, bill] = await Promise.all([
     api<ExplanationResponse>(request, `/v1/me/bills/${cycle}/explanation?ai=false`),
     cycle === "current" ? Promise.resolve(null) : api<BillDetail>(request, `/v1/me/bills/${cycle}`),

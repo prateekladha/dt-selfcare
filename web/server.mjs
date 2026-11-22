@@ -23,6 +23,21 @@ app.use((_, res, next) => {
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Strict-Transport-Security", "max-age=31536000");
   res.setHeader("X-App-Version", VERSION);
+  // no script-src yet (SSR inline hydration scripts would need nonces); these directives can't break anything
+  res.setHeader("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
+  next();
+});
+// CSRF guard for state-changing JSON/resource routes. React Router checks Origin only for its own
+// actions, not resource routes, and SameSite=Lax alone trusts every "same-site" host (any *.sslip.io).
+// A browser always sends Sec-Fetch-Site and/or Origin on a POST; a cross-site one is refused.
+app.use((req, res, next) => {
+  if (req.method === "GET" || req.method === "HEAD" || !(req.path.startsWith("/api/") || req.path === "/logout")) return next();
+  const site = req.get("sec-fetch-site");
+  const origin = req.get("origin");
+  const host = req.get("x-forwarded-host") ?? req.get("host");
+  let crossOrigin = site !== undefined && site !== "same-origin";
+  if (!crossOrigin && origin) { try { crossOrigin = new URL(origin).host !== host; } catch { crossOrigin = true; } }
+  if (crossOrigin) return res.status(403).json({ detail: "cross-site request refused" });
   next();
 });
 app.get("/version", (_, res) => res.set("Cache-Control", "no-store").json({ version: VERSION }));

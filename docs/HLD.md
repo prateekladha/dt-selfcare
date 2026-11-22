@@ -326,7 +326,10 @@ Measured: **14,721 records/s sustained on one 1-OCPU node**, 0 retries or duplic
 
 ## 9. Security and privacy
 - **Auth:** argon2id hashes, JWT (15 min) kept in an httpOnly, SameSite=Lax, Secure cookie by the web tier, never readable by page JS. Every customer route derives the subscriber from the token (`/v1/me/...`), so there's no IDOR by construction. Login is rate-limited (10 per 15 min per number).
-- **CSRF:** React Router origin check on form actions (Express `trust proxy` so the https origin is seen correctly).
+- **CSRF:** React Router origin check on form actions (Express `trust proxy` so the https origin is seen correctly), plus an Express guard that refuses any non-GET `/api/*` or `/logout` request whose `Sec-Fetch-Site`/`Origin` is not same-origin (SameSite=Lax alone would trust every `*.sslip.io` host). Logout is POST-only. CSP `frame-ancestors 'none'; base-uri 'self'; object-src 'none'` (a `script-src` needs nonces for the SSR hydration scripts: next step).
+- **Abuse and cost limits per customer:** 20 fresh (uncached) AI explanations a day, so one customer can't use up the shared daily LLM budget; 30 CDR evidence re-scans an hour; every `/bills/{cycle}` path is validated as a month before any work is done.
+- **Payments ledger:** a second tab paying the same bill gets the open order (a bill can't be paid twice); `amount_paid` is incremented atomically in SQL.
+- **Known gaps, production next steps:** the web pod shares the JWT signing secret (give the BFF its own cookie secret, move to RS256 with only core-api signing); no NetworkPolicies (flannel doesn't enforce them: Calico or OCI VCN-native CNI, then default-deny); order-adapter trusts the cluster network (service token or mTLS); login is limited per account, not per IP; the System page shows cluster-wide aggregates to every customer (admin-only in production).
 - **Edge:** only `web` and `/v1/webhooks/razorpay` are public. Collector, Valkey, flagd and the rest of core-api are cluster-internal. HSTS, nosniff, frame-deny headers.
 - **Secrets:** OCI Vault → External Secrets via instance principal. Third-party keys are added by a script with hidden input and never touch Terraform state.
 - **Data minimisation for AI:** facts only, no name, number or email; outputs verified.

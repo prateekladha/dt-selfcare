@@ -129,6 +129,16 @@ def test_structured_explanation_single_call_verified_and_cached(world):
     assert again["trace"]["cache"].startswith("hit")
 
 
+def test_one_customer_cannot_use_up_the_shared_ai_budget(world):
+    from core_api.agent import explain_llm
+
+    engine, r, _state = world
+    cur, prev = row_to_bill(get_bill_row(engine, SUB, "2026-10")), row_to_bill(get_bill_row(engine, SUB, "2026-09"))
+    r.set(f"rl:ai:{SUB}", explain_llm.AI_CALLS_PER_SUBSCRIBER_DAY)  # this customer's fresh explanations for today
+    out = explain_bill(scripted_llm(r, []), r, cur, prev)  # no LLM call may happen
+    assert out["status"] == "BUDGET" and out["explanation"] is None
+
+
 
 def test_greeting_is_a_single_conversational_answer_without_repairs(world):
     engine, r, state = world

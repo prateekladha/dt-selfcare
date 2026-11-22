@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const PASSWORD = process.env.E2E_PASSWORD ?? "";
-const SHOTS = "e2e-results/screens";
+const SHOTS = "e2e-screens";   // outside outputDir: each playwright run clears e2e-results
 
 async function noHorizontalScroll(page: Page) {
   const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);

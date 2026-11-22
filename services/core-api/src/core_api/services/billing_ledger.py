@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import case, insert, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
@@ -22,10 +22,12 @@ def apply_payment_event(engine: Engine, event: dict) -> bool:
         with engine.begin() as cx:
             cx.execute(insert(bill_payments).values(payment_id=event["payment_id"], bill_id=event["bill_id"],
                                                     amount=int(event["amount"])))
-            bill = cx.execute(select(bills).where(bills.c.id == event["bill_id"])).one()
-            paid = bill.amount_paid + int(event["amount"])
-            cx.execute(update(bills).where(bills.c.id == bill.id).values(
-                amount_paid=paid, status="PAID" if paid >= bill.total else "ISSUED"))
+            amount = int(event["amount"])
+            # atomic increment (no read-modify-write): two payments settling at once can't lose a credit
+            cx.execute(update(bills).where(bills.c.id == event["bill_id"]).values(
+                amount_paid=bills.c.amount_paid + amount,
+                status=case((bills.c.amount_paid + amount >= bills.c.total, "PAID"), else_="ISSUED")))
+            bill = cx.execute(select(bills.c.subscriber_id).where(bills.c.id == event["bill_id"])).one()
         from .home_cache import bump_default
 
         bump_default(bill.subscriber_id)
