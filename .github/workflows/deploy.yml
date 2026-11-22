@@ -63,7 +63,8 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
   deploy:
-    if: vars.DEPLOY_ENABLED == 'true'
+    # prod only from main (manual dispatches included) and only while deploys are enabled
+    if: vars.DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main'
     needs: images
     runs-on: ubuntu-24.04
     environment: production
@@ -116,7 +117,8 @@ jobs:
                --query 'data."secret-bundle-content".content' --raw-output | base64 -d)
           echo "::add-mask::$PW"
           E2E_PASSWORD="$PW" E2E_BASE_URL="https://$DOMAIN" npx playwright test --grep-invert "@payment|@outage"
-          echo "PW_B64=$(printf %s "$PW" | base64 -w0)" >> "$GITHUB_ENV"
+          PW_B64=$(printf %s "$PW" | base64 -w0); echo "::add-mask::$PW_B64"   # masked in later steps' env dumps
+          echo "PW_B64=$PW_B64" >> "$GITHUB_ENV"
       - name: e2e payment checkout (real Razorpay test gateway, up to the customer's card entry)
         working-directory: web
         run: |

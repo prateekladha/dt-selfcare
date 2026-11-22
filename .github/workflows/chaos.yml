@@ -18,6 +18,7 @@ env:
 
 jobs:
   outage:
+    if: github.ref == 'refs/heads/main'   # runs against prod: only from main
     runs-on: ubuntu-24.04
     environment: production
     steps:

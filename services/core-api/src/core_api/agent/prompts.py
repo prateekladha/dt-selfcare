@@ -43,7 +43,11 @@ def defaults() -> dict[str, str]:
 
 def seed_cli() -> None:
     """Runs on every deploy (Helm hook). Never fails a deploy: without Langfuse the repo default is used anyway."""
-    lf = _client()
+    try:
+        lf = _client()
+    except Exception as e:  # noqa: BLE001 - even a broken client config must not fail the deploy
+        print(f"prompt-seed: Langfuse client unavailable ({type(e).__name__}); prompts unchanged")
+        return
     if lf is None:
         print("prompt-seed: Langfuse keys not set; the repo defaults are used directly")
         return

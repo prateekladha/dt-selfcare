@@ -256,7 +256,8 @@ def cli() -> None:
         import time
 
         st, last, quiet = get_usage_state(), None, 0
-        while quiet < a.wait_quiet_seconds:
+        give_up = time.monotonic() + 30 * 60   # continuous ingest never goes quiet: bill anyway after 30 min
+        while quiet < a.wait_quiet_seconds and time.monotonic() < give_up:
             snap = [st.committed_offset(p) for p in range(st.partitions)]
             quiet = quiet + 5 if snap == last else 0
             last = snap
