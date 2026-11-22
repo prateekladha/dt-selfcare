@@ -58,6 +58,15 @@ def create_payment(engine: Engine, gw: PaymentGateway, subscriber_id: str, idem_
                                   **({"key_id": gw.key_id} if hasattr(gw, "key_id") else {})})
     if amount <= 0:
         raise PaymentError(409, "nothing to pay")
+    if bill_id:  # a second tab/device paying the same bill gets the open order, so the bill can't be paid twice
+        with engine.connect() as cx:
+            open_ = cx.execute(select(payments).where(
+                payments.c.subscriber_id == subscriber_id, payments.c.bill_id == bill_id,
+                payments.c.amount == amount, payments.c.status.in_(("CREATED", "PENDING")))
+                .order_by(payments.c.created_at.desc())).first()
+        if open_:
+            return _public(open_, {"provider": open_.gateway, "order_id": open_.gateway_order_id,
+                                   **({"key_id": gw.key_id} if hasattr(gw, "key_id") else {})})
     pid = str(uuid.uuid4())
     charged, charged_cur, fx = settlement(amount, currency, settle or {})
     order = gw.create_order(charged, charged_cur, receipt=pid, notes={

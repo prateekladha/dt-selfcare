@@ -76,6 +76,9 @@ def _items_problems(out: dict, sources: dict[str, str]) -> list[str]:
     return problems
 
 
+AI_CALLS_PER_SUBSCRIBER_DAY = 20  # fresh (uncached) explanations per customer per day
+
+
 def explain_bill(llm: LLM, r, cur: Bill, prev: Bill | None, lang: str = "en") -> dict:
     lang = lang if lang in LANGS else "en"
     sources = build_sources(cur, prev)
@@ -99,6 +102,13 @@ def explain_bill(llm: LLM, r, cur: Bill, prev: Bill | None, lang: str = "en") ->
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     status, out = "UNVERIFIED", {}
     try:
+        # per-customer share of the global daily LLM budget: one customer (e.g. scripted what-if uploads,
+        # each a new cache key) can't use up the stage cap for everyone else. Cache hits don't count.
+        n = r.incr(f"rl:ai:{cur.subscriber_id}")
+        if n == 1:
+            r.expire(f"rl:ai:{cur.subscriber_id}", 86400)
+        if n > AI_CALLS_PER_SUBSCRIBER_DAY:
+            raise BudgetExceeded(f"daily AI limit for this customer ({AI_CALLS_PER_SUBSCRIBER_DAY})")
         for attempt in range(3):
             res = llm.chat("explain" if attempt == 0 else "repair", messages, json_mode=True)
             trace["stages"].append(res.as_trace())

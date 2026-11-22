@@ -12,4 +12,5 @@ export async function action({ request }: Route.ActionArgs) {
   }
   return redirect("/login", { headers: { "Set-Cookie": await sessions.destroySession(session) } });
 }
-export const loader = action;
+// GET /logout just goes to the login page: a link or <img> on another site can't sign the customer out
+export const loader = () => redirect("/");
