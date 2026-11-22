@@ -253,3 +253,21 @@ def test_failed_answers_are_not_fed_back_as_conversation_context(world):
     hist.append_turn(engine, sid, "What is the due date?", "I couldn't put together an answer I can verify.", "UNVERIFIED", [])
     hist.append_turn(engine, sid, "Why higher?", "Roaming in zone Z2 [S1].", "VERIFIED", [])
     assert [t["q"] for t in hist.recent_turns(engine, sid)] == ["Why higher?"]
+
+
+def test_answer_pointing_to_a_checkout_that_was_never_prepared_is_repaired(world):
+    """Prod: 'Please finish the payment in the secure checkout below' with no propose_payment call, so no
+    Pay card was shown. Now that is a verification problem and the repair prepares the payment."""
+    engine, r, state = world
+    llm = scripted_llm(r, [
+        ("tools", [("list_bills", {"months": 3})]),
+        ("text", "Yes, pay the October bill first [S1]. Please finish the payment in the secure checkout below."),
+        ("tools", [("propose_payment", {"purpose": "bill"})]),
+        ("text", "Yes, pay the October bill first [S1]. Pay it in the secure checkout below [S2]."),
+    ])
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
+    events = collect(run_stream("should I pay the bill first?", ctx, llm, engine))
+    done = events[-1]
+    assert "nothing was prepared" in done["trace"]["attempts"][0]["problems"][-1]
+    assert [e["kind"] for e in events if e["type"] == "proposal"] == ["PAYMENT"]
+    assert done["status"] == "REPAIRED"

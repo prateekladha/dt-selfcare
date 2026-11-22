@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -78,6 +79,8 @@ def _label(tool: str, args: dict) -> str:
 
 
 SESSION_TURNS, SESSION_TTL_S = 6, 24 * 3600
+# "...in the secure checkout below" / "approve it below" (not "you'll pay 10 EUR, below last month")
+POINTS_BELOW = re.compile(r"\b(checkout|approve|approval|card)\b[^.\n]{0,60}\bbelow\b|\bbelow\b[^.\n]{0,30}\b(checkout|card)\b", re.IGNORECASE)
 
 
 def load_history(r, sub: str, sid: str) -> list[dict]:
@@ -110,7 +113,7 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
         messages += [{"role": "user", "content": h["q"]}, {"role": "assistant", "content": h["a"]}]
     messages.append({"role": "user", "content": f"Today is {today}. Reply in {'German' if lang == 'de' else 'Polish' if lang == 'pl' else 'English'}.\n\n{question}"})
     answer, status = "", "UNVERIFIED"
-    st = {"calls": 0, "answer": ""}
+    st = {"calls": 0, "answer": "", "proposed": False}
 
     async def tool_loop(stream_tokens: bool):
         """LLM turns with tools until the model answers in text; the answer lands in st["answer"]."""
@@ -143,6 +146,7 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                     out = await asyncio.to_thread(broker.request, c["name"], c["arguments"] or "{}", ctx)
                     yield {"type": "step_done", "tool": c["name"], "ok": out.decision != "DENY" and "error" not in out.result}
                     if out.decision == "PROPOSE" and out.result.get("proposal"):  # human-in-the-loop approval card
+                        st["proposed"] = True
                         r_ = out.result
                         if r_.get("payment"):
                             yield {"type": "proposal", "kind": "PAYMENT", "purpose": r_["purpose"], "bill_id": r_["bill_id"],
@@ -172,6 +176,10 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                 # a "repair" that verifies only because it dropped every fact (e.g. "I don't have your
                 # details") is not an answer to the customer's question
                 problems = ["the rewrite dropped the facts the customer asked for; look them up with the tools and state them with citations"]
+            if not st["proposed"] and POINTS_BELOW.search(answer):
+                # the answer sends the customer to a checkout/approval card that was never prepared
+                problems.append("you told the customer to pay or approve below, but nothing was prepared: call "
+                                "propose_payment (or propose_addon / propose_plan_change) first, or don't mention it")
             trace["attempts"].append({"attempt": attempt + 1, "verified": not problems, "problems": problems[:6]})
             if not problems:
                 status = ("VERIFIED" if attempt == 0 else "REPAIRED") if broker.sources else "CONVERSATIONAL"
