@@ -45,6 +45,8 @@ def setup(monkeypatch, archive_records, applied_records):
     objects = {f"raw/usage-events/dt=2026-11-21/p={p}/0-9.jsonl.gz": body + dup,
                f"raw/usage-events/dt=2026-11-21/p={other}/0-9.jsonl.gz": gzip.compress(b"")}
     monkeypatch.setattr(evidence, "_client", lambda: (FakeOS(objects), "ns"))
+    monkeypatch.setattr(evidence, "_customers", lambda: frozenset({SUB}))
+    evidence._listing.clear()
     state = UsageState(fakeredis.FakeRedis(), 4)
     state.apply(p, 0, "m0", applied_records, [50, 80, 100])
     return state
@@ -65,6 +67,34 @@ def test_mismatch_between_archive_and_counters_is_visible(monkeypatch):
     assert not ev["all_match"]
     voice = next(r for r in ev["reconciliation"] if r["key"] == "VOICE")
     assert voice["from_cdrs"] == 95 and voice["valkey_counter"] == 0
+
+
+def test_index_means_later_scans_only_read_the_subscribers_objects(monkeypatch):
+    p = partition_for(SUB, 4)
+    mine, other = encode_records(recs()), encode_records([r.model_copy(update={"subscriber_id": "4915100000777"})
+                                                          for r in recs()])
+    objects = {f"raw/usage-events/dt=2026-11-21/p={p}/0-9.jsonl.gz": mine,
+               f"raw/usage-events/dt=2026-11-21/p={p}/10-19.jsonl.gz": other}
+    fake = FakeOS(objects)
+    reads: list[str] = []
+    get = fake.get_object
+    fake.get_object = lambda ns, b, name: (reads.append(name), get(ns, b, name))[1]
+    monkeypatch.setattr(evidence, "_client", lambda: (fake, "ns"))
+    monkeypatch.setattr(evidence, "_customers", lambda: frozenset({SUB}))
+    evidence._listing.clear()
+    state = UsageState(fakeredis.FakeRedis(), 4)
+    first = evidence.subscriber_records(state, SUB)
+    assert first["objects_read"] == 2 and len(first["records"]) == 4
+    reads.clear()
+    again = evidence.subscriber_records(state, SUB)
+    assert reads == [f"raw/usage-events/dt=2026-11-21/p={p}/0-9.jsonl.gz"] and len(again["records"]) == 4
+
+
+def test_concurrent_requests_wait_for_the_first_scan(monkeypatch):
+    state = setup(monkeypatch, recs(), recs())
+    state.r.set(f"ev:{SUB}:2026-10:lock", 1, ex=60)  # another request is scanning right now
+    monkeypatch.setattr(evidence.time, "sleep", lambda s: state.r.set(f"ev:{SUB}:2026-10", json.dumps({"from": "first"})))
+    assert evidence.cdr_evidence(state, SUB, "2026-10") == {"from": "first"}
 
 
 def test_citations_must_reference_real_sources():
