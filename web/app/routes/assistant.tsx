@@ -28,11 +28,27 @@ const TOOL_TITLES: Record<string, (a: Record<string, unknown>) => string> = {
 function month(c: unknown) {
   return typeof c === "string" && /^\d{4}-\d{2}$/.test(c) ? new Date(`${c}-01T00:00:00Z`).toLocaleString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" }) : "";
 }
+/** One readable line per value: lists of records (bills, payments) become "October 2026: 41.59 EUR, overdue";
+ *  nested objects become "key value" pairs. Never "[object Object]". */
+function show(v: unknown): string {
+  if (v === null || v === undefined) return "-";
+  if (Array.isArray(v)) return v.slice(0, 4).map(show).join("; ") + (v.length > 4 ? ` (+${v.length - 4} more)` : "");
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    const head = o.month ?? o.cycle ?? o.date ?? o.paid_at ?? o.label ?? o.title;
+    const amount = o.total ?? o.amount ?? o.price;
+    const status = o.payment_status ?? o.status;
+    if (head !== undefined && (amount !== undefined || status !== undefined))
+      return `${head}: ${[amount, status].filter((x) => x !== undefined).map(String).join(", ")}`;
+    return Object.entries(o).slice(0, 4).map(([k, x]) => `${k.replace(/_/g, " ")} ${typeof x === "object" ? show(x) : x}`).join(", ");
+  }
+  return String(v);
+}
 function detailOf(body: string) {
   try {
     const o = JSON.parse(body.replace(/…"\(truncated\)"$/, "}"));
     delete o.source_label; delete o.source;
-    return Object.entries(o).slice(0, 6).map(([k, v]) => `${k.replace(/_/g, " ")}: ${Array.isArray(v) ? v.slice(0, 4).join("; ") : typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ");
+    return Object.entries(o).slice(0, 6).map(([k, v]) => `${k.replace(/_/g, " ")}: ${show(v)}`).join(" · ");
   } catch { return body.slice(0, 300); }
 }
 

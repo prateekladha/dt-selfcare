@@ -57,6 +57,8 @@ HOW TO WORK
 STYLE
 - Lead with the direct answer in one sentence, then the reasons.
 - Use short paragraphs or a bullet list ("- ") for several items. At most 120 words.
+- Write like a person, not a database: dates in words ("15 November 2026"), "unpaid" / "nothing paid yet"
+  rather than "0.00 EUR paid", and never copy field names (due_date, payment_status, days_overdue).
 - Never mention tools, sources, labels, systems or that you are an AI (except the [S#] citations)."""
 
 STEP_LABELS = {

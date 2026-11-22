@@ -216,7 +216,8 @@ def test_answer_from_chat_history_is_repaired_by_looking_the_fact_up_not_dropped
     the old tool-less repair invented [S1], then replied "I don't have the bill details" and that
     replaced the correct answer. Now the repair may call tools, and fact-dropping rewrites are rejected."""
     engine, r, state = world
-    due = get_bill_row(engine, SUB, "2026-10").due_date.date().isoformat()
+    d = get_bill_row(engine, SUB, "2026-10").due_date.date()
+    due = f"{d.day} {d:%B %Y}"
     llm = scripted_llm(r, [
         ("text", "Your October bill was due on 15 November 2026."),                 # from history, no tools
         ("text", "I don't have the bill details in front of me right now."),       # repair 1: drops the facts
@@ -241,9 +242,12 @@ def test_bill_tools_return_day_counts_so_the_model_never_does_date_maths(world):
 
     from core_api.agent.tools import _due
     now = datetime.now(UTC)
-    assert _due(now - timedelta(days=7), 41, 0) == {"due": (now - timedelta(days=7)).date().isoformat(), "days_overdue": 7}
+    week_ago = (now - timedelta(days=7)).date()
+    assert _due(now - timedelta(days=7), 41, 0) == {"due_date": f"{week_ago.day} {week_ago:%B %Y}",   # in words
+                                                    "payment_status": "overdue", "days_overdue": 7}
     assert _due(now + timedelta(days=3), 41, 0)["days_until_due"] == 3
-    assert "days_overdue" not in _due(now - timedelta(days=7), 41, 41)   # paid: no count
+    paid = _due(now - timedelta(days=7), 41, 41)
+    assert paid["payment_status"] == "paid" and "days_overdue" not in paid
 
 
 def test_failed_answers_are_not_fed_back_as_conversation_context(world):
