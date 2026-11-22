@@ -15,12 +15,18 @@ data:
         litellm_params:
           model: deepseek/deepseek-chat
           api_key: os.environ/DEEPSEEK_API_KEY
+          # a stalled stream (no token for 12 s; first token is normally 1-2 s) fails fast to a retry/fallback;
+          # with the 30 s router timeout one stuck upstream call made an assistant answer take 60 s
+          stream_timeout: 12
+          timeout: 20
           rpm: {{ .Values.llmGateway.primaryRpm }}
           tpm: {{ .Values.llmGateway.primaryTpm }}
       - model_name: billing-llm-fallback        # EU-hosted fallback
         litellm_params:
           model: mistral/mistral-small-latest
           api_key: os.environ/MISTRAL_API_KEY
+          stream_timeout: 12
+          timeout: 20
           rpm: {{ .Values.llmGateway.fallbackRpm }}
       - model_name: title-llm                   # nano model: chat titles
         litellm_params:
@@ -32,9 +38,9 @@ data:
           model: deepseek/deepseek-chat
           api_key: os.environ/DEEPSEEK_API_KEY
     router_settings:
-      num_retries: 2
+      num_retries: 1            # one quick retry, then the fallback model (not two more 30 s waits)
       retry_after: 1
-      timeout: 30
+      timeout: 20
       allowed_fails: 3          # failures before a deployment is cooled down
       cooldown_time: 30
       fallbacks: [{"billing-llm": ["billing-llm-fallback"]}, {"title-llm": ["title-llm-fallback"]}]
@@ -67,7 +73,8 @@ spec:
   template:
     metadata:
       labels: { app: llm-gateway }
-      annotations: { checksum/config: {{ toJson .Values.llmGateway | sha256sum }} }
+      # config/rev: bump when the model_list/router config above changes (the values checksum doesn't see it)
+      annotations: { checksum/config: {{ toJson .Values.llmGateway | sha256sum }}, config/rev: "2" }
     spec:
       enableServiceLinks: false
       securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
