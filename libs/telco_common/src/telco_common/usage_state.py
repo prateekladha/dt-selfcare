@@ -86,6 +86,12 @@ class UsageState:
         return {k.decode(): int(v) for k, v in self.r.hgetall(usage_key(p, subscriber_id, cycle)).items()
                 if not k.startswith(b"alert:")}
 
+    def message_applied(self, subscriber_id: str, msg_id: str) -> bool:
+        """True once the aggregator has applied this stream message (its seen-marker, written in the same
+        Lua call as the counters). Lets a producer wait for its own write: read-your-writes."""
+        p = partition_for(subscriber_id, self.partitions)
+        return bool(self.r.exists(f"seen:{slot_tag(p)}:{msg_id}"))
+
     def counters(self, subscriber_id: str, cycle: str) -> dict[str, int]:
         """Cycle totals (the per-day fields `<key>@DD` are excluded)."""
         return {k: v for k, v in self._raw(subscriber_id, cycle).items() if "@" not in k}

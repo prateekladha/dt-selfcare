@@ -118,6 +118,17 @@ async def bss_status(bss_order_id: str) -> str:
     return r.json()["state"]
 
 
+def _order_msg_id(order_id: str, subscriber_id: str) -> str:
+    """The stream message id the collector gives this order's record (source-scoped batch, one chunk)."""
+    from telco_common.codec import message_id
+    from telco_common.partitioning import partition_for
+
+    from ..settings import get_settings
+
+    src = "core-orders" if os.environ.get("APP_ORDER_SOURCE_TOKEN") else "emu-mediation-01"
+    return message_id(f"{src}:{src}:order:{order_id}", partition_for(subscriber_id, get_settings().stream_partitions), 0)
+
+
 async def _publish_record(order_id: str, rec: dict) -> str:
     async with httpx.AsyncClient(timeout=httpx.Timeout(connect=1.0, read=10.0, write=10.0, pool=1.0)) as c:
         # its own source + token when configured (Vault: order-source-token): the collector then accepts add-on
@@ -145,9 +156,26 @@ async def apply_addon(order_id: str, subscriber_id: str, addon_code: str) -> str
 
     with get_engine().connect() as cx:
         country = cx.execute(select(subscribers.c.country).where(subscribers.c.id == subscriber_id)).scalar_one()
-    return await _publish_record(order_id, {
+    status = await _publish_record(order_id, {
         "record_id": f"order-{order_id}", "subscriber_id": subscriber_id, "country": country,
         "kind": "PLAN_CHANGED", "addon_code": addon_code, "event_time": datetime.now(UTC).isoformat()})
+    # Read-your-writes: "active" must mean the allowance already includes it. Accepted by the collector is not
+    # enough - the record still travels stream -> aggregator -> meter, and for those seconds the app and the
+    # assistant showed the old allowance next to "add-on active". Wait for the aggregator's marker; if it
+    # doesn't come, fail so the activity retries (the republish is deduped).
+    import asyncio
+
+    from ..deps import get_usage_state
+    from ..services.home_cache import bump_default
+
+    state, msg = get_usage_state(), _order_msg_id(order_id, subscriber_id)
+    for _ in range(100):   # up to ~20 s, inside the 30 s activity timeout (normally well under a second)
+        if state.message_applied(subscriber_id, msg):
+            bump_default(subscriber_id)   # home shows the new allowance on the next load
+            return status
+        activity.heartbeat()
+        await asyncio.sleep(0.2)
+    raise RuntimeError("add-on accepted but not yet on the usage meter; retrying")
 
 
 @activity.defn
@@ -178,6 +206,9 @@ async def apply_plan(order_id: str, subscriber_id: str, plan_code: str) -> str:
     after = int(state.profile(subscriber_id).get("allowance_bytes", 0) or 0)
     if after > before:
         state.rearm_alerts(subscriber_id, cycle_of(datetime.now(UTC)))
+    from ..services.home_cache import bump_default
+
+    bump_default(subscriber_id)   # home shows the new plan at once, not after the order-events round trip
     return plan_code
 
 
