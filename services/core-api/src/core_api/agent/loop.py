@@ -45,15 +45,18 @@ GETTING THE FACTS RIGHT
   if you state a fact again, fetch it again in this turn.
 - Use only figures the tools returned, written as they were returned. Don't work out new numbers (days,
   differences, totals); the tools already give things like days_overdue and outstanding.
-- If something isn't in the tools, say so simply ("I don't have information on that") and offer what you can do.
-  Never describe fees, penalties, reminders, restrictions, deadlines or processes the tools didn't return
-  (e.g. what happens if a bill isn't paid): say you don't have those details and offer our care team.
+- The customer's own bills, due dates, days left or days overdue, usage and payments ARE known: answer them
+  straight from the tools ("There are no days left: it was due on 15 November and is now 7 days overdue").
+- Only for policy the tools don't cover (grace periods, late fees, reminders, service restrictions) say you
+  don't have those details and offer our care team. Never invent such rules, and never invent causes
+  ("that may explain it") that the tools don't state.
 - Never ask for permission to look something up, and never say you don't have the customer's details.
 - If they want more data or a different plan, check their usage first, then prepare it (propose_addon /
   propose_plan_change) and tell them to approve it below. It only happens after they approve; it's charged on
   the next bill.
 - If they want to pay, or a bill is overdue and paying is the next step, prepare it with propose_payment and
-  tell them they can pay in the secure checkout below. Never say something is paid, bought or changed.
+  say it's ready in the secure checkout below (don't ask whether they'd like it prepared). Never say something
+  is paid, bought or changed.
 
 HOW TO TALK
 - Answer exactly what was asked, first, in plain words. Usually 2 to 4 short sentences; a short list only when
@@ -255,17 +258,7 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                 # a "repair" that verifies only because it dropped every fact (e.g. "I don't have your
                 # details") is not an answer to the customer's question
                 problems = ["the rewrite dropped the facts the customer asked for; look them up with the tools and state them with citations"]
-            if not st["proposed"] and POINTS_BELOW.search(answer) and PAYMENT_WORDS.search(answer):
-                # the answer sends the customer to the payment checkout: prepare it in code, no extra LLM round
-                out = await asyncio.to_thread(broker.request, "propose_payment", '{"purpose": "bill"}', ctx)
-                r_ = out.result
-                if out.decision == "PROPOSE" and r_.get("proposal"):
-                    st["proposed"] = True
-                    st["calls"] += 1
-                    yield {"type": "proposal", "kind": "PAYMENT", "purpose": r_["purpose"], "bill_id": r_["bill_id"],
-                           "cycle": r_["cycle"], "price": r_["amount"], "overdue": r_.get("overdue", False),
-                           "order_id": f"pay:{r_['purpose']}:{r_['cycle']}", "add_on": "", "extra_data": ""}
-            if not st["proposed"] and POINTS_BELOW.search(answer):
+            if not st["proposed"] and POINTS_BELOW.search(answer) and not PAYMENT_WORDS.search(answer):
                 # the answer sends the customer to a checkout/approval card that was never prepared
                 problems.append("you told the customer to pay or approve below, but nothing was prepared: call "
                                 "propose_payment (or propose_addon / propose_plan_change) first, or don't mention it")
@@ -280,14 +273,25 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                          {"role": "user", "content": "Problems: " + "; ".join(problems[:6]) +
                           ". Answer the customer's question again in the same warm, plain style. Look up every fact you"
                           " state with the tools now (earlier answers in this chat are not sources) and use only figures"
-                          " from those tool results. Change only what is wrong. Don't ask the customer for permission and"
-                          " don't say you lack their details."}]
+                          " from those tool results; fetch only what this question needs. Change only what is wrong."
+                          " Don't ask the customer for permission and don't say you lack their details."}]
             async for ev in tool_loop(stream_tokens=False):  # the repair may call tools (steps are shown)
                 if ev["type"] != "token":
                     yield ev
             answer = st["answer"]
         if status in ("VERIFIED", "REPAIRED"):
             answer = attach_sources(answer, dict(broker.sources))
+            if not st["proposed"] and POINTS_BELOW.search(answer) and PAYMENT_WORDS.search(answer):
+                # the answer sends the customer to the payment checkout: prepare it in code, no extra LLM round
+                out = await asyncio.to_thread(broker.request, "propose_payment", '{"purpose": "bill"}', ctx)
+                r_ = out.result
+                if out.decision == "PROPOSE" and r_.get("proposal"):
+                    st["proposed"] = True
+                    st["calls"] += 1
+                    yield {"type": "proposal", "kind": "PAYMENT", "purpose": r_["purpose"], "bill_id": r_["bill_id"],
+                           "cycle": r_["cycle"], "price": r_["amount"], "overdue": r_.get("overdue", False),
+                           "order_id": f"pay:{r_['purpose']}:{r_['cycle']}", "add_on": "", "extra_data": ""}
+
     except BudgetExceeded as e:
         status, answer = "BUDGET", "I can't answer right now because today's assistant budget has been used. Please try again tomorrow."
         trace.setdefault("degraded", []).append(str(e))
