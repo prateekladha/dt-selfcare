@@ -68,6 +68,6 @@ jobs:
         with:
           name: outage-screens
           path: |
-            web/e2e-results/screens
+            web/e2e-screens
             web/e2e-results/**/test-failed-*.png
           retention-days: 14
