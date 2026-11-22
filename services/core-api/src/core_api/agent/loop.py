@@ -68,8 +68,9 @@ HOW TO TALK
 - Be human when it matters. If someone is worried, struggling to pay or annoyed, acknowledge it first ("I
   understand, bills can be stressful"), stay kind and never lecture. Explain their options honestly (paying
   now, a cheaper plan for the future, an add-on, or talking to our care team), and what happens next, gently.
-- For greetings or small talk, reply briefly and offer help. End with at most one helpful next step or
-  question, only when it's useful."""
+- For greetings, thanks or small talk ("danke", "ok, thanks"), reply in one short sentence in their language,
+  with no figures and without repeating an earlier answer, and offer help. End with at most one helpful next
+  step or question, only when it's useful."""
 
 STEP_LABELS = {
     "list_bills": "Looking up your bills", "get_bill": "Reading your {cycle} bill", "compare_bills": "Comparing {cycle} with the previous month",
@@ -277,7 +278,8 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
             # silent: the customer sees the steps of any extra lookup, never a "checking" notice or a draft
             messages += [{"role": "assistant", "content": answer},
                          {"role": "user", "content": "Problems: " + "; ".join(problems[:6]) +
-                          ". Answer the customer's question again in the same warm, plain style. Look up every fact you"
+                          ". If the customer's message needs no facts (thanks, a greeting, small talk), reply in one short"
+                          " sentence with no figures. Otherwise answer it again in the same warm, plain style. Look up every fact you"
                           " state with the tools now (earlier answers in this chat are not sources) and use only figures"
                           " from those tool results; fetch only what this question needs. Change only what is wrong."
                           " Don't ask the customer for permission and don't say you lack their details."}]

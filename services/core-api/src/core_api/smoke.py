@@ -77,6 +77,17 @@ def main() -> None:
     pay = httpx.post(f"{PAYMENTS}/v1/me/payments", headers=h | {"Idempotency-Key": "smoke-test-0001"}, timeout=30,
                     json={"purpose": "BILL", "bill_id": hj.get("outstanding", {}).get("bill_id")})
     check("payment order (Razorpay)", pay.status_code in (200, 201), f"{pay.status_code} {pay.text[:80]}")
+    # Event relay alive: payments reach bills and orders notify only through the outbox. A dead relay (e.g. a
+    # producer setting the broker rejects) left paid bills unpaid; the oldest unrelayed event must be fresh.
+    import time as _time
+    age = None
+    for _ in range(9):   # up to ~90 s: right after a rollout the new notifier first drains the backlog
+        db = c.get("/v1/system/overview", headers=h).json().get("database", {})
+        age = db.get("outbox_oldest_unpublished_s")
+        if age is None or age < 120:
+            break
+        _time.sleep(10)
+    check("event relay (outbox) alive", age is None or age < 120, f"oldest unrelayed event: {age}s")
     w = httpx.get(f"{WEB}/login", timeout=15)
     check("web SSR login page", w.status_code == 200 and "Sign in" in w.text and "Mobile number" in w.text)
 

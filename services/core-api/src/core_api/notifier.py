@@ -99,8 +99,14 @@ def notifications_table():
 def outbox_loop(stop: threading.Event) -> None:
     stream = StreamSettings()
     engine = get_engine()
-    # idempotent producer: retries can't duplicate or reorder events within a partition
-    p = Producer(stream.client_config() | {"acks": "all", "enable.idempotence": True})
+    # NOT enable.idempotence: OCI Streaming rejects idempotent producers (fatal at startup -> nothing was published
+    # and paid bills stayed unpaid until the reconciler sweep). Consumers dedupe (bill_payments key, alert/order ids).
+    def on_error(err) -> None:
+        log.error("outbox_producer_error", error=str(err)[:300], fatal=err.fatal())
+        if err.fatal():   # a dead producer must be loud: exit, so Kubernetes restarts the pod (crash loop is visible)
+            os._exit(1)
+
+    p = Producer(stream.client_config() | {"acks": "all", "error_cb": on_error})
     while not stop.is_set():
         try:
             with engine.connect() as cx:
