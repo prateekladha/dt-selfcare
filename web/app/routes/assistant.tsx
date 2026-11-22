@@ -64,8 +64,8 @@ function Answer({ t }: { t: Turn }) {
           : <p className="flex items-center gap-2 text-[14px] text-[var(--ink-3)]"><Loader2 size={15} className="animate-spin" /> Thinking…</p>}
         {!!t.proposals?.length && (
           <div className="mt-4 space-y-3">{t.proposals.map((p) => p.kind === "PAYMENT"
-            ? <PaymentCard key={p.order_id} purpose={p.purpose ?? "BILL"} billId={p.bill_id ?? null} cycleLabel={cycleLabel(p.cycle ?? "", home.subscriber.locale)}
-                           amount={p.price} overdue={!!p.overdue} name={home.subscriber.name} contact={`+${home.subscriber.id}`} email={home.subscriber.email} />
+            ? <PaymentCard key={p.order_id} purpose={p.purpose ?? "BILL"} cycle={p.cycle ?? ""} cycleLabel={cycleLabel(p.cycle ?? "", home.subscriber.locale)}
+                           amount={p.price} overdue={!!p.overdue} />
             : <OrderCard key={p.order_id} orderId={p.order_id} title={p.add_on} extra={p.extra_data} price={`${p.price} + VAT`} kind={p.kind === "PLAN" ? "PLAN" : "ADDON"} />)}</div>
         )}
         {t.repairing && <p className="mt-3 text-xs text-[var(--warn)]">Double-checking a number against your records…</p>}

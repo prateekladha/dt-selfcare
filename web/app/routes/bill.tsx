@@ -4,7 +4,7 @@ import { Await } from "react-router";
 import { DailyUsageChart, type DailyUsage } from "~/components/DailyUsageChart";
 import { Link } from "react-router";
 import { DeltaPill, ExplanationSection } from "~/components/Explain";
-import { PayButton } from "~/components/PayButton";
+import { PayLink } from "~/components/PayLink";
 import { Card, CardHeader, LinkButton, Pill } from "~/components/ui";
 import { api, streamed, PRIVATE } from "~/lib/api.server";
 import { cycleLabel, dateLabel, money } from "~/lib/format";
@@ -63,8 +63,8 @@ export default function BillPage({ loaderData }: Route.ComponentProps) {
             <p className="display tabular text-[44px] font-extrabold leading-none">{money(total, cur, loc)}</p>
             <p className="mt-1.5 text-[13px] text-[var(--ink-3)]">incl. {vatPct}% VAT</p>
             <div className="mt-4 flex flex-wrap gap-2 sm:justify-end">
-              {bill && bill.outstanding > 0 && home.features.payments && <PayButton purpose="BILL" billId={bill.id} label={`Pay ${money(bill.outstanding, cur, loc)}`} name={home.subscriber.name} contact={`+${home.subscriber.id}`} email={home.subscriber.email} />}
-              {isCurrent && home.features.payments && total > 0 && <PayButton purpose="ADVANCE" label="Pay in advance" name={home.subscriber.name} contact={`+${home.subscriber.id}`} email={home.subscriber.email} />}
+              {bill && bill.outstanding > 0 && home.features.payments && <PayLink purpose="BILL" cycle={bill.cycle} label={`Pay ${money(bill.outstanding, cur, loc)}`} />}
+              {isCurrent && home.features.payments && total > 0 && <PayLink purpose="ADVANCE" label="Pay in advance" />}
               {bill && <LinkButton to={`/bills/${cycle}/pdf`} variant="secondary" download><Download size={16} /> PDF</LinkButton>}
             </div>
           </div>
