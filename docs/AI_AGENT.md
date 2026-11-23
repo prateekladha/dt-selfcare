@@ -123,13 +123,13 @@ R5 beyond-allowance rule of the plan, R6 only real products and prices, R7 hones
 injection, R9 answer first), temperature 0, JSON with rule ids. Offline it votes (majority of 3 calls).
 
 **Calibrated against human labels.** `evaldata/judge_labels.jsonl` holds labelled answers (both classes, every rule
-with a negative example, 4 of them real production answers). `run-evals --calibrate` measures agreement (accuracy,
+with a negative example, 8 of them real production answers; all 32 reviewed by a person on 23 Nov). `run-evals --calibrate` measures agreement (accuracy,
 Cohen's kappa, recall of real breaks); the judge gates a deploy only while kappa >= 0.6, otherwise its scores are
 reported but ignored. The model behind `judge-llm` was picked this way (23 Nov): deepseek-chat kappa 0.93 on three
 runs, mistral-small 0.60-0.86 with rate-limit errors. Same family as the answering model, so self-preference is a
-known risk that the labels keep measuring. Known blind spot: add-on arithmetic (R7). The labels are seed labels
-written from the 22/23 Nov incidents and need a human review; growing them from reviewed production answers is
-the next step.
+known risk that the labels keep measuring. Every judge mistake seen on real answers became a rule clarification
+plus a labelled case (R7 arithmetic, R8 citation markers, R10 VAT); growing the set from reviewed production
+answers is the next step.
 
 **Gate** (deploy pipeline, last step): `kubectl exec deploy/core-api -- run-evals --gate --calibrate`. Thresholds:
 grounded >= 90%, required facts >= 80%, tool use >= 85%, judge pass >= 80% (lower on purpose: about one judge

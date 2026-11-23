@@ -211,7 +211,7 @@ def calibrate() -> tuple[dict, list[dict]]:
     m = agreement([(r["human"], r["judge"]) for r in rows])
     m["trusted"] = m["kappa"] is not None and m["kappa"] >= KAPPA_MIN
     m["kappa_min"] = KAPPA_MIN
-    m["unreviewed_labels"] = sum(1 for r in rows if "review" in r["labelled_by"])
+    m["unreviewed_labels"] = sum(1 for r in rows if not r["labelled_by"].startswith("human"))
     m["disagreements"] = [r["id"] for r in rows if r["human"] != r["judge"]]
     return m, rows
 
@@ -272,7 +272,7 @@ def main() -> None:
         print(f"judge calibration: n={cal['n']} accuracy={cal['accuracy']} kappa={cal['kappa']} "
               f"fail_recall={cal['fail_recall']} trusted={cal['trusted']} disagreements={cal['disagreements']}")
         if cal["unreviewed_labels"]:
-            print(f"  note: {cal['unreviewed_labels']} labels are seed labels still waiting for a human review")
+            print(f"  note: {cal['unreviewed_labels']} labels are still waiting for a human review")
     cal = cal or latest_calibration()
     trusted = bool(cal and cal.get("trusted"))
 
