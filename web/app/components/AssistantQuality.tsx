@@ -14,7 +14,7 @@ export type Quality = { window_days: number; judge_version: string; sample_rate:
 const RULES: Record<string, string> = {
   R1: "Tariff change applies today", R2: "Add-on billing", R3: "Proposed is not done", R4: "Overdue blocks orders",
   R5: "Beyond-allowance rule of the plan", R6: "Only real products and prices", R7: "Honest add-on effect",
-  R8: "No internals, resists injection", R9: "Answers the question first",
+  R8: "No internals, resists injection", R9: "Answers the question first", R10: "Money adds up, VAT clear",
 };
 
 const pct = (v: number | null | undefined) => (v == null ? "–" : `${Math.round(v * 100)}%`);

@@ -317,14 +317,14 @@ def test_figures_given_before_any_lookup_are_never_streamed(world):
     engine, r, state = world
     total = row_to_bill(get_bill_row(engine, SUB, "2026-10")).total
     llm = scripted_llm(r, [
-        ("text", "Your October bill is 41.59 EUR and it is overdue since 15 November 2026, please pay it soon."),
+        ("text", "Your October bill is 52.37 EUR and it is overdue since 15 November 2026, please pay it soon."),
         ("tools", [("get_bill", {"cycle": "2026-10"})]),
         ("text", f"Your October bill is {total / 100:.2f} EUR."),
     ])
     ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
-    events = collect(run_stream("what do I owe?", ctx, llm, engine, history=[{"q": "dues?", "a": "41.59 EUR"}]))
+    events = collect(run_stream("what do I owe?", ctx, llm, engine, history=[{"q": "dues?", "a": "52.37 EUR"}]))
     streamed = "".join(e["text"] for e in events if e["type"] == "token")
-    assert "41.59" not in streamed and events[-1]["status"] == "REPAIRED"
+    assert "52.37" not in streamed and events[-1]["status"] == "REPAIRED"
     assert f"{total / 100:.2f} EUR" in events[-1]["answer"]
 
 
@@ -451,7 +451,7 @@ def test_addon_proposal_states_its_real_effect_and_orders_tool_reports_status(wo
     pr = tools["propose_addon"].run({"addon_code": "DE-DATA-5GB"}, ctx)
     assert pr.get("proposal") and "effect" in pr and "card below" in pr["status"] and "checkout" not in json.dumps(pr)
     orders = tools["get_orders"].run({}, ctx)["orders"]
-    assert orders[0]["status"] == "waiting for the customer's approval" and "5 GB" in orders[0]["order"]
+    assert orders[0]["status"] == "prepared, not ordered: waiting for the customer's approval" and "5 GB" in orders[0]["order"]
 
 
 def test_number_check_is_locale_aware_and_does_not_confuse_9_99_with_999():
@@ -507,3 +507,66 @@ def test_answer_written_alongside_a_payment_card_is_kept(world):
     assert done["answer"].index("372 MB") < done["answer"].index("checkout below")   # the answer first
     assert [e["kind"] for e in events if e["type"] == "proposal"] == ["PAYMENT"]
     assert "".join(e["text"] for e in events if e["type"] == "token") == done["answer"]
+
+
+def test_one_open_offer_per_kind_and_expired_offers_are_not_waiting(world):
+    """Prod conversation 23 Nov: a 20 GB offer from an earlier chat stayed "waiting for approval" next to the one
+    the customer then bought, and the assistant kept bringing it up after "no more add-ons"."""
+    from core_api.agent.tools import TOOLS
+    from core_api.db import bills, orders
+    from core_api.workflows.orders import propose_addon, propose_plan_change
+    from sqlalchemy import select
+    engine, r, state = world
+    with engine.begin() as cx:
+        cx.execute(bills.update().values(status="PAID"))
+    first = propose_addon(engine, SUB, "DE-DATA-20GB", source="assistant")
+    plan = propose_plan_change(engine, SUB, "DE-M", source="app")
+    second = propose_addon(engine, SUB, "DE-DATA-20GB", source="assistant")
+    with engine.connect() as cx:
+        st = dict(cx.execute(select(orders.c.id, orders.c.status)).all())
+    assert st[first["order_id"]] == "EXPIRED" and st[second["order_id"]] == "PROPOSED"
+    assert st[plan["order_id"]] == "PROPOSED"                       # another kind is untouched
+    llm = scripted_llm(r, [])
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
+    listed = TOOLS["get_orders"].run({}, ctx)["orders"]
+    assert sum("waiting" in o["status"] for o in listed if "20 GB" in o["order"]) == 1
+    assert any(o["status"] == "offer expired" for o in listed)
+
+
+def test_money_is_labelled_with_vat_and_advances_are_not_charged_twice(world):
+    from core_api.agent.tools import TOOLS
+    from core_api.db import payments
+    engine, r, state = world
+    llm = scripted_llm(r, [])
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm)
+    cat = TOOLS["get_plans_and_addons"].run({}, ctx)
+    assert all(p["monthly_fee"].endswith("incl. VAT)") and "+ VAT" in p["monthly_fee"] for p in cat["plans"])
+    usage = TOOLS["get_current_usage"].run({}, ctx)
+    assert {"unbilled_lines_before_vat", "unbilled_subtotal_before_vat", "vat", "unbilled_total_incl_vat"} <= usage.keys()
+    full = TOOLS["propose_payment"].run({"purpose": "advance"}, ctx)
+    total = round(float(full["amount"].split()[0]) * 100)
+    with engine.begin() as cx:   # the customer pays part of the month in advance
+        cx.execute(payments.insert().values(id="adv-1", subscriber_id=SUB, purpose="ADVANCE", status="PAID",
+                                            amount=total - 500, currency="EUR", gateway="razorpay", idempotency_key="adv-1",
+                                            created_at=datetime.now(UTC)))
+    left = TOOLS["propose_payment"].run({"purpose": "advance"}, ctx)
+    assert left["amount"] == "5.00 EUR" and "already_paid_in_advance" in left
+    assert "advance_paid_this_month" in TOOLS["get_current_usage"].run({}, ctx)
+
+
+def test_migration_retires_open_offers_that_a_newer_order_replaced(world):
+    from datetime import timedelta
+
+    from core_api.db import _expire_superseded_offers, orders
+    from sqlalchemy import select
+    engine, _r, _s = world
+    t0 = datetime.now(UTC)
+    rows = [("old-offer", "ADDON", "PROPOSED", t0 - timedelta(hours=2)), ("bought", "ADDON", "COMPLETED", t0 - timedelta(hours=1)),
+            ("open-plan", "PLAN", "PROPOSED", t0 - timedelta(hours=3)), ("newest-offer", "ADDON", "PROPOSED", t0)]
+    with engine.begin() as cx:
+        for oid, kind, st, ts in rows:
+            cx.execute(orders.insert().values(id=oid, subscriber_id=SUB, kind=kind, addon_code="DE-DATA-20GB" if kind == "ADDON" else "DE-M",
+                                              price=1999, currency="EUR", status=st, source="assistant", created_at=ts, updated_at=ts))
+        _expire_superseded_offers(cx)
+        st = dict(cx.execute(select(orders.c.id, orders.c.status)).all())
+    assert st == {"old-offer": "EXPIRED", "bought": "COMPLETED", "open-plan": "PROPOSED", "newest-offer": "PROPOSED"}
