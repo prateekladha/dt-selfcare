@@ -15,7 +15,8 @@ import { useDegraded, useSnapshot } from "~/routes/_app";
 
 type Step = { label: string; done: boolean; ok?: boolean };
 type Proposal = { kind?: string; order_id: string; add_on: string; extra_data: string; price: string; purpose?: "BILL" | "ADVANCE"; bill_id?: string | null; cycle?: string; overdue?: boolean };
-type Turn = { q: string; text: string; steps: Step[]; proposals?: Proposal[]; status?: string; citations: ToolSource[]; trace?: AgentTrace; error?: string };
+type Turn = { q: string; text: string; steps: Step[]; proposals?: Proposal[]; status?: string; citations: ToolSource[]; trace?: AgentTrace; error?: string;
+  qAt?: string; aAt?: string };   // when the question was asked / the answer arrived (ISO, UTC)
 type ChatMeta = { id: string; title: string; updated_at: string; turns: number };
 
 const TOOL_TITLES: Record<string, (a: Record<string, unknown>) => string> = {
@@ -75,6 +76,18 @@ function suggestionsFor(path: string, lastMonth: string): string[] {
   return [`Why did my ${lastMonth} bill change?`, "Will my data last until the end of the month?", "Have I paid my latest bill?", "What would two weeks in the US cost me?"];
 }
 
+/** Times in the customer's own time zone: "14:05"; days as "Today" / "Yesterday" / "21 Nov" (+ year if not this year). */
+const clock = (iso?: string) => (iso ? new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "");
+function dayLabel(iso?: string): string {
+  if (!iso) return "";
+  const d = new Date(iso), now = new Date();
+  const start = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((start(now) - start(d)) / 86_400_000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Yesterday";
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", ...(d.getFullYear() !== now.getFullYear() && { year: "numeric" }) });
+}
+
 function Answer({ t }: { t: Turn }) {
   const { home } = useSnapshot();
   const cites = new CiteMap().scan(t.text);
@@ -105,13 +118,19 @@ function Answer({ t }: { t: Turn }) {
           <div className="mt-4 space-y-3">{t.proposals.map((p) => p.kind === "PAYMENT"
             ? <PaymentCard key={p.order_id} purpose={p.purpose ?? "BILL"} cycle={p.cycle ?? ""} cycleLabel={cycleLabel(p.cycle ?? "", home.subscriber.locale)}
                            amount={p.price} overdue={!!p.overdue} />
-            : <OrderCard key={p.order_id} orderId={p.order_id} title={p.add_on} extra={p.extra_data} price={`${p.price} + VAT`} kind={p.kind === "PLAN" ? "PLAN" : "ADDON"} />)}</div>
+            : <OrderCard key={p.order_id} orderId={p.order_id} title={p.add_on} extra={p.extra_data}
+                         price={/VAT/.test(p.price) ? p.price : `${p.price} + VAT`} kind={p.kind === "PLAN" ? "PLAN" : "ADDON"} />)}</div>
         )}
-        {ok && (   // only checked answers carry the badge; apologies and error messages don't need one
-          <p className="mt-3 flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
-            <ShieldCheck size={13} className="text-[var(--good)]" />
-            Checked against your records{items.length > 0 && <> · tap a number to see its source</>}
-          </p>
+        {(ok || t.aAt) && (
+          <div className="mt-3 flex items-start justify-between gap-3 text-xs text-[var(--ink-3)]">
+            {ok ? (   // only checked answers carry the badge; apologies and error messages don't need one
+              <p className="flex items-center gap-1.5">
+                <ShieldCheck size={13} className="shrink-0 text-[var(--good)]" />
+                <span>Checked against your records{items.length > 0 && <> · tap a number to see its source</>}</span>
+              </p>
+            ) : <span />}
+            {t.aAt && <time dateTime={t.aAt} className="tabular shrink-0">{clock(t.aAt)}</time>}
+          </div>
         )}
       </div>
       {t.status && items.length > 0 && (
@@ -184,8 +203,8 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     const s = await r.json();
     const t: Turn[] = [];
     for (const m of s.messages) {
-      if (m.role === "user") t.push({ q: m.content, text: "", steps: [], citations: [] });
-      else if (t.length) Object.assign(t[t.length - 1], { text: m.content, status: m.status ?? "VERIFIED", citations: m.citations ?? [], proposals: m.cards ?? [] });
+      if (m.role === "user") t.push({ q: m.content, text: "", steps: [], citations: [], qAt: m.at });
+      else if (t.length) Object.assign(t[t.length - 1], { text: m.content, status: m.status ?? "VERIFIED", citations: m.citations ?? [], proposals: m.cards ?? [], aAt: m.at });
     }
     follow.current = true;
     setTurns(t); setSessionId(id);
@@ -218,7 +237,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     if (window.matchMedia("(max-width: 767px)").matches) inputRef.current?.blur();   // phones: give the answer the screen
     follow.current = true;
     const patch = (fn: (t: Turn) => Turn) => setTurns((ts) => ts.map((t, i) => (i === ts.length - 1 ? fn(t) : t)));
-    setTurns((ts) => [...ts, { q: question, text: "", steps: [], citations: [] }]);
+    setTurns((ts) => [...ts, { q: question, text: "", steps: [], citations: [], qAt: new Date().toISOString() }]);
     try {
       const res = await fetch("/api/ask/stream", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question, lang: "en", session_id: sessionRef.current ?? undefined }) });
@@ -245,7 +264,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
           else if (ev.type === "proposal") patch((t) => ({ ...t, proposals: [...(t.proposals ?? []), ev] }));
           else if (ev.type === "replace") patch((t) => ({ ...t, text: ev.text }));
           else if (ev.type === "done") {   // the answer is complete: free the input now (the chat title may still follow)
-            patch((t) => ({ ...t, text: ev.answer, status: ev.status, citations: ev.citations ?? [], trace: ev.trace }));
+            patch((t) => ({ ...t, text: ev.answer, status: ev.status, citations: ev.citations ?? [], trace: ev.trace, aAt: new Date().toISOString() }));
             setBusy(false); busyRef.current = false; loadChats();
           }
         }
@@ -342,7 +361,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
                 <button type="button" onClick={() => { openChat(c.id); writeUrl(c.id); }} className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2.5 text-left">
                   <MessageSquare size={15} className="mt-0.5 shrink-0 text-[var(--ink-3)]" />
                   <span className="min-w-0"><span className="block truncate text-[13.5px] font-medium">{c.title}</span>
-                    <span className="block text-[11.5px] text-[var(--ink-3)]">{new Date(c.updated_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })} · {c.turns} {c.turns === 1 ? "question" : "questions"}</span></span>
+                    <span className="block text-[11.5px] text-[var(--ink-3)]">{dayLabel(c.updated_at)}, {clock(c.updated_at)} · {c.turns} {c.turns === 1 ? "question" : "questions"}</span></span>
                 </button>
                 <button type="button" onClick={() => removeChat(c.id)} aria-label={`Delete ${c.title}`} className="mr-1 rounded-md p-2 text-[var(--ink-3)] hover:bg-[var(--surface)] hover:text-[var(--bad)] md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100"><Trash2 size={14} /></button>
               </div>
@@ -364,7 +383,15 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
             )}
             {turns.map((t, i) => (
               <div key={i} className="space-y-2.5">
-                <div className="ml-auto w-fit max-w-[88%] rounded-2xl rounded-br-md bg-[var(--ink)] px-3.5 py-2 text-[14.5px] leading-relaxed text-[var(--surface)]">{t.q}</div>
+                {t.qAt && dayLabel(t.qAt) !== dayLabel(turns[i - 1]?.qAt) && (   // a day divider when the chat moves to another day
+                  <div className="flex items-center gap-3 text-[11.5px] font-semibold text-[var(--ink-3)]" role="separator">
+                    <span className="h-px flex-1 bg-[var(--line)]" /><span>{dayLabel(t.qAt)}</span><span className="h-px flex-1 bg-[var(--line)]" />
+                  </div>
+                )}
+                <div className="ml-auto w-fit max-w-[88%]">
+                  <div className="rounded-2xl rounded-br-md bg-[var(--ink)] px-3.5 py-2 text-[14.5px] leading-relaxed text-[var(--surface)]">{t.q}</div>
+                  {t.qAt && <time dateTime={t.qAt} className="tabular mt-1 block text-right text-[11px] text-[var(--ink-3)]">{clock(t.qAt)}</time>}
+                </div>
                 <div className="min-w-0 overflow-hidden rounded-[var(--radius)] border border-[var(--line)] bg-[var(--surface)]"><Answer t={t} /></div>
               </div>
             ))}

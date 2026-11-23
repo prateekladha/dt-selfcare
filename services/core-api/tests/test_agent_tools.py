@@ -570,3 +570,15 @@ def test_migration_retires_open_offers_that_a_newer_order_replaced(world):
         _expire_superseded_offers(cx)
         st = dict(cx.execute(select(orders.c.id, orders.c.status)).all())
     assert st == {"old-offer": "EXPIRED", "bought": "COMPLETED", "open-plan": "PROPOSED", "newest-offer": "PROPOSED"}
+
+
+def test_chat_history_has_utc_timestamps_for_chats_and_messages(world):
+    """The panel shows when each question was asked and answered; naive datetimes would be read as local time."""
+    from core_api.agent import history as hist
+    engine, _r, _s = world
+    sid, _ = hist.ensure_session(engine, SUB, None)
+    hist.append_turn(engine, sid, "How much data is left?", "About 50 MB [S1].", "VERIFIED", [], [])
+    s = hist.get_session(engine, SUB, sid)
+    assert [m["role"] for m in s["messages"]] == ["user", "assistant"]
+    assert all(m["at"].endswith("+00:00") for m in s["messages"])
+    assert hist.list_sessions(engine, SUB)[0]["updated_at"].endswith("+00:00")
