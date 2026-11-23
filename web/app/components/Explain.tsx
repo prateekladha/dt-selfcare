@@ -1,6 +1,6 @@
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { Await, Link } from "react-router";
-import { BrainCircuit, ChevronDown, Lightbulb, ShieldCheck, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
+import { BrainCircuit, ChevronDown, Lightbulb, Loader2, ShieldCheck, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
 import type { Explanation, ExplanationResponse, LlmItem, SourceDoc } from "~/lib/types";
 import { money } from "~/lib/format";
 import { AgentTraceView } from "./AgentTrace";
@@ -65,23 +65,35 @@ export function ExplanationSection({ data, lang, basePath, cycle, heading, showL
   // Switching language reloads ONLY this section: the other language is fetched from /api/explanation and
   // kept per language (switching back is instant), and ?lang= is written to the URL with the History API
   // so a reload keeps it. A route navigation would re-run every loader on the page and redraw it all.
-  const [cur, setCur] = useState(lang);
-  const [byLang, setByLang] = useState<Record<string, Promise<ExplanationResponse> | ExplanationResponse>>({ [lang]: data });
-  useEffect(() => { setCur(lang); setByLang({ [lang]: data }); }, [lang, cycle]);   // navigated to another bill / ?lang=
+  // While the new language loads, the current text STAYS (dimmed) instead of being swapped for a shorter
+  // skeleton: no layout jump. Hovering/focusing a tab starts the fetch early.
+  type Entry = Promise<ExplanationResponse> | ExplanationResponse;
+  const [cur, setCur] = useState(lang);          // the language whose text is on screen
+  const [want, setWant] = useState(lang);        // the tab the customer picked (loading until it's ready)
+  const wantRef = useRef(lang);
+  const [byLang, setByLang] = useState<Record<string, Entry>>({ [lang]: data });
+  const fetched = useRef<Record<string, Promise<ExplanationResponse>>>({});
+  useEffect(() => { setCur(lang); setWant(lang); wantRef.current = lang; fetched.current = {}; setByLang({ [lang]: data }); }, [lang, cycle]);   // navigated to another bill / ?lang=
   useEffect(() => { setByLang((m) => ({ ...m, [lang]: data })); }, [data]);          // revalidated
+  const load = (k: string) => {
+    if (!cycle || k in byLang || k in fetched.current) return fetched.current[k];
+    const p = fetch(`/api/explanation/${cycle}?lang=${k}`).then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status))))) as Promise<ExplanationResponse>;
+    fetched.current[k] = p;
+    // store the VALUE once resolved: <Await> renders a plain value at once (a fresh promise would suspend a tick)
+    p.then((v) => { setByLang((m) => ({ ...m, [k]: v })); if (wantRef.current === k) setCur(k); },
+           () => { setByLang((m) => ({ ...m, [k]: p })); if (wantRef.current === k) setCur(k); });   // <Await errorElement>
+    return p;
+  };
   const pick = (k: string) => {
-    if (k === cur) return;
-    if (!byLang[k] && cycle) {
-      const p = fetch(`/api/explanation/${cycle}?lang=${k}`).then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))));
-      p.catch(() => {});   // handled by <Await errorElement>
-      setByLang((m) => ({ ...m, [k]: p }));
-    }
-    setCur(k);
+    if (k === want) return;
+    setWant(k); wantRef.current = k;
+    if (k in byLang) setCur(k); else load(k);
     const u = new URL(window.location.href);
     u.searchParams.set("lang", k);
     window.history.replaceState(window.history.state, "", u);
   };
   const shown = byLang[cur] ?? data;
+  const pending = want !== cur;
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -89,8 +101,8 @@ export function ExplanationSection({ data, lang, basePath, cycle, heading, showL
         {showLanguages && (
           <div className="flex rounded-lg bg-[var(--chip)] p-0.5" role="tablist" aria-label="Language">
             {LANGS.map(([k, l]) => cycle ? (
-              <button key={k} type="button" onClick={() => pick(k)} role="tab" aria-selected={cur === k}
-                      className={`rounded-md px-3 py-1.5 text-xs font-semibold ${cur === k ? "bg-[var(--surface)] text-[var(--ink)] shadow-sm" : "text-[var(--ink-3)] hover:text-[var(--ink)]"}`}>{l}</button>
+              <button key={k} type="button" onClick={() => pick(k)} onPointerEnter={() => load(k)} onFocus={() => load(k)} role="tab" aria-selected={want === k}
+                      className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-semibold ${want === k ? "bg-[var(--surface)] text-[var(--ink)] shadow-sm" : "text-[var(--ink-3)] hover:text-[var(--ink)]"}`}>{pending && want === k && <Loader2 size={11} className="animate-spin" />}{l}</button>
             ) : (
               <Link key={k} to={`${basePath}?lang=${k}`} preventScrollReset replace role="tab" aria-selected={lang === k}
                     className={`rounded-md px-3 py-1.5 text-xs font-semibold ${lang === k ? "bg-[var(--surface)] text-[var(--ink)] shadow-sm" : "text-[var(--ink-3)] hover:text-[var(--ink)]"}`}>{l}</Link>
@@ -98,11 +110,13 @@ export function ExplanationSection({ data, lang, basePath, cycle, heading, showL
           </div>
         )}
       </div>
-      <Suspense key={cur} fallback={<Loading />}>
-        <Await resolve={shown} errorElement={<Unavailable />}>
-          {(r) => (r.llm ? <Body r={r} cycle={cycle} /> : <Unavailable />)}
-        </Await>
-      </Suspense>
+      <div aria-busy={pending} className={`transition-opacity duration-200 ${pending ? "pointer-events-none opacity-50" : ""}`}>
+        <Suspense key={cur} fallback={<Loading />}>
+          <Await resolve={shown} errorElement={<Unavailable />}>
+            {(r) => (r.llm ? <Body r={r} cycle={cycle} /> : <Unavailable />)}
+          </Await>
+        </Suspense>
+      </div>
     </section>
   );
 }

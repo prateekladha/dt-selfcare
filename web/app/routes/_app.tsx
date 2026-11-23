@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { data, Form, isRouteErrorResponse, NavLink, Outlet, useNavigation, useRevalidator, useRouteLoaderData } from "react-router";
-import { Bell, FlaskConical, Home as HomeIcon, LogOut, MessageSquareText, Receipt, Server } from "lucide-react";
+import { Bell, FlaskConical, Home as HomeIcon, LogOut, Receipt, Server, Smartphone, Sparkles } from "lucide-react";
+import { AssistantProvider, useAssistant } from "~/components/Assistant";
 import { LiveNotifications } from "~/components/LiveNotifications";
 import { Avatar, Logo } from "~/components/ui";
 import { api, ApiError, degradedServices, PRIVATE } from "~/lib/api.server";
@@ -50,8 +51,8 @@ export function useDegraded(service: "core" | "payments" | "assistant") {
 const NAV = [
   { to: "/", label: "Overview", icon: HomeIcon, end: true },
   { to: "/bills", label: "Bills", icon: Receipt },
+  { to: "/plan", label: "My plan", icon: Smartphone },
   { to: "/insights", label: "Try your usage", icon: FlaskConical },
-  { to: "/assistant", label: "Assistant", icon: MessageSquareText },
 ];
 
 export default function AppLayout({ loaderData }: Route.ComponentProps) {
@@ -67,7 +68,8 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
   }, [loaderData.stale]);
 
   return (
-    <div className="min-h-screen pb-20 md:pb-0">
+    <AssistantProvider>
+    <div className="app-shell min-h-screen pb-20 md:pb-0">
       {nav.state !== "idle" && (
         <div className="fixed inset-x-0 top-0 z-[60] h-0.5 overflow-hidden bg-[var(--brand-bg)]">
           <div className="h-full w-1/3 bg-[var(--brand)]" style={{ animation: "progress 1s ease-in-out infinite" }} />
@@ -85,6 +87,7 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-1.5">
+            <AskButton />
             <div className="relative">
               <button onClick={() => toggle("bell")} aria-label={`Notifications${d.unread ? `, ${d.unread} unread` : ""}`}
                       className="relative flex h-10 w-10 items-center justify-center rounded-full text-[var(--ink-2)] hover:bg-[var(--chip)]">
@@ -151,6 +154,16 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
       </nav>
       <LiveNotifications />
     </div>
+    </AssistantProvider>
+  );
+}
+
+function AskButton() {
+  const { show } = useAssistant();
+  return (
+    <button onClick={() => show()} className="hidden h-10 items-center gap-1.5 rounded-full border border-[var(--line-strong)] px-3.5 text-sm font-semibold text-[var(--ink)] hover:bg-[var(--chip)] md:inline-flex">
+      <Sparkles size={16} className="text-[var(--brand)]" /> Ask assistant
+    </button>
   );
 }
 

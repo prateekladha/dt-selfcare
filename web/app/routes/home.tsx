@@ -1,4 +1,4 @@
-import { ArrowRight, BarChart3, CalendarClock, CheckCircle2, FileText, Gauge, MessageSquare, Phone, Plane, Receipt, Sparkles, Wallet } from "lucide-react";
+import { ArrowRight, BarChart3, CalendarClock, CheckCircle2, FileText, Gauge, MessageSquare, Phone, Plane, Receipt, Smartphone, Sparkles, Wallet } from "lucide-react";
 import { Link } from "react-router";
 import { ExplanationSection } from "~/components/Explain";
 import { Suspense } from "react";
@@ -48,7 +48,15 @@ export default function Overview({ loaderData }: Route.ComponentProps) {
           <p className="text-sm font-medium text-[var(--ink-3)]">{d.greeting},</p>
           <h1 className="display text-[34px] font-extrabold leading-tight">{home.subscriber.name.split(" ")[0]}</h1>
         </div>
-        <p className="text-[13px] text-[var(--ink-3)]">{home.plan.name} · <Link to="/plan" className="font-semibold text-[var(--ink)] hover:underline">Change tariff</Link> · updated {d.asOfLabel}</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <Link to="/plan" className="group inline-flex items-center gap-2.5 rounded-full border border-[var(--line-strong)] bg-[var(--surface)] py-1.5 pl-1.5 pr-3.5 hover:border-[var(--brand)]">
+            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--brand)] text-white"><Smartphone size={14} /></span>
+            <span className="text-[13px] text-[var(--ink-3)]">Your plan <strong className="text-[var(--ink)]">{home.plan.name}</strong></span>
+            <Pill tone="good">Active</Pill>
+            <ArrowRight size={14} className="text-[var(--ink-3)] transition-transform group-hover:translate-x-0.5" />
+          </Link>
+          <p className="text-[13px] text-[var(--ink-3)]">updated {d.asOfLabel}</p>
+        </div>
       </div>
 
       {explanation && (
