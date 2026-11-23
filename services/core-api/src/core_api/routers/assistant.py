@@ -90,6 +90,7 @@ async def ask_stream(body: AskIn, p: Principal = Depends(current_principal)) -> 
 
     async def sse():
         async for ev in _events(p, body):
+            ev.pop("sources", None)   # all tool results: for /ask (evals), not for the browser
             yield f"data: {json.dumps(ev, default=str)}\n\n"
 
     return StreamingResponse(sse(), media_type="text/event-stream",
@@ -106,7 +107,7 @@ async def ask(body: AskIn, response: Response, p: Principal = Depends(current_pr
         if ev["type"] == "done":
             done = ev
     return {"status": done.get("status"), "answer": done.get("answer"), "citations": done.get("citations", []),
-            "session_id": done.get("session_id"), "trace": done.get("trace", {})}
+            "session_id": done.get("session_id"), "trace": done.get("trace", {}), "sources": done.get("sources", [])}
 
 
 @router.get("/traces")

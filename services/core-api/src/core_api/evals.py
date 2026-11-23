@@ -112,6 +112,7 @@ def ask(token: str, q: str, subscriber_id: str | None = None) -> dict:
         _drop_proposals(subscriber_id, started)
     totals = (j.get("trace") or {}).get("totals", {})
     return {"answer": j.get("answer") or "", "status": j.get("status"), "citations": j.get("citations") or [],
+            "sources": j.get("sources") or j.get("citations") or [],   # everything the assistant looked up
             "tool_calls": totals.get("tool_calls", 0), "cost_usd": float(totals.get("cost_usd", 0.0)), "latency_ms": ms,
             "prompt_version": (j.get("trace") or {}).get("prompt_version", "")}
 
@@ -142,12 +143,12 @@ def run_golden(repeat: int = 1) -> tuple[list[dict], str]:
         try:
             out = ask(tokens[case["who"]], case["q"], LINES[case["who"]])
         except Exception as e:  # noqa: BLE001 - an unanswered question is a failed case, not a crashed run
-            out = {"answer": "", "status": f"ERROR: {str(e)[:80]}", "citations": [], "tool_calls": 0, "cost_usd": 0.0,
+            out = {"answer": "", "status": f"ERROR: {str(e)[:80]}", "citations": [], "sources": [], "tool_calls": 0, "cost_usd": 0.0,
                    "latency_ms": 0, "prompt_version": ""}
         j = None
         # small talk has no policy to judge; a policy case is judged even when it has no figures (a refusal)
         if out["answer"] and (case.get("policy") or out["status"] != "CONVERSATIONAL"):
-            j = judge_votes(llm, case["q"], out["answer"], facts_from(out["citations"]))
+            j = judge_votes(llm, case["q"], out["answer"], facts_from(out["sources"]))
         return score(case, out, j), out["prompt_version"]
 
     with ThreadPoolExecutor(3) as pool:
