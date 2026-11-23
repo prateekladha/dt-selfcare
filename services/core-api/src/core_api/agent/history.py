@@ -110,11 +110,18 @@ def set_title(engine: Engine, sid: str, title: str, source: str) -> None:
                    .values(title=title, title_source=source))
 
 
+def _utc(dt) -> str:
+    """ISO 8601 with an explicit UTC offset: the DB returns naive UTC, which a browser would read as local time."""
+    from datetime import UTC
+
+    return (dt if dt.tzinfo else dt.replace(tzinfo=UTC)).isoformat()
+
+
 def list_sessions(engine: Engine, sub: str) -> list[dict]:
     with engine.connect() as cx:
         rows = cx.execute(select(chat_sessions).where(chat_sessions.c.subscriber_id == sub, chat_sessions.c.turns > 0)
                           .order_by(chat_sessions.c.updated_at.desc()).limit(MAX_SESSIONS)).all()
-    return [{"id": r.id, "title": r.title or "New chat", "turns": r.turns, "updated_at": r.updated_at.isoformat()} for r in rows]
+    return [{"id": r.id, "title": r.title or "New chat", "turns": r.turns, "updated_at": _utc(r.updated_at)} for r in rows]
 
 
 def get_session(engine: Engine, sub: str, sid: str) -> dict | None:
@@ -130,7 +137,8 @@ def get_session(engine: Engine, sub: str, sid: str) -> dict | None:
     out = []
     for m in msgs:
         sources, cards = parts(m.citations)
-        out.append({"role": m.role, "content": m.content, "status": m.status, "citations": sources, "cards": cards})
+        out.append({"role": m.role, "content": m.content, "status": m.status, "citations": sources, "cards": cards,
+                    "at": _utc(m.created_at)})
     return {"id": s.id, "title": s.title or "New chat", "messages": out}
 
 
