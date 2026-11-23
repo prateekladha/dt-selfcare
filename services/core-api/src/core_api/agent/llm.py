@@ -37,6 +37,7 @@ STAGES = {  # stage -> (max_tokens, daily cap USD, temperature)
     "agent": (700, 3.00, 0.2),       # tool-calling turns of the assistant
     "repair": (700, 1.00, 0.0),
     "title": (20, 0.20, 0.3),        # nano model: chat titles
+    "judge": (250, 1.00, 0.0),       # policy judge (evals + sampled production answers)
 }
 
 
@@ -179,8 +180,9 @@ class LLM:
         merged = [calls[i] for i in sorted(calls)] or None
         yield ("end", self._account(stage, usage, time.monotonic() - t0, "".join(text), merged))
 
-    def chat(self, stage: str, messages: list[dict], json_mode: bool = False, tools: list | None = None) -> LLMResult:
-        body = self._body(stage, messages, json_mode, tools, False)
+    def chat(self, stage: str, messages: list[dict], json_mode: bool = False, tools: list | None = None,
+             model: str | None = None) -> LLMResult:
+        body = self._body(stage, messages, json_mode, tools, False, model)
         t0 = time.monotonic()
         with _slots(self.s.llm_max_concurrency):
             for attempt in range(3):
@@ -194,7 +196,9 @@ class LLM:
         msg = data["choices"][0]["message"]
         calls = [{"id": c["id"], "name": c["function"]["name"], "arguments": c["function"]["arguments"]}
                  for c in msg.get("tool_calls") or []] or None
-        return self._account(stage, data.get("usage", {}), dt, (msg.get("content") or "").strip(), calls)
+        res = self._account(stage, data.get("usage", {}), dt, (msg.get("content") or "").strip(), calls)
+        res.model = data.get("model") or body["model"]  # the model actually used (judge alias, gateway fallback)
+        return res
 
 
     # ---------------- async (used by the streaming assistant) ----------------

@@ -103,12 +103,20 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   await page.getByRole("button", { name: "Analyse" }).click();
   await expect(page.getByText(/file: my-usage\.csv/i)).toBeVisible({ timeout: 45_000 });   // the real file name (dashes kept)
 
-  // Assistant: the agent answers from the spine with citations, verification and a trace
-  await page.goto("/assistant");
-  await page.getByRole("button", { name: /Why did my .* bill change\?/ }).click();
+  // Assistant: a panel on every page (launcher button); answers with citations, verification and a trace
+  await page.goto("/");
+  await page.getByRole("button", { name: "Ask the assistant" }).click();
+  const panel = page.getByRole("dialog", { name: "Assistant" });
+  await panel.getByRole("button", { name: /Why did my .* bill change\?/ }).click();
   await expect(page.getByText(/Checked against your records/)).toBeVisible({ timeout: 90_000 });  // streamed, tool steps, verified
-  await page.getByRole("button", { name: /^Sources \([1-9]\d*\)$/ }).click();  // sources list matches the superscripts
-  await page.getByText("How this answer was produced").click();
+  await panel.getByRole("button", { name: /^Sources \([1-9]\d*\)$/ }).click();  // sources list matches the superscripts
+  await panel.getByText("How this answer was produced").click();
+  await expect(page).toHaveURL(/[?&]assistant=[0-9a-f]{32}/);   // the conversation is linkable
+  if (test.info().project.name === "desktop") {   // phones: the panel is full screen; desktop: docked beside the page
+    await page.getByRole("navigation", { name: "Main" }).first().getByRole("link", { name: "Bills" }).click();   // navigating keeps the panel and the answer
+    await expect(page).toHaveURL(/\/bills\?assistant=/);
+    await expect(panel.getByText(/Checked against your records/)).toBeVisible();
+  }
   await expect(page.getByText(/LLM calls: prompt cache and spend per stage/)).toBeVisible();
   await shot(page, "05b-assistant");
 

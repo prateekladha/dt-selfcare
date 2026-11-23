@@ -142,3 +142,9 @@ jobs:
             web/e2e-results
             web/e2e-report
           retention-days: 14
+      # ---- Assistant regression gate: golden questions on the live assistant, scored for grounding, required facts,
+      #      tool use and (by a calibrated model-as-judge) policy correctness; the judge is re-measured against the
+      #      human-labelled set first and only gates while it agrees with people (kappa >= 0.6). Results: System page.
+      - name: assistant eval gate (golden set + calibrated policy judge)
+        timeout-minutes: 10
+        run: kubectl -n selfcare exec deploy/core-api -- run-evals --gate --calibrate

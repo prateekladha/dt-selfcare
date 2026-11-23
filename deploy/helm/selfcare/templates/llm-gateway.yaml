@@ -28,6 +28,17 @@ data:
           stream_timeout: 12
           timeout: 20
           rpm: {{ .Values.llmGateway.fallbackRpm }}
+      - model_name: judge-llm                   # policy judge: chosen by calibration against human labels
+        litellm_params:                         # (deepseek kappa 0.93 stable vs mistral-small 0.60-0.86, 23 Nov)
+          model: deepseek/deepseek-chat
+          api_key: os.environ/DEEPSEEK_API_KEY
+          timeout: 20
+          rpm: 300
+      - model_name: judge-llm-fallback
+        litellm_params:
+          model: mistral/mistral-small-latest
+          api_key: os.environ/MISTRAL_API_KEY
+          timeout: 20
       - model_name: title-llm                   # nano model: chat titles
         litellm_params:
           model: mistral/ministral-3b-latest
@@ -43,7 +54,7 @@ data:
       timeout: 20
       allowed_fails: 3          # failures before a deployment is cooled down
       cooldown_time: 30
-      fallbacks: [{"billing-llm": ["billing-llm-fallback"]}, {"title-llm": ["title-llm-fallback"]}]
+      fallbacks: [{"billing-llm": ["billing-llm-fallback"]}, {"title-llm": ["title-llm-fallback"]}, {"judge-llm": ["judge-llm-fallback"]}]
     litellm_settings:
       drop_params: true
       {{- if .Values.llmGateway.langfuse }}
@@ -74,7 +85,7 @@ spec:
     metadata:
       labels: { app: llm-gateway }
       # config/rev: bump when the model_list/router config above changes (the values checksum doesn't see it)
-      annotations: { checksum/config: {{ toJson .Values.llmGateway | sha256sum }}, config/rev: "2" }
+      annotations: { checksum/config: {{ toJson .Values.llmGateway | sha256sum }}, config/rev: "3" }
     spec:
       enableServiceLinks: false
       securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }

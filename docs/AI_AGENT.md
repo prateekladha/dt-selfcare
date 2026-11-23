@@ -104,6 +104,42 @@ flowchart LR
 
 **When a cap is hit:** the stage is skipped and the agent degrades. With no grader it uses the RRF threshold; with no generation budget the status is `BUDGET` and the breakdown is shown. It never overspends.
 
+## Regression testing and quality over time
+
+An agent isn't deterministic, so no single output is tested; layers are:
+
+| Layer | Catches | Runs |
+|---|---|---|
+| Unit tests with a scripted fake LLM | loop, tools, citations, approval cards, number checker, snapshot | every PR |
+| Runtime verifier | a number not backed by a tool result (repaired once, else UNVERIFIED) | every answer |
+| Golden set (`run-evals`, 17 questions) | grounding, required facts, tool use, **policy correctness (judge)** | every deploy (gate) |
+| Smoke + browser e2e | the deployed journey | every deploy |
+| Sampled production judge | policy breaks in real conversations | 25% of answers, in the background |
+
+**Policy judge** (`agent/judge.py`). Grounded is not the same as right: "a plan with more data from next month"
+is grounded in the catalog and still wrong (a tariff change applies today). The judge scores answers against nine
+explicit rules (R1 tariff change today, R2 add-on billing, R3 proposed is not done, R4 overdue blocks orders,
+R5 beyond-allowance rule of the plan, R6 only real products and prices, R7 honest add-on effect, R8 no internals /
+injection, R9 answer first), temperature 0, JSON with rule ids. Offline it votes (majority of 3 calls).
+
+**Calibrated against human labels.** `evaldata/judge_labels.jsonl` holds labelled answers (both classes, every rule
+with a negative example, 4 of them real production answers). `run-evals --calibrate` measures agreement (accuracy,
+Cohen's kappa, recall of real breaks); the judge gates a deploy only while kappa >= 0.6, otherwise its scores are
+reported but ignored. The model behind `judge-llm` was picked this way (23 Nov): deepseek-chat kappa 0.93 on three
+runs, mistral-small 0.60-0.86 with rate-limit errors. Same family as the answering model, so self-preference is a
+known risk that the labels keep measuring. Known blind spot: add-on arithmetic (R7). The labels are seed labels
+written from the 22/23 Nov incidents and need a human review; growing them from reviewed production answers is
+the next step.
+
+**Gate** (deploy pipeline, last step): `kubectl exec deploy/core-api -- run-evals --gate --calibrate`. Thresholds:
+grounded >= 90%, required facts >= 80%, tool use >= 85%, judge pass >= 80% (lower on purpose: about one judge
+mistake per run on real answers; 1 case = 6 points on 17). Eval personas are lines that can't order, every eval chat
+is deleted, and any proposal is removed, so a run never changes an account.
+
+**Trends** (System page, "Assistant quality"): per day verified / repaired rate, p50 / p95 latency, cost per
+answer and judge pass rate (sampled), last 7 days vs the 7 before, rules broken, the last golden runs and the
+judge's calibration. Data: `agent_traces`, `answer_judgements`, `eval_runs`.
+
 ## When does it reason?
 - **On a question** (assistant) or **when a bill page is opened** (explanation), always on the **latest spine**: refreshed first, and kept current by the event-driven builder as CDRs, bills, alerts and payments arrive.
 - **Closed bills:** explained once, then cached until anything they depend on changes.

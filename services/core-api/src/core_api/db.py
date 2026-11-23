@@ -176,6 +176,33 @@ agent_traces = Table(
     Column("created_at", DateTime(timezone=True), default=utcnow, nullable=False),
 )
 
+# ---- assistant quality: policy-judge verdicts on sampled production answers, and offline eval runs ----
+answer_judgements = Table(
+    "answer_judgements", metadata,
+    Column("trace_id", String(36), primary_key=True),    # agent_traces.id
+    Column("verdict", String(8), nullable=False),        # PASS | FAIL | ERROR
+    Column("violations", String(100), nullable=False),   # rule ids, comma-separated
+    Column("reason", String(500), nullable=False),
+    Column("judge_model", String(80), nullable=False),
+    Column("judge_version", String(40), nullable=False),
+    Column("cost_usd", String(24), nullable=False),
+    Column("created_at", DateTime(timezone=True), default=utcnow, nullable=False),
+)
+Index("ix_judgement_created", answer_judgements.c.created_at)
+
+eval_runs = Table(
+    "eval_runs", metadata,
+    Column("id", String(36), primary_key=True),
+    Column("kind", String(16), nullable=False),          # golden | calibration
+    Column("prompt_version", String(60), nullable=False),
+    Column("judge_version", String(40), nullable=False),
+    Column("passed", Integer, nullable=False),           # 1 = met the gate thresholds
+    Column("metrics", Text, nullable=False),             # JSON summary
+    Column("cases", Text, nullable=False),               # JSON per-case results
+    Column("created_at", DateTime(timezone=True), default=utcnow, nullable=False),
+)
+Index("ix_eval_runs_created", eval_runs.c.kind, eval_runs.c.created_at)
+
 # ---- tariff history (customer domain): drives pro-rating of fees and allowances ----
 plan_changes = Table(
     "plan_changes", metadata,
