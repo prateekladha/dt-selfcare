@@ -441,4 +441,7 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
     else:
         sample_for_judge(llm, engine, trace_id, status, question, answer, list(broker.source_meta.values()))
     sent = list(cards.values()) if status in ("VERIFIED", "REPAIRED", "CONVERSATIONAL") else []
-    yield {"type": "done", "status": status, "answer": answer, "citations": citations, "cards": sent, "trace": trace}
+    yield {"type": "done", "status": status, "answer": answer, "citations": citations, "cards": sent, "trace": trace,
+           # every tool result of the turn, not only the cited ones: what an auditor (the policy judge) must see,
+           # or a true fact the answer didn't cite looks invented. Not sent to the browser (see ask_stream).
+           "sources": list(broker.source_meta.values())}
