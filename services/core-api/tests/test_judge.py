@@ -158,3 +158,13 @@ def test_quality_trend_per_day_with_judge_pass_rate(engine, monkeypatch):
     assert q["last7"]["answers"] == 3 and q["prev7"]["answers"] == 1
     assert q["violations_7d"] == {"R1": 1, "R3": 1}
     assert q["calibration"]["kappa"] == 0.83 and q["calibration"]["trusted"] is True
+
+
+def test_tool_use_means_the_answer_rests_on_cited_account_data():
+    """Facts first: a question about general rules is answered from the start-of-turn snapshot (no own lookup);
+    it passes when it cites the customer's records, and fails when it cites none."""
+    case_ = {"id": "mia-addon-billing", "who": "Mia", "q": "How are add-ons billed?", "must": [], "tools": 1}
+    out = {"answer": "Charged on your next bill [S4].", "status": "VERIFIED", "tool_calls": 0, "cost_usd": 0.0, "latency_ms": 1,
+           "citations": [{"label": "S4", "tool": "get_plans_and_addons", "body": "{}"}]}
+    assert evals.score(case_, out, None)["tools_ok"] and evals.score(case_, out, None)["own_lookups"] == 0
+    assert not evals.score(case_, out | {"citations": []}, None)["tools_ok"]

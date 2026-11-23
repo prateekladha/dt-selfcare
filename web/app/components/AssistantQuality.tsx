@@ -120,7 +120,7 @@ export function AssistantQuality({ q }: { q: Quality }) {
               <div className="space-y-1 text-xs">
                 <p className="tabular">κ {cal.kappa?.toFixed(2)} · accuracy {pct(cal.accuracy)} · catches {pct(cal.fail_recall)} of real breaks · {cal.n} labels · {when(cal.at)}</p>
                 <p className="text-[var(--ink-3)]">{cal.trusted ? "Agrees with people well enough to gate deploys." : "Below κ 0.6: reported only, not gating."}
-                  {cal.unreviewed_labels ? ` ${cal.unreviewed_labels} seed labels still need a human review.` : ""}</p>
+                  {cal.unreviewed_labels ? ` ${cal.unreviewed_labels} labels still need a human review.` : ` All ${cal.n} labels reviewed by a person.`}</p>
                 {!!cal.disagreements?.length && <p className="text-[var(--ink-3)]">Disagrees on: {cal.disagreements.join(", ")}</p>}
               </div>
             )}
