@@ -32,28 +32,7 @@ The bill is the product. Behind it sits a **real-time usage pipeline** that turn
 
 ## 2. System context (C4 level 1)
 
-```mermaid
-flowchart LR
-  cust([Customer<br/>browser / app])
-  net([Network mediation<br/>CDR batches])
-  ops([Operator / SRE])
-  subgraph SC[Self-care platform on OCI]
-    sys[Usage pipeline + Billing + Bill explainer + Payments]
-  end
-  rzp[(Razorpay<br/>payment gateway)]
-  llm[(LLM provider<br/>DeepSeek / Mistral EU / self-hosted)]
-  le[(Let's Encrypt)]
-  gh[(GitHub Actions<br/>CI/CD)]
-
-  cust -- HTTPS --> sys
-  net -- HTTPS batches --> sys
-  sys -- orders, capture check --> rzp
-  rzp -- webhooks --> sys
-  sys -- facts only, no PII --> llm
-  sys -- ACME HTTP-01 --> le
-  gh -- images + helm upgrade --> sys
-  ops -- kubectl / OCI console --> sys
-```
+![System context: customers, mediation, operators, GitHub, Razorpay, LLM providers, Langfuse, legacy order systems](diagrams/context.png)
 
 ## 3. Containers (C4 level 2)
 
@@ -62,85 +41,15 @@ flowchart LR
 > "core-api (modular monolith)" box below. Payments, the assistant and the order adapter now run as
 > separate services.
 
-```mermaid
-flowchart TB
-  subgraph Edge
-    traefik[Traefik ingress<br/>TLS via cert-manager + Let's Encrypt<br/>Always Free flexible LB 10 Mbps]
-  end
-  subgraph Customer side
-    web[web<br/>React Router SSR, Express<br/>trust proxy, httpOnly session]
-    core[core-api: modular monolith<br/>auth · home BFF · bills · PDF · payments<br/>insights/explainer · AI narrator · simulator · admin · SSE]
-    notifier[notifier worker<br/>alerts → notifications + push<br/>DB outbox → payment-events]
-  end
-  subgraph Usage pipeline
-    emu[network-emulator<br/>backfill · live · load]
-    coll[usage-collector<br/>validate · batch idempotency<br/>partition · gzip · publish]
-    agg[usage-aggregator ×2<br/>atomic Lua apply · exactly-once]
-    arch[raw-archiver]
-    relay[alert-relay<br/>outbox → topic]
-  end
-  subgraph OCI managed
-    stream[(OCI Streaming, Kafka API<br/>usage-events 4p · usage-alerts 1p · payment-events 1p)]
-    adb[(Autonomous DB 23ai<br/>Always Free)]
-    os[(Object Storage<br/>dt-selfcare-usage-raw)]
-    vault[(OCI Vault)]
-  end
-  valkey[(Valkey StatefulSet<br/>AOF on block volume)]
-  flagd[flagd<br/>OpenFeature flags]
-  eso[External Secrets Operator]
-  rzp[(Razorpay)]
-  llm[(DeepSeek / Mistral / vLLM)]
+![Containers: usage pipeline, customer side, AI, orders, state and messaging](diagrams/architecture.png)
 
-  traefik -->|/| web
-  traefik -->|/v1/webhooks/razorpay| core
-  web --> core
-  emu -->|POST /v1/usage-batches| coll
-  coll --> stream
-  stream -->|group usage-aggregator| agg
-  stream -->|group raw-archiver| arch --> os
-  agg <--> valkey
-  valkey -->|alerts:{pN} streams| relay --> stream
-  stream -->|group notifier usage-alerts| notifier
-  notifier --> adb
-  notifier -->|PUBLISH notif:sub| valkey
-  core -->|SUBSCRIBE notif:sub, SSE| valkey
-  core --> adb
-  core -->|read counters, rate live| valkey
-  coll -->|batch:id idempotency| valkey
-  core --> rzp
-  core --> llm
-  core & agg & coll & notifier --> flagd
-  eso --> vault
-  eso -->|k8s Secrets| core & web & agg & coll & notifier
-```
+Also in the cluster, not drawn: **flagd** (OpenFeature flags, read by core-api, the collector, aggregators and notifier) and the **External Secrets Operator** (OCI Vault → Kubernetes Secrets via the node's instance principal). `payments-service`, `assistant-service`, `order-adapter` and `workflow-worker` run from the core-api image with different entrypoints.
 
 **Why it's shaped this way:** the hot path (collector, aggregator) scales with event volume and is split out. The customer domains scale with requests and live in one deployable (`core-api`) with strict module boundaries, so any module can be extracted later without a rewrite.
 
 ## 4. OCI deployment
 
-```mermaid
-flowchart TB
-  subgraph TEN[Tenancy · home region ap-mumbai-1]
-    subgraph CPT[Compartment dt-selfcare · isolated from other workloads]
-      subgraph VCN[VCN 10.20.0.0/16 · dtself]
-        api[Subnet api 10.20.0.0/28 · public<br/>OKE API endpoint :6443]
-        lb[Subnet lb 10.20.1.0/24 · public<br/>Flexible LB 10 Mbps · 80/443]
-        wk[Subnet workers 10.20.10.0/24 · private<br/>node pool dt-selfcare-a1<br/>1 × VM.Standard.E5.Flex 1 OCPU/16 GB]
-      end
-      igw[Internet GW]; nat[NAT GW]; sgw[Service GW<br/>All Oracle Services]
-      oke[OKE BASIC_CLUSTER dt-selfcare-oke<br/>k8s v1.37.1 · flannel]
-      adb[(ADB dtselfcare · 23ai · Always Free<br/>TLS, ACL = VCN only)]
-      sp[(Stream pool dt-selfcare-pool<br/>usage-events 4p · usage-alerts · payment-events<br/>retention 48 h)]
-      b1[(Bucket dt-selfcare-usage-raw<br/>archive @30d · delete @400d)]
-      b2[(Bucket dt-selfcare-tfstate<br/>versioned)]
-      v[(Vault dt-selfcare-vault<br/>software key · platform + 3rd-party secrets)]
-      ocir[(OCIR repos dt-selfcare/*<br/>private)]
-    end
-    iam[IAM: user dt-selfcare-svc (stream push/pull, OCIR read)<br/>user dt-selfcare-ci (OCIR push, use clusters)<br/>dynamic group dt-selfcare-nodes (read secrets, write raw bucket)<br/>policies dt-selfcare-workloads / -ocir / -objectstorage-lifecycle]
-  end
-  api --- igw; lb --- igw; wk --- nat; wk --- sgw
-  sgw --> adb & sp & b1 & v & ocir
-```
+![OCI deployment](diagrams/oci-deployment.png)
 
 All of it is defined in Terraform (`deploy/terraform`), with remote state in `dt-selfcare-tfstate`. The A1 (ARM, Always Free) shape was out of host capacity in Mumbai on the build day. `node_shape` is a variable, and switching back to A1 changes the image architecture automatically.
 
@@ -148,130 +57,24 @@ All of it is defined in Terraform (`deploy/terraform`), with remote state in `dt
 
 ### (a) Usage record → running total → 80% alert, exactly once → push to the open app
 
-```mermaid
-sequenceDiagram
-  autonumber
-  participant N as Network/emulator
-  participant C as usage-collector
-  participant V as Valkey
-  participant S as OCI Streaming
-  participant A as usage-aggregator
-  participant R as alert-relay
-  participant NT as notifier
-  participant DB as Autonomous DB
-  participant API as core-api (SSE)
-  participant B as Browser
-
-  N->>C: POST /v1/usage-batches {batch_id, records[]}
-  C->>V: GET batch:source:id (done? → 200 duplicate) · SET NX inflight EX 120
-  C->>V: screening: quarantine invalid records · SET NX rec:id EX 300 per record (claim, taken → duplicate)
-  C->>C: group by crc32(sub)%4, chunk ≤2000, gzip, msg_id=sha256(source:batch|p|chunk)
-  C->>S: produce(partition=p, headers msg_id,batch_id), acks=all
-  S-->>C: all acked
-  C->>V: SET batch:source:id done EX 7d · rec:id EX 7d (claims released if publishing fails)
-  C-->>N: 202 accepted
-  S->>A: message (partition p, offset o)
-  A->>V: EVAL apply.lua (all keys tagged {p})
-  Note over V: o ≤ off:{p}? → stale, no-op<br/>seen:{p}:msg exists? → duplicate, no-op<br/>HINCRBY totals · pct = used/allowance<br/>pct≥80 and HSETNX alert:80 → XADD alerts:{p}<br/>(alert_id = sub:cycle:level:offset, one per arming)<br/>SET seen, SET off:{p}=o
-  R->>V: XREADGROUP relay alerts:{p}
-  R->>S: produce usage-alerts (key=sub, alert_id)
-  S-->>R: acked → XACK
-  S->>NT: alert
-  NT->>DB: INSERT notification (UNIQUE alert_id → dup dropped)
-  NT->>V: PUBLISH notif:sub
-  V-->>API: message on SUBSCRIBE notif:sub
-  API-->>B: SSE "notification" → toast + revalidate
-```
+![Usage record to 80% alert, exactly once](diagrams/j3-usage-alert.png)
 
 ### (b) Bill run at cycle close
 
-```mermaid
-sequenceDiagram
-  participant K as CronJob bill-run (02:00 UTC on the 1st)
-  participant V as Valkey
-  participant DB as Autonomous DB
-  K->>V: wait until off:{p} unchanged for 30 s (aggregator drained)
-  loop each subscriber (isolated: a failure is logged and counted, the run continues)
-    K->>DB: plan_at(cycle end) → tariff in force, tariff segments, first billable day
-    K->>V: HGETALL u:{p}:sub:cycle (+ the last 3 billed months for late usage)
-    K->>K: rate segments → lines, subtotal, VAT, total (+ one ADJ line per month with late usage)
-    K->>DB: PAID advances up to cycle end not yet in bill_payments → amount_paid
-    K->>DB: INSERT bills id=sub:cycle + bill_payments rows (IntegrityError → skipped, bill already issued)
-  end
-```
+![Bill run at cycle close](diagrams/j4-bill-run.png)
 Bills are immutable. Re-running the job is safe. Each month is priced on the tariff in force then (`plan_at`), not today's. A customer who joined mid-month (no earlier bill) pays fee and allowances only from the join day. Late records stay in the cycle counters; on every bill run the last 3 billed months are compared with the counters they were priced from (`rated_counters`), and any difference becomes one adjustment line on the new bill, applied once, never a mutation of an issued invoice.
 
 ### (c) Home page (server-rendered snapshot + streamed AI narrative)
 
-```mermaid
-sequenceDiagram
-  participant B as Browser
-  participant W as web (SSR)
-  participant API as core-api
-  participant V as Valkey
-  participant DB as ADB
-  participant L as LLM
-  B->>W: GET / (httpOnly session cookie)
-  W->>API: GET /v1/me/home (Bearer JWT)
-  API->>DB: subscriber, 12 bills, notifications
-  API->>V: current-cycle counters → rate() live = unbilled
-  API-->>W: one snapshot {as_of, usage.version, unbilled, outstanding, trend…}
-  W->>API: GET /v1/me/bills/{last}/explanation?ai=false (deterministic facts)
-  W-->>B: HTML with every number (Cache-Control: private, no-store)
-  W->>API: GET …/explanation?lang=xx (promise, streamed)
-  API->>L: facts only (guardrails, see e)
-  W-->>B: streamed narrative fills the "plain words" panel
-```
+![Overview page: one snapshot, slow parts streamed](diagrams/j2-home.png)
 
 ### (d) Payment
 
-```mermaid
-sequenceDiagram
-  autonumber
-  participant B as Browser
-  participant W as web
-  participant API as core-api
-  participant DB as ADB
-  participant RZ as Razorpay
-  B->>W: GET /pay/bill/<cycle> or /pay/advance (amount net of paid-not-applied / earlier advances)
-  B->>W: Pay (idempotency key = one per page visit)
-  W->>API: POST /v1/me/payments {purpose, bill_id} + Idempotency-Key
-  API->>DB: existing (sub, key) or open order for this bill/advance? → return same order (409 if nothing left)
-  API->>API: flag payment-settlement → EUR/PLN bill amount × fx → INR
-  API->>RZ: POST /v1/orders {amount INR paise, notes}
-  API->>DB: INSERT payments CREATED (amount+currency of bill, charged_amount/currency, fx_rate)
-  API-->>B: order_id, key_id, charged amount
-  B->>RZ: Checkout (UPI success@razorpay / card)
-  RZ-->>B: payment_id, signature
-  B->>W: /api/pay/confirm
-  W->>API: POST /v1/me/payments/{id}/confirm
-  API->>API: HMAC(order|payment, secret) == signature
-  API->>RZ: GET /orders/{id}/payments → captured? (never trust the browser)
-  API->>DB: UPDATE payments SET PAID WHERE status<>'PAID' (exactly once)<br/>INSERT outbox PAYMENT_SUCCEEDED (same tx)
-  B->>W: GET /pay/result?id=<payment>
-  W->>API: GET /v1/me/payments/{id}?refresh=true → gateway status API (stored status if gateway down)
-  RZ->>API: webhook payment.captured (HMAC body) → same mark_paid → no-op if already PAID
-  API->>DB: bill_payments + bill.amount_paid in the same request (bill shows paid at once)
-  Note over API: outbox relay → payment-events → notifications; billing consumer is an idempotent no-op<br/>(reconciler sweep apply_missing as last safety net)
-```
+![Payment sequence](diagrams/j7-payment.png)
 
 ### (e) AI explanation with guardrails
 
-```mermaid
-flowchart LR
-  ex[explainer.explain<br/>deterministic facts, always shown] --> f{flag ai-explanations?}
-  f -- no --> NA[breakdown only<br/>'explanation not available']
-  f -- yes --> c{cache hit? Valkey exp:<br/>sha256 sources·lang·model·served prompt text}
-  c -- yes --> out[cached JSON]
-  c -- no --> rl{daily quota<br/>rl:ai:sub ≤ 20}
-  rl -- over --> NA
-  rl -- ok --> call[LLM gateway, JSON mode<br/>prompt from Langfuse 'production']
-  call -- error/timeout --> NA
-  call --> g{every number in each item<br/>∈ the sources it cites?}
-  g -- no, ≤2 repairs --> call
-  g -- still no --> NA
-  g -- yes --> save[cache 30 days] --> out
-```
+![Bill explanation with guardrails](diagrams/j5-explanation.png)
 Driver impacts are before VAT and totals include VAT; the prompt makes the model say which. The model's JSON is normalised to the shape the page renders (missing lists become empty).
 
 ### (f) Usage upload / scenario simulation
@@ -351,7 +154,7 @@ Measured: **14,721 records/s sustained on one 1-OCPU node**, 0 retries or duplic
 - **Workloads:** non-root, read-only root filesystems, all capabilities dropped, seccomp RuntimeDefault, DB app user limited to its own schema (created by the `db-init` hook).
 
 ## 10. Observability
-Structured JSON logs with request ids. Prometheus metrics on every service, for example `aggregator_event_lag_seconds`, `aggregator_alerts_raised_total`, `collector_batches_total{result}`, `ai_narration_total{provider,outcome}`, `ai_tokens_total`, `circuit_breaker_open`, `http_request_seconds`. There's a `helm test` smoke test on each deploy. Next step: OpenTelemetry traces and SLOs (alert p95, home p95, payment success).
+Structured JSON logs with request ids. Prometheus metrics on every service, for example `aggregator_event_lag_seconds`, `aggregator_alerts_raised_total`, `collector_batches_total{result}`, `ai_narration_total{provider,outcome}`, `ai_tokens_total`, `circuit_breaker_open`, `http_request_seconds`. Each deploy runs a `helm test` smoke test (19 checks), Playwright e2e on the live site and the assistant eval gate (golden set + calibrated policy judge); 25% of production assistant answers are judged in the background, with the trend on the System page ([AI_AGENT.md](AI_AGENT.md)). Next step: OpenTelemetry traces and SLOs (alert p95, home p95, payment success).
 
 ## 11. Cost (case study)
 

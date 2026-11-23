@@ -4,7 +4,7 @@ A self-care backend and web app for a multi-country mobile operator. It covers t
 the network usage stream to an explained, payable bill. It's built to production standards and
 deployed on Oracle Cloud (OCI), but sized to cost close to nothing.
 
-**Design docs:** [HLD](docs/HLD.md) · [LLD](docs/LLD.md) · [AI agent L1–L4](docs/AI_AGENT.md) · [Payments & reconciliation](docs/PAYMENTS.md) · [Platform: services, LLM gateway, Temporal, Langfuse](docs/PLATFORM.md) · [CDR scenario coverage](docs/CDR_SCENARIOS.md) · [Operations runbook: see inside the DB, Valkey and the stream](docs/OPERATIONS.md) · [Load test](docs/LOADTEST.md)
+**Design docs:** [HLD](docs/HLD.md) · [LLD](docs/LLD.md) · [AI agent L1–L4](docs/AI_AGENT.md) · [Payments & reconciliation](docs/PAYMENTS.md) · [Platform: services, LLM gateway, Temporal, Langfuse](docs/PLATFORM.md) · [CDR scenario coverage](docs/CDR_SCENARIOS.md) · [Operations runbook: see inside the DB, Valkey and the stream](docs/OPERATIONS.md) · [Load test](docs/LOADTEST.md) · Diagrams are PNGs with editable draw.io sources in [docs/diagrams](docs/diagrams)
 
 > Case study: **"Usage & Bill Explainer"**: the user uploads or selects their usage and gets
 > insights on their bill.
@@ -24,7 +24,10 @@ deployed on Oracle Cloud (OCI), but sized to cost close to nothing.
 
 Beyond the brief: real-time **50/80/100% data alerts sent exactly once** (pushed live to the open
 app), multi-country (DE in EUR at 19% VAT, PL in PLN at 23% VAT), feature flags per country, and
-a load generator.
+a load generator. An assistant panel on every page answers from the customer's own records and
+prepares add-ons, tariff changes and payments as approval cards; a golden set and a policy judge
+calibrated against human labels gate every deploy ([AI agent](docs/AI_AGENT.md)). A **My plan** page
+shows the current plan and compares it with the others.
 
 ## Architecture
 
@@ -114,10 +117,10 @@ cd deploy/terraform && terraform init -backend-config=backend.hcl && terraform a
 deploy/scripts/cluster-addons.sh       # External Secrets, cert-manager, Traefik, metrics-server, CI RBAC
 deploy/scripts/gh-secrets.sh           # CI credentials -> GitHub secrets
 deploy/scripts/auth-keys.sh            # JWT RS256 key pair, web session-secret, order-source-token -> OCI Vault (--rotate)
-deploy/scripts/put-secrets.sh          # Razorpay + Mistral keys -> OCI Vault (input hidden)
+deploy/scripts/put-secrets.sh          # Razorpay, DeepSeek, Mistral, Langfuse keys -> OCI Vault (input hidden)
 # Delivery: main is protected. Open a PR -> pr-validation (lint, tests, web build, helm + kubeconform,
 # terraform validate, image builds, gitleaks) must pass -> merge -> deploy-prod (images -> helm upgrade
-# -> in-cluster smoke test -> Playwright e2e on the live site).
+# -> in-cluster smoke test -> Playwright e2e on the live site -> assistant eval gate: run-evals --gate --calibrate).
 ```
 
 Cost: OKE basic control plane, Autonomous DB, load balancer, Vault, Object Storage and the
@@ -129,9 +132,11 @@ A1 ARM when Mumbai has capacity) is the only real cost. Set `node_count=0` to pa
 libs/telco_common        domain: records, catalogue, rating engine, explainer, usage state (Lua)
 services/usage-collector ingest API (batch idempotency, partition-aware compressed publishing)
 services/usage-aggregator stream consumer, raw archiver, alert relay
-services/core-api        auth, home snapshot, bills, PDF, payments, AI, simulator, notifier, bill run
+services/core-api        auth, home snapshot, bills, PDF, payments, AI assistant + policy judge/evals, orders
+                         (Temporal workflows), simulator, notifier, bill run; one image, run as core-api,
+                         payments-service, assistant-service, order-adapter, workflow-worker
 services/network-emulator personas, 12-month backfill, live traffic, load generator
 web/                     React Router (SSR) frontend
 deploy/terraform         OCI: VCN, OKE, ADB, Streaming, Vault, IAM, OCIR, Object Storage
-deploy/helm/selfcare     workloads, Valkey, flagd, External Secrets, ingress/TLS, jobs
+deploy/helm/selfcare     workloads, Valkey, flagd, Temporal, LLM gateway (LiteLLM), External Secrets, ingress/TLS, jobs
 ```

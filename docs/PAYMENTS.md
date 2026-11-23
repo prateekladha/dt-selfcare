@@ -16,19 +16,7 @@ are verified (HMAC) but **never** used to set a status. That makes the order of 
   status is shown (`status_check_delayed`) instead of an error page.
 
 ## State machine
-```mermaid
-stateDiagram-v2
-  [*] --> CREATED: order created (idempotency key)
-  CREATED --> PENDING: attempt seen or authorised, not captured
-  CREATED --> PAID: captured
-  PENDING --> PAID: captured / authorised then captured by us
-  PENDING --> FAILED: all attempts failed
-  FAILED --> PAID: customer retried on the same order and it was captured
-  CREATED --> EXPIRED: no attempt within 24 h
-  PENDING --> FAILED: still not captured after 24 h
-  PAID --> [*]
-  EXPIRED --> [*]
-```
+![Payment state machine](diagrams/payment-states.png)
 - **PAID is terminal.** It's enforced in SQL with `UPDATE … WHERE status <> 'PAID'`, so it happens exactly once.
 - **On settlement,** the payment row and the `PAYMENT_SUCCEEDED` outbox event are written in **one transaction**. Billing applies the event to the bill through the `bill_payments` ledger (PK = payment id, so a redelivery does nothing).
 - **AUTHORIZED but not captured** is PENDING (the money is held), never "nothing was charged"; the reconciler keeps trying to capture it.

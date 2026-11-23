@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation } from "react-router";
-import { ArrowLeft, ArrowUp, BrainCircuit, Check, ChevronDown, History, Loader2, MessageSquare, Plus, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowUp, BrainCircuit, Check, ChevronDown, History, Loader2, Maximize2, MessageSquare, Minus, Plus, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
 import { AgentTraceView } from "~/components/AgentTrace";
 import { OrderCard, PaymentCard } from "~/components/OrderCard";
 import { CiteMap, RichText, SourceList } from "~/components/RichText";
@@ -9,7 +9,7 @@ import type { AgentTrace, ToolSource } from "~/lib/types";
 import { useDegraded, useSnapshot } from "~/routes/_app";
 
 /* The assistant is an action available on every page, not a destination: a launcher button opens a panel
- * (docked on the right on desktop, full screen on phones) that stays mounted while the customer moves
+ * (over the page on tablet and desktop, full screen on phones; it can be minimized to a bar) that stays mounted while the customer moves
  * around the app, so a streaming answer, a half-typed question or an approval card survives navigation.
  * The open conversation is in the URL as ?assistant=<id> (reload, bookmark and shared links reopen it). */
 
@@ -178,7 +178,12 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   const lastMonth = home.last_bill?.cycle ? month(home.last_bill.cycle).split(" ")[0] : "last";
   const suggestions = suggestionsFor(pathname, lastMonth);
 
-  const [open, setOpen] = useState(false);
+  // closed · open (the panel) · min (a bar at the bottom; the conversation and a running answer carry on)
+  const [mode, setMode] = useState<"closed" | "open" | "min">("closed");
+  const open = mode === "open";
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const [unread, setUnread] = useState(false);   // an answer finished while minimized
   const [view, setView] = useState<"chat" | "history">("chat");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [q, setQ] = useState("");
@@ -214,21 +219,21 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const sync = () => {
       const id = urlChat();
-      if (!id) { setOpen(false); return; }
-      setOpen(true);
+      if (!id) { setMode("closed"); return; }
+      setMode((m) => (m === "min" ? "min" : "open"));
       if (id !== "new" && id !== sessionRef.current) openChat(id);
     };
     sync();
     window.addEventListener("popstate", sync);
     return () => window.removeEventListener("popstate", sync);
   }, [openChat]);
-  // React Router navigations rewrite the URL without ?assistant: put it back while the panel is open
+  // React Router navigations rewrite the URL without ?assistant: put it back while the assistant is open or minimized
   // (deferred: the router commits its own URL after this render)
   useEffect(() => {
-    if (!open) return;
+    if (mode === "closed") return;
     const t = setTimeout(() => writeUrl(sessionRef.current ?? "new"), 0);
     return () => clearTimeout(t);
-  }, [pathname, search, open, sessionId]);
+  }, [pathname, search, mode, sessionId]);
   useEffect(() => { if (open) loadChats(); }, [open, loadChats]);
 
   const ask = useCallback(async (question: string) => {
@@ -266,6 +271,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
           else if (ev.type === "done") {   // the answer is complete: free the input now (the chat title may still follow)
             patch((t) => ({ ...t, text: ev.answer, status: ev.status, citations: ev.citations ?? [], trace: ev.trace, aAt: new Date().toISOString() }));
             setBusy(false); busyRef.current = false; loadChats();
+            if (modeRef.current === "min") setUnread(true);
           }
         }
       }
@@ -277,12 +283,14 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   }, [loadChats]);
 
   const show = useCallback((question?: string) => {
-    setOpen(true);
+    setMode("open"); setUnread(false);
     if (!urlChat()) writeUrl(sessionRef.current ?? "new", true);   // back closes the panel again
     if (question) ask(question);
     else setTimeout(() => { if (window.matchMedia("(min-width: 768px)").matches) inputRef.current?.focus(); }, 50);
   }, [ask]);
-  const hide = useCallback(() => { setOpen(false); writeUrl(null); }, []);
+  const hide = useCallback(() => { setMode("closed"); setUnread(false); writeUrl(null); }, []);
+  const minimize = useCallback(() => setMode("min"), []);
+  const restore = () => { setMode("open"); setUnread(false); };
   const newChat = () => { setTurns([]); setSessionId(null); setView("chat"); writeUrl("new"); };
   async function removeChat(id: string) {
     await fetch(`/api/chats?id=${encodeURIComponent(id)}&op=delete`, { method: "POST" }).catch(() => null);
@@ -290,22 +298,16 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     loadChats();
   }
 
-  // Wide screens: the page makes room for the docked panel instead of hiding under it (CSS in app.css)
-  useEffect(() => {
-    document.body.dataset.assistant = open ? "open" : "";
-    return () => { document.body.dataset.assistant = ""; };
-  }, [open]);
-
-  // Escape closes; on phones the page underneath must not scroll behind the full-screen sheet
+  // Escape minimizes; on phones the page underneath must not scroll behind the full-screen sheet
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") hide(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") minimize(); };
     window.addEventListener("keydown", onKey);
     const phone = window.matchMedia("(max-width: 767px)").matches;
     const prev = document.body.style.overflow;
     if (phone) document.body.style.overflow = "hidden";
     return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = prev; };
-  }, [open, hide]);
+  }, [open, minimize]);
 
   // Follow the answer while it streams; scrolling up (the customer's own gesture) stops it, back at the end resumes.
   const onScroll = () => {
@@ -325,11 +327,30 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
       {children}
 
       {/* Launcher: on every page, above the phone tab bar */}
-      {!open && (
+      {mode === "closed" && (
         <button type="button" onClick={() => show()} aria-label="Ask the assistant"
                 className="assistant-fab fixed bottom-[84px] right-4 z-[55] inline-flex h-12 items-center gap-2 rounded-full bg-[var(--brand)] pl-4 pr-5 text-[15px] font-semibold text-white shadow-[var(--shadow-lg)] transition-transform hover:scale-[1.03] md:bottom-6 md:right-6">
           <Sparkles size={18} /> Ask
         </button>
+      )}
+
+      {/* Minimized: a bar at the bottom (above the phone tab bar); the page stays as it is */}
+      {mode === "min" && (
+        <div role="region" aria-label="Assistant (minimized)"
+             className="fixed inset-x-4 bottom-[84px] z-[55] flex h-12 items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--surface)] pl-1.5 pr-1 shadow-[var(--shadow-lg)] md:inset-x-auto md:bottom-6 md:right-6 md:w-[340px]">
+          <button type="button" onClick={restore} aria-label="Open the assistant" className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-full pr-1 text-left">
+            <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--brand)] text-white">
+              {busy ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+              {unread && !busy && <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full bg-[var(--good)] ring-2 ring-[var(--surface)]" aria-hidden="true" />}
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate text-[14px] font-semibold">{title ?? "Assistant"}</span>
+              <span className="block truncate text-[11.5px] text-[var(--ink-3)]" aria-live="polite">{busy ? "Answering…" : unread ? "Answer ready" : turns.length ? `${turns.length} ${turns.length === 1 ? "question" : "questions"}` : "Ask about your bills, usage or plan"}</span>
+            </span>
+          </button>
+          <button type="button" onClick={restore} aria-label="Expand assistant" title="Expand" className="rounded-full p-2 text-[var(--ink-2)] hover:bg-[var(--chip)]"><Maximize2 size={16} /></button>
+          <button type="button" onClick={hide} aria-label="Close assistant" title="Close" className="rounded-full p-2 text-[var(--ink-2)] hover:bg-[var(--chip)]"><X size={16} /></button>
+        </div>
       )}
 
       {/* Stays mounted while closed: a running answer keeps streaming in the background */}
@@ -349,7 +370,8 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
               <button type="button" onClick={newChat} disabled={busy || turns.length === 0} aria-label="New chat" title="New chat" className="rounded-md p-2 text-[var(--ink-2)] hover:bg-[var(--chip)] disabled:opacity-40"><Plus size={18} /></button>
             </>
           )}
-          <button type="button" onClick={hide} aria-label="Close assistant" className="rounded-md p-2 text-[var(--ink-2)] hover:bg-[var(--chip)]"><X size={18} /></button>
+          <button type="button" onClick={minimize} aria-label="Minimize assistant" title="Minimize" className="rounded-md p-2 text-[var(--ink-2)] hover:bg-[var(--chip)]"><Minus size={18} /></button>
+          <button type="button" onClick={hide} aria-label="Close assistant" title="Close" className="rounded-md p-2 text-[var(--ink-2)] hover:bg-[var(--chip)]"><X size={18} /></button>
         </div>
 
         {view === "history" ? (
