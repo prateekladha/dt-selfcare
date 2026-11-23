@@ -295,6 +295,25 @@ def _purge_backfill_notifications(cx) -> None:
         cx.execute(delete(notifications).where(notifications.c.id.in_(stale)))
 
 
+def _expire_superseded_offers(cx) -> None:
+    """One open offer per kind (rule since 23 Nov): an open offer (PROPOSED / DECLINED) older than a newer order of
+    the same kind for the same customer is retired, like a new proposal now does at creation."""
+    from sqlalchemy import update
+
+    rows = cx.execute(select(orders.c.id, orders.c.subscriber_id, orders.c.kind, orders.c.status, orders.c.created_at)
+                      .order_by(orders.c.created_at.desc())).all()
+    seen: set[tuple[str, str]] = set()
+    stale = []
+    for r in rows:   # newest first: everything open after the first order of a (customer, kind) is superseded
+        key = (r.subscriber_id, r.kind)
+        if key in seen and r.status in ("PROPOSED", "DECLINED"):
+            stale.append(r.id)
+        seen.add(key)
+    if stale:
+        cx.execute(update(orders).where(orders.c.id.in_(stale))
+                   .values(status="EXPIRED", detail="Replaced by a newer offer", updated_at=utcnow()))
+
+
 # Forward-only, idempotent migrations: SQL strings (Oracle-only DDL) or callables (portable data fixes).
 MIGRATIONS: list[tuple[str, list]] = [
     ("0002_payment_settlement_currency", [
@@ -308,6 +327,7 @@ MIGRATIONS: list[tuple[str, list]] = [
     ("0006_payment_reconciliation", [
         ("ALTER TABLE payments ADD (gateway_status VARCHAR2(24 CHAR), check_attempts NUMBER(10) DEFAULT 0 NOT NULL, "
         "next_check_at TIMESTAMP WITH TIME ZONE, last_checked_at TIMESTAMP WITH TIME ZONE, settled_by VARCHAR2(16 CHAR))")]),
+    ("0007_expire_superseded_offers", [_expire_superseded_offers]),
 ]
 
 

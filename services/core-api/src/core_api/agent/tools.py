@@ -7,6 +7,7 @@ from calendar import monthrange
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import select
 from telco_common.billing import rate, split_counters
@@ -144,14 +145,42 @@ def t_current_usage(args: dict, ctx: ToolContext) -> dict:
     days = monthrange(now.year, now.month)[1]   # 28-31: the cycle is the calendar month
     proj = int(u.data_mb / max(now.day, 1) * days)
     pos = _data_position(plan_mb, counters)
+    split = _allowance_by_tariff(ctx, cycle)
+    if split:   # a tariff change this month: say where the pro-rated plan data comes from (never guessed)
+        pos = {"plan_data": pos["plan_data"], "plan_data_by_tariff": split, **{k: v for k, v in pos.items() if k != "plan_data"}}
     total = u.data_allowance_mb
+    from ..services.payments import advance_paid_this_month
+
+    adv = advance_paid_this_month(ctx.engine, ctx.subscriber_id)
+    money = {"unbilled_lines_before_vat": [f"{x.label}: {fmt_money(x.amount, b.currency)}" for x in b.lines],
+             "unbilled_subtotal_before_vat": fmt_money(b.subtotal, b.currency), "vat": fmt_money(b.vat, b.currency),
+             "unbilled_total_incl_vat": fmt_money(b.total, b.currency)}
+    if adv:
+        money |= {"advance_paid_this_month": fmt_money(adv, b.currency),
+                  "still_to_pay_this_month": fmt_money(max(b.total - adv, 0), b.currency),
+                  "advance_note": "credited on this month's bill; anything used after it is added on top"}
     return {"source": f"valkey:u:{{p{partition_for(ctx.subscriber_id, ctx.state.partitions)}}}:{cycle}",
             "as_of": now.strftime("%d %B %Y %H:%M UTC"), "day_of_cycle": now.day, "current_plan": plan.name,
             **pos, "data_used_pct": f"{(u.data_mb * 100 / total) if total else 0:.0f}%",
             "projected_month_end": f"{proj:,} MB", "calls": f"{u.voice_min:,} min", "sms": u.sms,
-            "unbilled_total": fmt_money(b.total, b.currency),
-            "unbilled_lines": [f"{x.label}: {fmt_money(x.amount, b.currency)}" for x in b.lines],
-            "beyond_the_allowance": _overage(plan)}
+            **money, "beyond_the_allowance": _overage(plan)}
+
+
+def _allowance_by_tariff(ctx: ToolContext, cycle: str) -> list[str] | None:
+    """["Mobile M, 22 of 30 days: 22,000 MB", "Mobile S, 8 of 30 days: 2,667 MB"] when the tariff changed this
+    month (the same pro-rating as the bill: plan data x days / days in month, rounded half up)."""
+    from decimal import ROUND_HALF_UP, Decimal
+
+    from ..services.bills import cycle_bounds
+    from ..services.plan_history import segments
+
+    seg = segments(ctx.engine, ctx.subscriber_id, cycle, _sub(ctx).plan_code)
+    if not seg or len(seg) < 2:
+        return None
+    start, end = cycle_bounds(cycle)
+    month = (end.date() - start.date()).days
+    share = lambda mb, d: int((Decimal(mb) * d / month).quantize(Decimal(1), ROUND_HALF_UP))
+    return [f"{p.name}, {d} of {month} days: {share(p.data_mb, d):,} MB" for p, d in seg]
 
 
 def _month_if_switched_today(ctx: ToolContext, sub, new_code: str) -> int | None:
@@ -189,15 +218,19 @@ def t_catalog(args: dict, ctx: ToolContext) -> dict:
     plans = sorted(plans_for(cur.country), key=lambda p: p.data_mb)
     def money(minor: int) -> str:
         return fmt_money(minor, cur_cfg.currency)
+
+    def net(minor: int) -> str:   # catalog prices are before VAT; bills and unbilled totals include it
+        gross = int((Decimal(minor) * (1 + cur_cfg.vat_rate)).quantize(Decimal(1), ROUND_HALF_UP))
+        return f"{money(minor)} + VAT ({money(gross)} incl. VAT)"
     return {"source": f"catalog:{cur.country}",
-            "plans": [{"code": p.code, "name": p.name, "monthly_fee": money(p.monthly_fee), "data": f"{p.data_mb:,} MB",
+            "plans": [{"code": p.code, "name": p.name, "monthly_fee": net(p.monthly_fee), "data": f"{p.data_mb:,} MB",
                        "calls": "unlimited" if p.voice_min is None else f"{p.voice_min:,} min",
                        "beyond_the_allowance": _overage(p),
                        **({"current": True} if p.code == cur.code else
                           {"this_month_total_if_switched_today": money(v)} if (v := _month_if_switched_today(ctx, sub, p.code)) is not None else {})}
                       for p in plans],
             "largest_plan": plans[-1].name if plans else None,
-            "add_ons": [{"code": a.code, "name": a.name, "data": f"{a.data_mb:,} MB", "price": money(a.price),
+            "add_ons": [{"code": a.code, "name": a.name, "data": f"{a.data_mb:,} MB", "price": net(a.price),
                          "applies": "this month only, on top of the plan"}
                         for a in ADDONS.values() if a.country == cur.country],
             "rules": {"tariff_change": "takes effect today once approved; this month is pro-rated by day: the old plan "
@@ -262,7 +295,7 @@ def t_payments(args: dict, ctx: ToolContext) -> dict:
         **({} if shown else {"note": "No payments made yet."})}
 
 
-ORDER_WORDS = {"PROPOSED": "waiting for the customer's approval", "APPROVED": "approved, being processed",
+ORDER_WORDS = {"PROPOSED": "prepared, not ordered: waiting for the customer's approval", "APPROVED": "approved, being processed",
                "SUBMITTED": "approved, waiting for the network to confirm", "COMPLETED": "active",
                "FAILED": "could not be completed (not charged)", "DECLINED": "declined by the customer",
                "EXPIRED": "offer expired"}
@@ -271,14 +304,16 @@ ORDER_WORDS = {"PROPOSED": "waiting for the customer's approval", "APPROVED": "a
 def t_orders(args: dict, ctx: ToolContext) -> dict:
     """The customer's recent add-on and tariff orders and their real status (e.g. after 'I just approved it')."""
     from ..db import orders
+    from ..workflows.orders import expired
     with ctx.engine.connect() as cx:
         rows = cx.execute(select(orders).where(orders.c.subscriber_id == ctx.subscriber_id)
                           .order_by(orders.c.created_at.desc()).limit(8)).all()
     out = []
     for r in rows:
         item = (get_addon(r.addon_code).name if r.kind == "ADDON" else f"switch to {get_plan(r.addon_code).name}")
-        out.append({"date": f"{r.created_at.day} {r.created_at:%B %Y}", "order": item,
-                    "status": ORDER_WORDS.get(r.status, r.status.lower())})
+        status = "EXPIRED" if expired(r) else r.status   # an offer past its validity is not "waiting" any more
+        out.append({"date": f"{r.created_at.day} {r.created_at:%B %Y} {r.created_at:%H:%M} UTC", "order": item,
+                    "status": ORDER_WORDS.get(status, status.lower())})
     return {"source": "adb:orders", "orders": out or "no orders yet"}
 
 
@@ -324,7 +359,7 @@ def t_propose_addon(args: dict, ctx: ToolContext) -> dict:
     after = _data_position(plan_mb, counters, extra_mb=pv["data_mb"])
     helps = "over_allowance_by" not in after
     return {"source": f"orders:{o['order_id']}", "proposal": True, "order_id": o["order_id"],
-            "add_on": pv["name"], "extra_data": f"{pv['data_mb']:,} MB", "price": fmt_money(pv["price"], pv["currency"]),
+            "add_on": pv["name"], "extra_data": f"{pv['data_mb']:,} MB", "price": f"{fmt_money(pv['price'], pv['currency'])} + VAT",
             "after_this_add_on": after,
             "effect": ("after it, the customer has data left this month" if helps else
                        f"even after it the customer is still {after['over_allowance_by']} over the allowance: "
@@ -349,12 +384,20 @@ def t_propose_payment(args: dict, ctx: ToolContext) -> dict:
                 "cycle": b.cycle, "amount": fmt_money(b.total - b.amount_paid, b.currency),
                 "overdue": due + timedelta(days=1) <= datetime.now(UTC),   # after the end of the due day **_due(b.due_date, b.total, b.amount_paid),
                 "status": "waiting for the customer to pay in the secure checkout"}
+    from ..services.payments import advance_paid_this_month
+
     sub = _sub(ctx)
     cur = unbilled(ctx.state, ctx.subscriber_id, sub.plan_code, engine=ctx.engine)
     if cur.total <= 0:
         return {"source": "usage:current", "nothing_to_pay": True, "message": "Nothing has been used this month yet."}
+    paid = advance_paid_this_month(ctx.engine, ctx.subscriber_id)   # the checkout charges only what's left
+    if cur.total - paid <= 0:
+        return {"source": f"usage:{cur.cycle}", "nothing_to_pay": True,
+                "message": f"This month so far ({fmt_money(cur.total, cur.currency)}) is already covered by advance "
+                           f"payments of {fmt_money(paid, cur.currency)}."}
     return {"source": f"usage:{cur.cycle}", "proposal": True, "payment": True, "purpose": "ADVANCE", "bill_id": None,
-            "cycle": cur.cycle, "amount": fmt_money(cur.total, cur.currency),
+            "cycle": cur.cycle, "amount": fmt_money(cur.total - paid, cur.currency),
+            **({"already_paid_in_advance": fmt_money(paid, cur.currency)} if paid else {}),
             "status": "waiting for the customer to pay in the secure checkout"}
 
 
@@ -369,7 +412,7 @@ def t_propose_plan_change(args: dict, ctx: ToolContext) -> dict:
     pv = o["preview"]
     return {"source": f"orders:{o['order_id']}", "proposal": True, "order_id": o["order_id"],
             "new_tariff": pv["name"], "current_tariff": pv["from"],
-            "monthly_fee": f"{fmt_money(pv['old_monthly_fee'], pv['currency'])} -> {fmt_money(pv['monthly_fee'], pv['currency'])}",
+            "monthly_fee": f"{fmt_money(pv['old_monthly_fee'], pv['currency'])} -> {fmt_money(pv['monthly_fee'], pv['currency'])} (before VAT)",
             "data": f"{pv['old_data']} -> {pv['data']}",
             "this_month_fee_prorated": f"{fmt_money(pv['this_month_fee'], pv['currency'])} ({pv['days_old']} days old tariff, {pv['days_new']} days new)",
             "status": "waiting for the customer's approval"}

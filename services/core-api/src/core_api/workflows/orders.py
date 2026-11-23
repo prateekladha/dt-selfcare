@@ -68,6 +68,18 @@ def expired(row) -> bool:
     return row.status in ("PROPOSED", "DECLINED") and datetime.now(UTC) - created > timedelta(hours=OFFER_TTL_H)
 
 
+def _supersede(cx, subscriber_id: str, kind: str) -> None:
+    """One open offer per kind: a new proposal retires the customer's earlier open ones (from another chat, the
+    plan page, ...). Without it an old 20 GB offer stayed "waiting for approval" next to the one the customer
+    then bought, and the assistant kept bringing it up."""
+    old = cx.execute(select(orders).where(orders.c.subscriber_id == subscriber_id, orders.c.kind == kind,
+                                          orders.c.status.in_(("PROPOSED", "DECLINED")))).all()
+    for r in old:
+        if cx.execute(update(orders).where(orders.c.id == r.id, orders.c.status.in_(("PROPOSED", "DECLINED")))
+                      .values(status="EXPIRED", detail="Replaced by a newer offer", updated_at=utcnow())).rowcount:
+            _event(cx, cx.execute(select(orders).where(orders.c.id == r.id)).one())
+
+
 def propose_addon(engine: Engine, subscriber_id: str, addon_code: str, source: str) -> dict:
     """Creates a PROPOSED order with a preview. No side effect on the customer's plan until approved."""
     _credit_check(engine, subscriber_id)
@@ -80,6 +92,7 @@ def propose_addon(engine: Engine, subscriber_id: str, addon_code: str, source: s
     oid = str(uuid.uuid4())
     cur = COUNTRIES[plan.country].currency
     with engine.begin() as cx:
+        _supersede(cx, subscriber_id, "ADDON")
         cx.execute(insert(orders).values(id=oid, subscriber_id=subscriber_id, kind="ADDON", addon_code=addon.code,
                                          price=addon.price, currency=cur, status="PROPOSED", source=source,
                                          detail=f"{addon.name}: +{addon.data_mb:,} MB this cycle"))
@@ -104,6 +117,7 @@ def propose_plan_change(engine: Engine, subscriber_id: str, plan_code: str, sour
     cur = COUNTRIES[new.country].currency
     gb = lambda mb: "unlimited" if mb < 0 else f"{mb / 1000:g} GB"
     with engine.begin() as cx:
+        _supersede(cx, subscriber_id, "PLAN")
         cx.execute(insert(orders).values(id=oid, subscriber_id=subscriber_id, kind="PLAN", addon_code=new.code,
                                          price=new.monthly_fee, currency=cur, status="PROPOSED", source=source,
                                          detail=f"Switch from {cur_plan.name} to {new.name}"))
