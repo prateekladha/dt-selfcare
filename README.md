@@ -35,26 +35,13 @@ shows the current plan and compares it with the others.
 > (core-api, payments-service, assistant-service, order-adapter), the LLM gateway (LiteLLM, DeepSeek → Mistral
 > fallback), Temporal order workflows with per-country legacy task queues, `order-events` / `bss-events`
 > on OCI Streaming, circuit breakers and what the customer sees when one opens, bill-day preparation,
-> tariff-change pro-rating, and Langfuse tracing/prompts/evals. The diagram below is the usage pipeline,
-> which is unchanged.
+> tariff-change pro-rating, and Langfuse tracing/prompts/evals.
 
-```
- Network (mediation)            OCI Streaming (Kafka API)                 Valkey (usage state)
- ┌───────────────────┐  HTTPS  ┌──────────────────┐   usage-events       ┌───────────────────────┐
- │ network-emulator  │───────▶│ usage-collector  │──(N partitions,──┐   │ u:{p}:<sub>:<cycle>   │
- │ (only synthetic   │ batch   │ validate, batch, │   by subscriber) │   │ off:{p}  seen:{p}:…   │
- │  part)            │ idem.   │ gzip, publish    │                  ▼   │ alerts:{p} (outbox)   │
- └───────────────────┘         └──────────────────┘        ┌────────────────────┐           ▲
-                                                           │ usage-aggregator    │──Lua─────┘
-                                                           │ exactly-once apply  │  atomic: totals +
-                                         raw-archiver ◀────│ (offset in Valkey)  │  thresholds + outbox
-                                   (Object Storage, audit) └────────────────────┘
-                                                                     alert-relay ──▶ usage-alerts ──▶ notifier ──▶ SSE / app
- Browser ──▶ web (React Router SSR) ──▶ core-api (modular monolith) ──▶ Autonomous DB (bills, payments, outbox)
-                                          │  billing · payments · insights · AI      └──▶ payment-events (outbox relay)
-                                          ├──▶ Razorpay (orders, webhooks)
-                                          └──▶ LLM (DeepSeek / Mistral EU / self-hosted) — guarded
-```
+![Architecture: usage pipeline, customer side, AI, orders, state and messaging](docs/diagrams/architecture.png)
+
+The usage pipeline in detail (every step idempotent, so a retry can't double-count or double-notify):
+
+![Usage record to 80% alert, exactly once](docs/diagrams/j3-usage-alert.png)
 
 ### Key design decisions (and the trade-off behind each)
 
