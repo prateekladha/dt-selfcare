@@ -422,7 +422,7 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                        "prompt_tokens": sum(s["prompt_tokens"] for s in stages),
                        "completion_tokens": sum(s["completion_tokens"] for s in stages),
                        "cache_hit_tokens": sum(s["cache_hit_tokens"] for s in stages), "llm_calls": len(stages),
-                       "tool_calls": st["calls"]}
+                       "tool_calls": st["calls"], "snapshot_calls": len(SNAPSHOT)}
     pt = trace["totals"]["prompt_tokens"]
     trace["totals"]["cache_hit_ratio"] = round(trace["totals"]["cache_hit_tokens"] / pt, 3) if pt else None
     trace["latency_ms"] = int((time.monotonic() - t0) * 1000)

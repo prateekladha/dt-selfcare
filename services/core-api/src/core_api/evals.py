@@ -35,7 +35,9 @@ LINES = {"Jonas": "4915100000002", "Mia": "4915100000003", "Paul": "491510000000
 
 # Personas (demo data): Jonas DE-FLEX pay-per-use, roaming, overdue bill · Paul DE-S throttle, light user, overdue ·
 # Mia DE-FLEX add-on buyer, overdue · Zofia PL, international calls.
-# must = words the answer must contain (lower case) · tools = minimum tool calls · policy = rules in play (judge)
+# must = words the answer must contain (lower case) · tools = minimum tool results the answer must cite (account
+# data from the start-of-turn snapshot or its own lookups: facts first means a general question needs no extra
+# lookup, but its answer must still rest on the customer's records) · policy = rules in play (judge)
 GOLDEN = [
     {"id": "jonas-oct-why", "who": "Jonas", "q": "Why did my October bill go up?", "must": ["roaming"], "tools": 1},
     {"id": "jonas-proof", "who": "Jonas", "q": "Can you prove my October bill from my usage records?", "must": ["record"], "tools": 1},
@@ -123,7 +125,10 @@ def score(case: dict, out: dict, judgement) -> dict:
     return {"id": case["id"], "who": case["who"], "q": case["q"], "status": out["status"],
             "grounded": out["status"] in ("VERIFIED", "REPAIRED", "CONVERSATIONAL"),
             "mentions": (sum(1 for m in must if m in ans) / len(must)) if must else 1.0,
-            "tools_ok": out["tool_calls"] >= case.get("tools", 0),
+            # backed by account data it cites (snapshot or own lookup), not "made an extra call": since facts-first a
+            # question about general rules is answered from the snapshot, and counting own calls failed it
+            "tools_ok": len(out["citations"]) >= case.get("tools", 0),
+            "own_lookups": out["tool_calls"],
             "judge": judgement.verdict if judgement else None,
             "violations": judgement.violations if judgement else [],
             "judge_reason": judgement.reason if judgement else "",
