@@ -1,7 +1,7 @@
 # The billing agent (Layers 1 to 4)
 
 > **Two AI paths, chosen on purpose:**
-> - **Bill explanation:** one structured LLM call over computed facts, in `agent/explain_llm.py`. The inputs are known up front, so a tool loop would add latency and cost without adding relevance. The output is JSON: summary, drivers, top usage and a tip. Each item cites sources, and every number is checked against the sources that item cites, with up to 2 repairs. Results are cached for 30 days, keyed by the sources, language, model and the **prompt text actually served** (a new Langfuse version never reuses old explanations). Driver impacts are before VAT and totals include VAT, and the prompt makes the model say which. The model's JSON is normalised to the shape the page renders.
+> - **Bill explanation:** one structured LLM call over computed facts, in `agent/explain_llm.py`. The inputs are known up front, so a tool loop would add latency and cost without adding relevance. The output is JSON: summary, drivers, top usage and a tip. Each item cites sources, and every number is checked against the sources that item cites, with up to 2 repairs. Results are cached for 30 days, keyed by the sources, language, model and the **prompt text actually served** (a new Langfuse version never reuses old explanations). Driver impacts are before VAT and totals include VAT, and the prompt makes the model say which. The model's JSON is normalised to the shape the page renders. Switching language reloads only that section: the current text stays on screen, dimmed, with a spinner on the chosen language until the new text arrives (no layout shift), and each language is kept so switching back is instant.
 > - **Assistant (chat):** a **multi-step, multi-tool ReAct agent behind a broker**, streamed over SSE (`agent/loop.py`, `agent/broker.py`, `agent/tools.py`). It follows the perpetuum design:
 >   - **The broker is the only executor.** It checks the allow-list, validates arguments against a JSON schema, runs tools scoped to the caller, caps each result's size and logs every decision.
 >   - **Facts first:** every turn starts with a fresh account snapshot read through the broker before the model writes anything: `get_current_usage` (pro-rated exactly as the app shows it: plan data, add-ons, remaining / over by), `list_bills` (dues), `get_orders`, `get_plans_and_addons` (country catalog, largest plan, how changes take effect, this month's total if switched today). Earlier chat turns are context only.
@@ -9,30 +9,20 @@
 >   - **Limits:** 6 turns and 10 tool calls; tools are withheld on the last turn so the model must answer.
 >   - **Events:** `step`, `step_done`, `proposal`, `token`, `done`. `token` carries only the final, checked answer: the model's draft is never streamed.
 >   - **Verification:** every figure in the answer must appear in a tool result of this turn; failures are repaired silently through the tool loop. `[S#]` citations are then attached by code (`attach_sources`). It never falls back to a template.
->   - **Approval cards** (`proposal`) are held until the final answer and sent once with it, so they always match its words. They are stored with the chat message (`{sources, cards}`) and restored when a chat is reopened. The open conversation is in the URL (`?c=<id>`).
+>   - **Approval cards** (`proposal`) are held until the final answer and sent once with it, so they always match its words. They are stored with the chat message (`{sources, cards}`) and restored when a chat is reopened. The open conversation is in the URL (`?assistant=<id>`, or `new`; old `/assistant?c=<id>` links redirect there).
+>   - **Money is explicit about VAT:** catalog prices read "`X + VAT (Y incl. VAT)`"; `get_current_usage` carries the unbilled lines and subtotal before VAT, the VAT and the total incl. VAT, plus any advance already paid this month; add-ons carry `effect_this_month` (allowance after the add-on, still over or within it), computed by code. `propose_payment` with `advance` charges only what advances haven't already covered. Prompt version `assistant-tools-v7`.
+>   - **Chat history** (`agent/history.py`): every message carries its time (`at`); the panel shows day labels and times in the chat list and in the conversation.
 >
+
+![Assistant: facts first, tools only through the broker, every number checked, 25% judged](diagrams/j6-assistant.png)
+
 > The spine-first retrieval pipeline described below is what the `search_knowledge` tool uses.
 
-The assistant ("Ask about your bill") and the bill explanation run through one agent. It never answers from
+The assistant (the "Ask" panel, available on every page) and the bill explanation run through one agent. It never answers from
 the model's own knowledge: every statement is grounded in **documents built from the system's own records**,
 every number is verified against the documents it cites, and every run leaves a full trace.
 
-```mermaid
-flowchart LR
-  Q[Question] --> S1[L1 refresh spine<br/>content-hash upsert]
-  S1 --> R[L2 hybrid retrieval<br/>BM25 + vector + cycle ranker]
-  R --> F[RRF fusion]
-  F --> G[Grader: cheap stage]
-  G -->|sufficient| P
-  G -->|insufficient| C[CRAG corrective<br/>widen · fetch cycle docs · CDR-evidence tool]
-  C --> P[Prompt: invariant prefix + customer docs]
-  P --> L[LLM generate<br/>citations D#/G#]
-  L --> V{Verify: every number<br/>in the cited docs?}
-  V -->|yes| A[Answer + citations + trace]
-  V -->|no, at most 2x| RP[Repair with the unsupported numbers fed back]
-  RP --> V
-  V -->|still no| U[Says it can't verify. No template]
-```
+![search_knowledge retrieval pipeline](diagrams/knowledge-search.png)
 
 ## L1: durable context spine
 - **Store:** table `context_docs` in Autonomous DB 23ai, with a native `VECTOR(384, FLOAT32)` column and a portable JSON copy.
@@ -96,8 +86,8 @@ flowchart LR
 | Item-level budget | about 600 tokens per document (2,400 chars) | `agent.py` `DOC_CHARS` |
 | Context budget | about 3k tokens of customer documents | `CONTEXT_CHARS` |
 | Tool result size | 8,000 chars per result | `broker.py` `RESULT_CHARS` |
-| Stage `max_tokens` | grade 300 · generate 450 · repair 450 | `llm.py` `STAGES` |
-| **Stage-level daily spend caps (USD)** | grade $0.50 · generate $2.00 · repair $1.00 | Valkey `spend:<stage>:<day>`, cost from the provider's usage block |
+| Stage `max_tokens` | grade 300 · generate 450 · explain 900 · agent 700 · repair 700 · title 20 · judge 250 | `llm.py` `STAGES` |
+| **Stage-level daily spend caps (USD)** | grade $0.50 · generate $2.00 · explain $2.00 · agent $3.00 · repair $1.00 · title $0.20 · judge $1.00 | Valkey `spend:<stage>:<day>`, cost from the provider's usage block |
 | Cheap-stage routing | grader runs with temperature 0, JSON mode and a small `max_tokens`; skipped when capped | `llm.py`, `agent._grade` |
 | Per-customer abuse guard | 200 requests/day | `assistant.py` |
 | Data minimisation | no identifiers in documents or prompts (tested) | `spine.py`, `test_agent.py` |
@@ -117,10 +107,14 @@ An agent isn't deterministic, so no single output is tested; layers are:
 | Sampled production judge | policy breaks in real conversations | 25% of answers, in the background |
 
 **Policy judge** (`agent/judge.py`). Grounded is not the same as right: "a plan with more data from next month"
-is grounded in the catalog and still wrong (a tariff change applies today). The judge scores answers against nine
+is grounded in the catalog and still wrong (a tariff change applies today). The judge scores answers against ten
 explicit rules (R1 tariff change today, R2 add-on billing, R3 proposed is not done, R4 overdue blocks orders,
 R5 beyond-allowance rule of the plan, R6 only real products and prices, R7 honest add-on effect, R8 no internals /
-injection, R9 answer first), temperature 0, JSON with rule ids. Offline it votes (majority of 3 calls).
+injection, R9 answer first, R10 money adds up, VAT named), temperature 0, JSON with rule ids. It sees every tool
+result of the turn plus a CHECKED ARITHMETIC block computed by code from those facts (add-on allowance: still over
+or within), so it never does the sums itself; `[S#]` citation markers are stripped from the answer before judging
+(they are product UI, not internals). Offline it votes (majority of 3 calls); the model is the gateway alias
+`judge-llm` (with `judge-llm-fallback`).
 
 **Calibrated against human labels.** `evaldata/judge_labels.jsonl` holds labelled answers (both classes, every rule
 with a negative example, 8 of them real production answers; all 32 reviewed by a person on 23 Nov). `run-evals --calibrate` measures agreement (accuracy,
@@ -155,12 +149,14 @@ judge's calibration. Data: `agent_traces`, `answer_judgements`, `eval_runs`.
 | Infra | One E5.Flex node (about $1.5/day). Everything else is Always Free. |
 
 ## Where to look
-- **Code:** `services/core-api/src/core_api/agent/`, with files `spine.py`, `embed.py`, `retrieve.py`, `llm.py`, `agent.py` and `factory.py`.
+- **Code:** `services/core-api/src/core_api/agent/`, with files `spine.py`, `embed.py`, `retrieve.py`, `llm.py`, `agent.py` and `factory.py`; the chat agent in `loop.py`, `broker.py`, `tools.py` and `history.py`; the policy judge in `judge.py`; the golden set and gate in `core_api/evals.py`.
 - **API:**
-  - `POST /v1/me/assistant/ask`
+  - `POST /v1/me/assistant/stream` (SSE) and `POST /v1/me/assistant/ask`
   - `GET /v1/me/assistant/traces`
+  - `GET /v1/me/assistant/sessions`, `GET` / `DELETE /v1/me/assistant/sessions/{id}` (chat history)
+  - `GET /v1/system/assistant-quality` (System page, "Assistant quality")
   - the explanation inside `GET /v1/me/bills/{cycle}/explanation`
-- **UI:** the Assistant page; under every explanation, "Sources, evidence and how this answer was made".
+- **UI:** the assistant panel (`web/app/components/Assistant.tsx`): a floating "Ask" button on every page and "Ask assistant" in the desktop header; it overlays the page, can be minimized to a bar ("Answering…" / "Answer ready"; Escape minimizes) and suggests questions for the page it's opened on. Under every explanation, "Sources, evidence and how this answer was made".
 - **Tests:** `services/core-api/tests/test_agent.py`:
   - the spine is built from records and only changed documents are re-embedded
   - hybrid retrieval puts the right cycle first
@@ -168,3 +164,7 @@ judge's calibration. Data: `agent_traces`, `answer_judgements`, `eval_runs`.
   - repair loop (no template)
   - honest "unverified" result
   - answer cache plus stage spend cap
+
+  `test_agent_tools.py` covers the tool loop, approval cards, one open offer per kind, VAT-labelled money, chat
+  timestamps and the number checker; `test_judge.py` the judge's parsing, voting, calibration, gate, production
+  sampling, checked arithmetic and citation stripping.

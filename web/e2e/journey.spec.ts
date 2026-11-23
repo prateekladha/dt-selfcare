@@ -119,6 +119,12 @@ test("customer journey: overview, bills, explanation, simulator, system, payment
   }
   await expect(page.getByText(/LLM calls: prompt cache and spend per stage/)).toBeVisible();
   await shot(page, "05b-assistant");
+  await panel.getByRole("button", { name: "Minimize assistant" }).click();   // minimized: a bar at the bottom, the chat is kept
+  const bar = page.getByRole("region", { name: "Assistant (minimized)" });
+  await expect(bar).toBeVisible();
+  await expect(panel).toBeHidden();
+  await bar.getByRole("button", { name: "Expand assistant" }).click();
+  await expect(panel.getByText(/Checked against your records/)).toBeVisible();
 
   // System transparency
   await page.goto("/system");

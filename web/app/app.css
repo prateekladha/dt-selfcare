@@ -66,8 +66,6 @@ html, body { background: var(--bg); color: var(--ink); -webkit-font-smoothing: a
 }
 
 /* Assistant panel docked on the right (desktop): wide screens shift the page so nothing hides under it */
-.app-shell { transition: padding-right 0.2s ease-out; }
-@media (min-width: 1280px) { body[data-assistant="open"] .app-shell { padding-right: 444px; } }
 @keyframes assistant-in { from { opacity: 0; transform: translateY(12px) scale(0.98); } to { opacity: 1; transform: none; } }
 .assistant-panel:not([hidden]) { animation: assistant-in 0.18s ease-out both; }
-@media (prefers-reduced-motion: reduce) { .assistant-panel:not([hidden]), .app-shell { animation: none; transition: none; } }
+@media (prefers-reduced-motion: reduce) { .assistant-panel:not([hidden]) { animation: none; } }

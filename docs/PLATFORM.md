@@ -1,41 +1,14 @@
 # Platform: services, LLM gateway, durable workflows, LLM observability
 
-```mermaid
-flowchart LR
-  B[Browser] --> W[web SSR]
-  W -->|/v1/me/*| C[core-api: billing, usage, home, orders, simulator]
-  W -->|/v1/me/payments| P[payments-service]
-  W -->|/v1/me/assistant| A[assistant-service]
-  RZ[Razorpay] -->|webhook| P
-  P -->|status API| RZ
-  P -->|outbox: PAYMENT_SUCCEEDED| ST[(OCI Streaming)]
-  ST -->|payment-events| N[notifier/billing consumer]
-  N -->|bill_payments ledger| DB[(Autonomous DB)]
-  A -->|tools via broker| DB
-  A --> G[LLM gateway: LiteLLM]
-  C -->|bill explanation| G
-  G -->|primary| DS[DeepSeek]
-  G -->|fallback| MI[Mistral EU]
-  G -->|traces| LF[Langfuse]
-  A -->|prompts| LF
-  C -->|approve order| T[Temporal]
-  T --> WW[workflow-worker]
-  WW -->|TMF622 ProductOrder, timeouts + breaker| AD[order-adapter]
-  AD -->|DE: REST / PL: SOAP, per-country rate limit| BSS[legacy order systems]
-  AD -->|bss-events| ST
-  ST -->|bss-events -> signal| WW
-  C -->|status change + outbox, same tx| ST
-  ST -->|order-events| N
-  WW -->|PLAN_CHANGED| COL[usage-collector]
-```
+![Platform architecture](diagrams/architecture.png)
 
 ## Services and data ownership
 | Service | Scales on | Owns | Talks to others via |
 |---|---|---|---|
 | usage-collector, usage-aggregator, raw-archiver, alert-relay | ingest rate, partitions | Valkey usage state, raw archive | OCI Streaming |
-| **core-api** | page traffic | subscribers, bills, notifications, orders | REST; consumes `payment-events` (billing) |
+| **core-api** | page traffic | subscribers, bills, notifications, orders, `plan_changes` | REST; consumes `payment-events` (billing) |
 | **payments-service** | checkouts | `payments` | Razorpay status API; emits `PAYMENT_SUCCEEDED` (transactional outbox) |
-| **assistant-service** | concurrent LLM streams (SSE) | `context_docs`, `agent_traces` | LLM gateway; read-only tools |
+| **assistant-service** | concurrent LLM streams (SSE) | `context_docs`, `agent_traces`, `chat_sessions`, `chat_messages`, `answer_judgements` | LLM gateway; read-only tools |
 | notifier | alerts and events | — | streams; Valkey pub/sub |
 | workflow-worker | workflow activities | — | Temporal; order-adapter (HTTP); consumes `bss-events` |
 | **order-adapter** | order submissions | legacy emulator state (`bss_orders`) | TMF622 API; publishes `bss-events` |
@@ -50,7 +23,7 @@ flowchart LR
 - **Honest limit:** the services still share one Autonomous DB, with table ownership as above. The assistant's read-only tools read billing tables directly. The target is a database per service, with tools calling core-api's read APIs. That's the next extraction step, gated on team topology.
 
 ## LLM gateway (LiteLLM)
-- **Routing:** services call model alias `billing-llm`. The gateway routes it to **DeepSeek** and falls back to **Mistral (EU)** after errors, with 2 retries and `retry-after`.
+- **Routing:** services call model aliases. `billing-llm` goes to **DeepSeek** and falls back to **Mistral (EU)** after errors, with one quick retry first (`num_retries: 1`, `retry_after: 1`); a stalled stream (no token for 12 s) fails fast to the retry/fallback. `judge-llm` (policy judge, model picked by calibration: DeepSeek, Mistral fallback) and `title-llm` (chat titles: a small Mistral model, DeepSeek fallback) are separate aliases.
 - **Failing providers:** a failing deployment is cooled down for 30 s after 3 failures.
 - **Rate limits** per deployment (rpm/tpm), configured in `values.yaml` under `llmGateway`.
 - **Keys:** provider keys exist **only** in the gateway, synced from OCI Vault. Services hold a gateway key.
@@ -58,8 +31,11 @@ flowchart LR
 - **Client behaviour:** the service-side client is **async** (`httpx.AsyncClient`), limits concurrency per pod (`llm_max_concurrency`) and retries the gateway with jittered backoff.
 
 ## Orders: events, adapters, bill-day spikes
+- **One open offer per kind.** A new add-on or tariff proposal retires the customer's earlier open ones
+  (PROPOSED/DECLINED) of the same kind as EXPIRED, "Replaced by a newer offer" (migration `0007` did the same for
+  existing rows); an open offer is valid for 24 h and is shown as expired after that.
 - **`order-events` (Kafka/OCI Streaming).** Every order status change (PROPOSED → APPROVED → SUBMITTED →
-  COMPLETED/FAILED, DECLINED) is written together with an `ORDER_STATUS_CHANGED` outbox row **in the same
+  COMPLETED/FAILED, DECLINED, EXPIRED) is written together with an `ORDER_STATUS_CHANGED` outbox row **in the same
   DB transaction** and relayed to the stream. The `order-projections` consumer updates the
   home-screen cache, the assistant's context and, on terminal states, the customer notification
   (idempotent: `alert_id = order:<id>:<status>`). Workflows never write notifications themselves.
@@ -142,7 +118,7 @@ one trial request decides whether it closes. 4xx and 429 don't trip it.
 |---|---|---|
 | core-api | last good snapshot (per customer, ≤ 1 h, in BFF memory) | their account with a banner "Showing your account as of HH:MM, live updates are delayed"; the page re-checks every 20 s and swaps in live data. No snapshot → a styled "We'll be right back" page with Try again. |
 | payments-service | `degraded: ["payments"]` in the page data | Pay buttons replaced by "Payments are briefly unavailable. Your bill and due date are not affected." |
-| assistant-service | `degraded: ["assistant"]` | banner on the Assistant page; input disabled; the rest of the app works |
+| assistant-service | `degraded: ["assistant"]` | notice in the assistant panel; input disabled; the rest of the app works |
 | LLM explanation | section-level error boundary | "The explanation isn't available right now. Your bill breakdown above is complete and exact." |
 
 A circuit opens on observed failures, so the first few requests after an outage still fail (with a clear
@@ -189,7 +165,7 @@ about 72 days of usage per day, which inflated November.)
 - Edge: Traefik rate limit per client IP (40 rps, burst 120); verified with a 400-request burst: 176 × 200, 224 × 429.
 
 ## Durable write actions (Temporal)
-- **Broker tiers:** `read` tools execute; the **`propose`** tier (`propose_addon`) only creates a PROPOSED order with a preview. The customer approves in the UI (approval card in chat, or "Add data").
+- **Broker tiers:** `read` tools execute; the **`propose`** tier (`propose_addon`, `propose_plan_change`) only creates a PROPOSED order with a preview (`propose_payment` only prepares a checkout card). The customer approves in the UI (approval card in chat, or "Add data").
 - **Approve** → `start_workflow(AddonPurchaseWorkflow, id=order_id)`. Because the workflow id is the order id, a double click can't start two workflows.
 - **Workflow steps:**
   1. Validate.
@@ -214,7 +190,9 @@ about 72 days of usage per day, which inflated November.)
 - **Evaluations:** `run-evals` (17 golden questions on the live assistant) runs as the last step of every deploy
   (`kubectl exec deploy/core-api -- run-evals --gate --calibrate`): grounded, required facts, tool use, and a policy
   judge calibrated against human labels (Cohen's kappa); results in `eval_runs` and on the System page. `--langfuse`
-  also records the run as Langfuse scores to compare prompt versions and models. Details: [AI_AGENT.md](AI_AGENT.md).
+  also records the run as Langfuse scores to compare prompt versions and models. In production, 25% of answers
+  (`judge_sample_rate`) are judged in the background, off the response path (`answer_judgements`); the System page's
+  "Assistant quality" card (`GET /v1/system/assistant-quality`) shows the trend. Details: [AI_AGENT.md](AI_AGENT.md).
 
 ## Sessions
 Sessions use rotating refresh tokens:

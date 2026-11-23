@@ -70,6 +70,13 @@ FROM bill_payments bp LEFT JOIN payments p ON p.id = bp.payment_id ORDER BY bp.a
 -- 12. Captured but not yet credited (should be empty after ~2 min for bills; advances wait for the bill run)
 SELECT id, purpose, bill_id, amount/100 AS amount, updated_at FROM payments
 WHERE status = 'PAID' AND id NOT IN (SELECT payment_id FROM bill_payments);
+
+-- 13. Orders (one open offer per kind; older offers EXPIRED "Replaced by a newer offer")
+SELECT id, subscriber_id, kind, addon_code, status, detail, source, created_at FROM orders ORDER BY created_at DESC;
+
+-- 14. Assistant quality: sampled policy-judge verdicts and eval-gate runs
+SELECT trace_id, verdict, violations, reason, judge_version, created_at FROM answer_judgements ORDER BY created_at DESC;
+SELECT kind, prompt_version, judge_version, passed, created_at FROM eval_runs ORDER BY created_at DESC;
 ```
 
 ## 2. Valkey (usage state)
@@ -99,7 +106,7 @@ INFO memory
 Values are bytes (data) or seconds (voice). `ROAMING_DATA:EU` counts toward the allowance, `ROAMING_DATA:Z2` is charged.
 
 ## 3. OCI Streaming (Kafka API)
-**Console:** Analytics & AI → Messaging → Streaming → compartment **dt-selfcare** → stream pool **dt-selfcare-pool** → stream **usage-events** (4 partitions) / **usage-alerts** / **payment-events** → **Load messages**. Usage messages are **gzip** (binary in the console), and alerts are plain JSON.
+**Console:** Analytics & AI → Messaging → Streaming → compartment **dt-selfcare** → stream pool **dt-selfcare-pool** → stream **usage-events** (4 partitions) / **usage-alerts** / **payment-events** / **order-events** / **bss-events** → **Load messages**. Usage messages are **gzip** (binary in the console), and alerts are plain JSON.
 
 CLI (alerts are readable directly):
 ```bash
@@ -109,7 +116,7 @@ CUR=$(oci streaming stream cursor create-cursor --stream-id "$STREAM" --endpoint
 oci streaming stream message get --stream-id "$STREAM" --endpoint "$EP" --cursor "$CUR" --limit 5 \
   --query 'data[].value' --raw-output | while read v; do echo "$v" | base64 -d; echo; done
 ```
-For `usage-events`, decode a message with `base64 -d | gunzip` to see the JSONL `UsageRecord`s. Consumer groups: `usage-aggregator`, `raw-archiver`, `notifier`. The aggregator's truth offset is `off:{pN}` in Valkey; compare it with the stream's latest offset for lag.
+For `usage-events`, decode a message with `base64 -d | gunzip` to see the JSONL `UsageRecord`s. Consumer groups: `usage-aggregator`, `raw-archiver`, `notifier` (usage-alerts), `billing` (payment-events), `order-projections` (order-events), `order-workflows` (bss-events). The aggregator's truth offset is `off:{pN}` in Valkey; compare it with the stream's latest offset for lag.
 
 ## 4. Raw archive (Object Storage)
 ```bash
@@ -131,7 +138,8 @@ kubectl -n selfcare logs -l app=core-api | grep unhandled_error      # server er
 kubectl -n selfcare logs -l app=web --tail=50                        # SSR access log
 kubectl -n selfcare port-forward deploy/core-api 8080 & curl -s localhost:8080/metrics | grep -E '^(ai_|http_|circuit)'
 kubectl -n selfcare port-forward deploy/usage-aggregator 9000 & curl -s localhost:9000/metrics | grep aggregator_
-helm test selfcare -n selfcare --logs                                # 15-check smoke test
+helm test selfcare -n selfcare --logs                                # 19-check smoke test
+kubectl -n selfcare exec deploy/core-api -- run-evals --gate --calibrate  # assistant eval gate (last deploy step)
 ```
 Key metrics:
 - `aggregator_messages_total{result}`, `aggregator_records_total`, `aggregator_alerts_raised_total`, `aggregator_event_lag_seconds`, `aggregator_apply_seconds`
@@ -154,7 +162,7 @@ Change `defaultVariant`:
 Durable change: edit `flags:` in `deploy/helm/selfcare/values.yaml` and push. CI redeploys.
 
 ## 7. Secrets and cost
-- Add or rotate third-party keys: `./deploy/scripts/put-secrets.sh`. Then `kubectl -n selfcare rollout restart deploy/core-api`.
+- Add or rotate third-party keys: `./deploy/scripts/put-secrets.sh`. Then restart the pods that read them as env vars: `kubectl -n selfcare rollout restart deploy/llm-gateway` (DeepSeek, Mistral, Langfuse: provider keys live only in the gateway) and `deploy/payments-service deploy/assistant-service deploy/core-api` (Razorpay, Langfuse prompt keys).
 - Auth keys (JWT RS256 key pair, web `session-secret`, `order-source-token`): `./deploy/scripts/auth-keys.sh` creates whichever is missing; `--rotate` makes new versions of all, then `kubectl -n selfcare rollout restart deploy` once External Secrets has synced (≤ 5 min). Rotation signs everyone out once.
 - Park the platform (DB, streams and data are kept):
   ```bash

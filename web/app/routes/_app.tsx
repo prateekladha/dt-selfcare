@@ -69,7 +69,7 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
 
   return (
     <AssistantProvider>
-    <div className="app-shell min-h-screen pb-20 md:pb-0">
+    <div className="min-h-screen pb-20 md:pb-0">
       {nav.state !== "idle" && (
         <div className="fixed inset-x-0 top-0 z-[60] h-0.5 overflow-hidden bg-[var(--brand-bg)]">
           <div className="h-full w-1/3 bg-[var(--brand)]" style={{ animation: "progress 1s ease-in-out infinite" }} />
