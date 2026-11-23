@@ -208,6 +208,20 @@ def _month_if_switched_today(ctx: ToolContext, sub, new_code: str) -> int | None
         return None
 
 
+def _addon_effect(ctx: ToolContext, add_mb: int) -> str | None:
+    """What an add-on would do THIS month, computed (the model got "6,084 MB used, 3,000 + 5,000 MB" wrong when no
+    add-on could be proposed, e.g. orders blocked by an overdue bill)."""
+    try:
+        _, plan, counters, _, plan_mb = _live(ctx)
+    except Exception:  # noqa: BLE001 - a preview is optional; never fail the catalog for it
+        return None
+    after = _data_position(plan_mb, counters, extra_mb=add_mb)
+    if "over_allowance_by" in after:
+        return (f"allowance would be {after['total_allowance']} with {after['data_used']} used: still over by "
+                f"{after['over_allowance_by']} ({_overage(plan)})")
+    return f"allowance would be {after['total_allowance']} with {after['data_used']} used: within it, {after['data_remaining']} left"
+
+
 def t_catalog(args: dict, ctx: ToolContext) -> dict:
     """Tariffs and add-ons the customer can actually order (their country only), with the current plan marked."""
     from telco_common.catalog import ADDONS, plans_for
@@ -231,7 +245,8 @@ def t_catalog(args: dict, ctx: ToolContext) -> dict:
                       for p in plans],
             "largest_plan": plans[-1].name if plans else None,
             "add_ons": [{"code": a.code, "name": a.name, "data": f"{a.data_mb:,} MB", "price": net(a.price),
-                         "applies": "this month only, on top of the plan"}
+                         "applies": "this month only, on top of the plan",
+                         **({"effect_this_month": eff} if (eff := _addon_effect(ctx, a.data_mb)) else {})}
                         for a in ADDONS.values() if a.country == cur.country],
             "rules": {"tariff_change": "takes effect today once approved; this month is pro-rated by day: the old plan "
                                       "until yesterday, the new plan from today (fee and allowances)",
