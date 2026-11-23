@@ -3,6 +3,7 @@ import { useRevalidator } from "react-router";
 import { ArrowDown, ArrowRight, Boxes, BrainCircuit, Cloud, CreditCard, Database, ExternalLink, FileArchive, Flag, Globe, Layers, Radio, Server, ShieldCheck, Smartphone, Zap } from "lucide-react";
 import { Card, CardHeader, Pill } from "~/components/ui";
 import { api, PRIVATE } from "~/lib/api.server";
+import { AssistantQuality, type Quality } from "~/components/AssistantQuality";
 import type { Route } from "./+types/system";
 
 export const headers = () => PRIVATE;
@@ -25,7 +26,12 @@ type Overview = {
 };
 
 export async function loader({ request }: Route.LoaderArgs) {
-  return { o: await api<Overview>(request, "/v1/system/overview") };
+  // quality is cached 60 s server-side; awaited (not streamed) so the 5 s refresh doesn't flash a skeleton
+  const [o, q] = await Promise.all([
+    api<Overview>(request, "/v1/system/overview"),
+    api<Quality>(request, "/v1/system/assistant-quality").catch(() => ({ error: "unavailable" }) as Quality),
+  ]);
+  return { o, q };
 }
 
 const REPO = "https://github.com/prateekladha/dt-selfcare/blob/main";
@@ -59,7 +65,7 @@ function flagValue(v: unknown): string {
 }
 
 export default function System({ loaderData }: Route.ComponentProps) {
-  const { o } = loaderData;
+  const { o, q } = loaderData;
   const rv = useRevalidator();
   useEffect(() => { const t = setInterval(() => rv.state === "idle" && document.visibilityState === "visible" && rv.revalidate(), 5000); return () => clearInterval(t); }, [rv]);
   const parts = o.stream.partitions ?? [];
@@ -103,6 +109,8 @@ export default function System({ loaderData }: Route.ComponentProps) {
           <div className="flex items-center gap-2 text-xs text-[var(--ink-3)]"><FileArchive size={14} /> Every usage message is also copied by <b className="text-[var(--ink-2)]">raw-archiver</b> to Object Storage (audit, disputes, reconciliation). Secrets come from OCI Vault through External Secrets; flags from flagd.</div>
         </div>
       </Card>
+
+      <AssistantQuality q={q} />
 
       <div className="grid gap-6 lg:grid-cols-3">
         <Card className="lg:col-span-2">

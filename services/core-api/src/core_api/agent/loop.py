@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import re
 import time
 import uuid
@@ -31,7 +32,7 @@ from .tools import TOOLS, ToolContext, declarations
 
 log = structlog.get_logger("agent.loop")
 MAX_TURNS, MAX_TOOL_CALLS = 6, 10
-PROMPT_VERSION = "assistant-tools-v4"
+PROMPT_VERSION = "assistant-tools-v5"
 
 SYSTEM = """You are the customer care assistant of a mobile operator, talking to one of its customers about
 their bills, usage, plan, roaming and payments. Talk like a friendly, competent person at a service desk: warm,
@@ -63,6 +64,9 @@ GETTING THE FACTS RIGHT
   still be over the allowance, say so plainly (e.g. "even with 5 GB you'd still be 50 GB over, so the speed stays
   reduced") and suggest what would help (a bigger add-on that covers it, or a plan with more data). Prepared add-ons and tariff changes are approved by the customer on the card below ("approve it
   below"), charged on the next bill: never call that a checkout. It only happens after they approve.
+- While a bill is overdue, add-ons and tariff changes can't be ordered (get_plans_and_addons rules): you may still
+  say what would help, but never offer to prepare it now ("I can prepare it for you"); say it can be ordered once
+  the overdue bill is paid.
 - Orders: if they mention an order or say they approved something, check get_orders and say its real status.
   Only call an add-on or tariff change active when get_orders says it is active; never contradict what a tool
   shows (e.g. if the allowance already includes an add-on, it IS counted).
@@ -138,16 +142,21 @@ def attach_sources(answer: str, labels: dict[str, str]) -> str:
     if not labels:
         return _CITE.sub("", answer)
     nums = {lab: numbers_in(t) for lab, t in labels.items()}
+    low = {lab: t.lower() for lab, t in labels.items()}
     order = sorted(labels, key=lambda x: int(x[1:]))
 
     def cite(sentence: str) -> str:
         # fewest sources that cover the sentence's figures, best-covering first: "due 15 November 2026" cites
         # the bill, not a usage reading that merely contains "2026" in its timestamp
         toks = [t for t in _NUM.findall(canon_spaced_numbers(sentence)) if len(_norm(t)) >= 2]
+        # tie-break between sources holding the same figures: the one that also shares the sentence's words
+        # ("due", "November", "bill"), else a usage reading whose numbers happen to include 15 and 2026 wins by order
+        words = set(re.findall(r"[a-z]{3,}", sentence.lower()))
+        overlap = {lab: sum(1 for w in words if w in low[lab]) for lab in order}
         found: list[str] = []
         left = set(range(len(toks)))
         while left:
-            best = max(order, key=lambda x: (sum(supported_by(toks[i], nums[x]) for i in left), -order.index(x)))
+            best = max(order, key=lambda x: (sum(supported_by(toks[i], nums[x]) for i in left), overlap[x], -order.index(x)))
             covered = {i for i in left if supported_by(toks[i], nums[best])}
             if not covered:
                 break
@@ -169,6 +178,38 @@ def attach_sources(answer: str, labels: dict[str, str]) -> str:
 PAYMENT_WORDS = re.compile(r"\b(pay|payment|checkout)\b", re.IGNORECASE)
 # "...in the secure checkout below" / "approve it below" (not "you'll pay 10 EUR, below last month")
 POINTS_BELOW = re.compile(r"\b(checkout|approve|approval|card)\b[^.\n]{0,60}\bbelow\b|\bbelow\b[^.\n]{0,30}\b(checkout|card)\b", re.IGNORECASE)
+
+
+_JUDGING: set[asyncio.Task] = set()   # strong refs: a fire-and-forget task must not be garbage-collected
+
+
+def sample_for_judge(llm: LLM, engine, trace_id: str, status: str, question: str, answer: str,
+                     sources: list[dict]) -> None:
+    """Online quality signal: a sample of real answers is scored by the policy judge AFTER the customer has the
+    answer (never on the response path). Small talk is skipped; failures only cost the sample."""
+    if status not in ("VERIFIED", "REPAIRED", "UNVERIFIED") or random.random() >= llm.s.judge_sample_rate:
+        return
+
+    async def run() -> None:
+        from ..db import answer_judgements
+        from .judge import ajudge, facts_from
+
+        j = await ajudge(llm, question, answer, facts_from(sources))
+
+        def save() -> None:
+            with engine.begin() as cx:
+                cx.execute(insert(answer_judgements).values(
+                    trace_id=trace_id, verdict=j.verdict, violations=",".join(j.violations), reason=j.reason[:500],
+                    judge_model=(j.model or "")[:80], judge_version=j.version, cost_usd=str(round(j.cost_usd, 6))))
+        try:
+            await asyncio.to_thread(save)
+            log.info("answer_judged", trace_id=trace_id, verdict=j.verdict, violations=j.violations)
+        except Exception as e:  # noqa: BLE001
+            log.warning("judgement_persist_failed", error=str(e)[:200])
+
+    t = asyncio.get_running_loop().create_task(run())
+    _JUDGING.add(t)
+    t.add_done_callback(_JUDGING.discard)
 
 
 def load_history(r, sub: str, sid: str) -> list[dict]:
@@ -377,14 +418,18 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
     trace["totals"]["cache_hit_ratio"] = round(trace["totals"]["cache_hit_tokens"] / pt, 3) if pt else None
     trace["latency_ms"] = int((time.monotonic() - t0) * 1000)
     citations = [broker.source_meta[lab] for lab in cited]
+    trace_id = str(uuid.uuid4())
+
     def persist() -> None:
         with engine.begin() as cx:
-            cx.execute(insert(agent_traces).values(id=str(uuid.uuid4()), subscriber_id=ctx.subscriber_id, question=question[:500],
+            cx.execute(insert(agent_traces).values(id=trace_id, subscriber_id=ctx.subscriber_id, question=question[:500],
                                                    status=status, answer=answer, trace=json.dumps(trace, default=str),
                                                    cost_usd=str(trace["totals"]["cost_usd"])))
     try:
         await asyncio.to_thread(persist)
     except Exception as e:  # noqa: BLE001
         log.warning("trace_persist_failed", error=str(e)[:200])
+    else:
+        sample_for_judge(llm, engine, trace_id, status, question, answer, list(broker.source_meta.values()))
     sent = list(cards.values()) if status in ("VERIFIED", "REPAIRED", "CONVERSATIONAL") else []
     yield {"type": "done", "status": status, "answer": answer, "citations": citations, "cards": sent, "trace": trace}

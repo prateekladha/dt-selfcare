@@ -211,13 +211,10 @@ about 72 days of usage per day, which inflated November.)
   - `prompt-seed` publishes the repo versions; it runs as a post-install/post-upgrade Helm hook on every deploy, publishing only when the text changed and never failing the deploy.
   - Rollback = move the label.
   - The active version is recorded in every trace (`prompt_version`).
-- **Evaluations:** dataset `billing-assistant-golden` (9 questions over the demo population), run as experiment `assistant-golden` (`deploy/loadtest/evals-job.yaml`) with these evaluators:
-  - `grounded`
-  - `mentions`
-  - `used_tools`
-  - `cost_usd`
-
-  Compare runs across prompt versions and models.
+- **Evaluations:** `run-evals` (17 golden questions on the live assistant) runs as the last step of every deploy
+  (`kubectl exec deploy/core-api -- run-evals --gate --calibrate`): grounded, required facts, tool use, and a policy
+  judge calibrated against human labels (Cohen's kappa); results in `eval_runs` and on the System page. `--langfuse`
+  also records the run as Langfuse scores to compare prompt versions and models. Details: [AI_AGENT.md](AI_AGENT.md).
 
 ## Sessions
 Sessions use rotating refresh tokens:

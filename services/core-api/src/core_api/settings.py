@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     llm_gateway_key: str = ""
     llm_model_alias: str = "billing-llm"
     llm_title_alias: str = "title-llm"
+    llm_judge_alias: str = "judge-llm"     # policy judge (model picked by calibration against human labels)
+    judge_sample_rate: float = 0.25        # share of production answers judged in the background (quality trend)
     bss_max_rps: float = 200.0         # legacy BSS capacity, enforced by Temporal across all workers
     bss_max_concurrency: int = 50      # per worker pod (legacy calls take 0.5-3 s)  # nano model for chat titles (falls back inside the gateway)
     llm_max_concurrency: int = 32  # per pod

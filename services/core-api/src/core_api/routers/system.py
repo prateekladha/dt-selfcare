@@ -171,3 +171,94 @@ def overview(p: Principal = Depends(current_principal)) -> dict:
                 "applied_offset_of_your_partition": state.committed_offset(part), "recent_alert_events": my_alerts,
                 "db_bills": my_bills, "db_payments": my_payments, "db_notifications": my_notes},
     }
+
+
+# ---------------- assistant quality over time ----------------
+GROUNDED = ("VERIFIED", "REPAIRED", "CONVERSATIONAL")
+
+
+def _pct(xs: list[int], q: float) -> int | None:
+    if not xs:
+        return None
+    xs = sorted(xs)
+    return xs[min(len(xs) - 1, round(q * (len(xs) - 1)))]
+
+
+def _agg(rows: list[dict]) -> dict:
+    n = len(rows)
+    judged = [r for r in rows if r["verdict"] in ("PASS", "FAIL")]
+    lat = [r["latency_ms"] for r in rows if r["latency_ms"]]
+    return {"answers": n,
+            "verified_rate": round(sum(r["status"] in GROUNDED for r in rows) / n, 3) if n else None,
+            "repaired_rate": round(sum(r["status"] == "REPAIRED" for r in rows) / n, 3) if n else None,
+            "unverified_rate": round(sum(r["status"] not in GROUNDED for r in rows) / n, 3) if n else None,
+            "p50_ms": _pct(lat, 0.5), "p95_ms": _pct(lat, 0.95),
+            "cost_per_answer_usd": round(sum(r["cost"] for r in rows) / n, 5) if n else None,
+            "judged": len(judged),
+            "judge_pass_rate": round(sum(r["verdict"] == "PASS" for r in judged) / len(judged), 3) if judged else None}
+
+
+def assistant_quality(days: int = 14) -> dict:
+    """Production answers (agent_traces) joined with the sampled policy-judge verdicts, per day, plus the
+    latest offline eval runs and judge calibration. Aggregates only: no question or answer text."""
+    from datetime import timedelta
+
+    from ..agent.judge import JUDGE_VERSION
+    from ..db import agent_traces, answer_judgements, eval_runs
+
+    since = datetime.now(UTC) - timedelta(days=days)
+    with get_engine().connect() as cx:
+        traces = cx.execute(select(agent_traces.c.id, agent_traces.c.status, agent_traces.c.cost_usd,
+                                   agent_traces.c.trace, agent_traces.c.created_at)
+                            .where(agent_traces.c.created_at >= since)).all()
+        verdicts = dict(cx.execute(select(answer_judgements.c.trace_id, answer_judgements.c.verdict)
+                                   .where(answer_judgements.c.created_at >= since)).all())
+        viol = cx.execute(select(answer_judgements.c.violations)
+                          .where(answer_judgements.c.created_at >= datetime.now(UTC) - timedelta(days=7),
+                                 answer_judgements.c.verdict == "FAIL")).scalars().all()
+        runs = cx.execute(select(eval_runs.c.kind, eval_runs.c.prompt_version, eval_runs.c.judge_version,
+                                 eval_runs.c.passed, eval_runs.c.metrics, eval_runs.c.created_at)
+                          .order_by(eval_runs.c.created_at.desc()).limit(30)).all()
+    rows = []
+    for t in traces:
+        try:
+            lat = int(json.loads(t.trace).get("latency_ms") or 0)
+        except (ValueError, TypeError, AttributeError):
+            lat = 0
+        ts = t.created_at if t.created_at.tzinfo else t.created_at.replace(tzinfo=UTC)
+        rows.append({"day": ts.strftime("%Y-%m-%d"), "ts": ts, "status": t.status, "latency_ms": lat,
+                     "cost": float(t.cost_usd or 0), "verdict": verdicts.get(t.id)})
+    by_day: dict[str, list[dict]] = {}
+    for r in rows:
+        by_day.setdefault(r["day"], []).append(r)
+    today = datetime.now(UTC).date()
+    day_list = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
+    cut7, cut14 = datetime.now(UTC) - timedelta(days=7), datetime.now(UTC) - timedelta(days=14)
+    counts: dict[str, int] = {}
+    for v in viol:
+        for rule in (v or "").split(","):
+            if rule:
+                counts[rule] = counts.get(rule, 0) + 1
+
+    def run_row(r) -> dict:
+        m = json.loads(r.metrics)
+        keep = ("n", "grounded_rate", "mention_rate", "tools_rate", "judge_pass_rate", "judge_trusted", "p50_ms", "p95_ms",
+                "cost_per_answer_usd", "failed", "violations", "accuracy", "kappa", "fail_recall", "trusted",
+                "unreviewed_labels", "disagreements")
+        ts = r.created_at if r.created_at.tzinfo else r.created_at.replace(tzinfo=UTC)
+        return {"kind": r.kind, "prompt_version": r.prompt_version, "judge_version": r.judge_version,
+                "passed": bool(r.passed), "at": ts.isoformat(), **{k: m[k] for k in keep if k in m}}
+
+    cal = next((run_row(r) for r in runs if r.kind == "calibration" and r.judge_version == JUDGE_VERSION), None)
+    return {"window_days": days, "judge_version": JUDGE_VERSION, "sample_rate": get_settings().judge_sample_rate,
+            "days": [{"day": d, **_agg(by_day.get(d, []))} for d in day_list],
+            "last7": _agg([r for r in rows if r["ts"] >= cut7]),
+            "prev7": _agg([r for r in rows if cut14 <= r["ts"] < cut7]),
+            "violations_7d": dict(sorted(counts.items())),
+            "evals": [run_row(r) for r in runs if r.kind == "golden"][:8],
+            "calibration": cal}
+
+
+@router.get("/assistant-quality")
+def assistant_quality_api(p: Principal = Depends(current_principal)) -> dict:
+    return _cached("assistant_quality", 60, assistant_quality)
