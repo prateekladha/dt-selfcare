@@ -582,3 +582,13 @@ def test_chat_history_has_utc_timestamps_for_chats_and_messages(world):
     assert [m["role"] for m in s["messages"]] == ["user", "assistant"]
     assert all(m["at"].endswith("+00:00") for m in s["messages"])
     assert hist.list_sessions(engine, SUB)[0]["updated_at"].endswith("+00:00")
+
+
+def test_catalog_states_each_add_on_effect_this_month(world):
+    """Prod 23 Nov: with orders blocked (no proposal), the model said a 5 GB add-on would leave the customer over
+    although 6,084 MB < 3,000 + 5,000 MB. The catalog now carries the computed effect per add-on."""
+    from core_api.agent.tools import TOOLS
+    engine, r, state = world
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), scripted_llm(r, []))
+    for a in TOOLS["get_plans_and_addons"].run({}, ctx)["add_ons"]:
+        assert a["effect_this_month"].startswith("allowance would be ") and (" left" in a["effect_this_month"] or "still over" in a["effect_this_month"])

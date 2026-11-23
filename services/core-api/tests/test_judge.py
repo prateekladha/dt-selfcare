@@ -168,3 +168,23 @@ def test_tool_use_means_the_answer_rests_on_cited_account_data():
            "citations": [{"label": "S4", "tool": "get_plans_and_addons", "body": "{}"}]}
     assert evals.score(case_, out, None)["tools_ok"] and evals.score(case_, out, None)["own_lookups"] == 0
     assert not evals.score(case_, out | {"citations": []}, None)["tools_ok"]
+
+
+def test_add_on_arithmetic_is_computed_for_the_judge():
+    """Prod gate 23 Nov: the judge said 6,084 MB used vs 3,000 + 5,000 MB 'remains over'. Code does the sums now."""
+    facts = ('[S1 get_current_usage] {"total_allowance": "3,000 MB", "data_used": "6,084 MB", "projected_month_end": "7,800 MB"}\n'
+             '[S4 get_plans_and_addons] {"add_ons": [{"name": "5 GB data add-on", "data": "5,000 MB"}, '
+             '{"name": "20 GB data add-on", "data": "20,000 MB"}]}')
+    calc = J.checked_arithmetic(facts)
+    assert calc[0] == "used 6,084 MB of 3,000 MB: over by 3,084 MB"
+    assert "with a 5 GB add-on (+5,000 MB): allowance 8,000 MB, used 6,084 MB -> WITHIN the allowance (1,916 MB left)" in calc[1]
+    assert calc[1].endswith("projected month end 7,800 MB -> covered")
+    far = J.checked_arithmetic('{"total_allowance_mb": 30000, "data_used_mb": 91823} 5 GB data add-on')
+    assert "STILL OVER by 56,823 MB" in far[1]                                  # label-style keys work too
+    assert J.checked_arithmetic("no usage here") == []
+    assert "CHECKED ARITHMETIC" in J.messages("q", "a", facts)[1]["content"]
+
+
+def test_citation_markers_are_not_shown_to_the_judge():
+    content = J.messages("q", "You have 50 MB left [S1]. It's charged on the next bill [S4][S2].", "")[1]["content"]
+    assert "[S" not in content.split("ANSWER")[1] and "50 MB left." in content
