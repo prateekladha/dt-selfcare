@@ -3,6 +3,7 @@ tool can never be pointed at another customer). Each result carries a `source` s
 Only the Broker may execute tools."""
 from __future__ import annotations
 
+import json
 from calendar import monthrange
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -392,7 +393,7 @@ def t_alerts(args: dict, ctx: ToolContext) -> dict:
 
 
 def t_simulate(args: dict, ctx: ToolContext) -> dict:
-    from ..services.simulate import SCENARIOS, scenario_counters
+    from ..services.simulate import SCENARIOS, apply_scenario
 
     sub = _sub(ctx)
     plan = get_plan(sub.plan_code)
@@ -400,10 +401,10 @@ def t_simulate(args: dict, ctx: ToolContext) -> dict:
     if key not in SCENARIOS:
         return {"error": f"unknown scenario; choose one of {sorted(SCENARIOS)}"}
     last = list_bills(ctx.engine, ctx.subscriber_id, 1)
-    counters = scenario_counters(key)
-    if last:
-        for k, v in ctx.state.counters(ctx.subscriber_id, last[-1].cycle).items():
-            counters[k] = counters.get(k, 0) + v
+    # the same baseline and add/replace rule as the Try your usage page: "light month" REPLACES the month's data and
+    # calls (it used to be added on top, so the chat priced a light month above the real one)
+    base = {k: int(v) for k, v in json.loads(last[-1].rated_counters).items()} if last and last[-1].rated_counters else {}
+    counters = apply_scenario(key, base)
     b = rate(ctx.subscriber_id, cycle_of(datetime.now(UTC)), plan, counters)
     cur = COUNTRIES[plan.country].currency
     return {"source": f"rating-engine:simulate:{key}", "scenario": SCENARIOS[key]["title"],

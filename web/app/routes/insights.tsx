@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { Form, useNavigation } from "react-router";
-import { FileUp, Globe, Loader2, Phone, Plane, Sun, Tv, Upload } from "lucide-react";
+import { Calculator, FileUp, Globe, Loader2, Phone, Plane, Sun, Tv, Upload } from "lucide-react";
 import { DeltaPill, ExplanationSection } from "~/components/Explain";
 import { Card, CardHeader } from "~/components/ui";
 import { api, ApiError, PRIVATE } from "~/lib/api.server";
@@ -24,16 +24,24 @@ export async function loader({ request }: Route.LoaderArgs) {
   return { scenarios: await api<{ key: string; title: string }[]>(request, "/v1/me/usage/scenarios") };
 }
 
+/** "Build your own": the fields the API takes (it validates and caps them; these are only for the form). */
+const CUSTOM = ["start", "data_gb", "voice_min", "intl_min", "sms", "trip_zone", "trip_data_gb", "trip_voice_min"] as const;
+
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
   const body = new FormData();
   const file = form.get("file");
-  if (file instanceof File && file.size > 1_000_000) return { error: "That file is larger than 1 MB. Please upload a smaller usage file." };
-  if (file instanceof File && file.size > 0) body.set("file", file, file.name);
-  else if (form.get("scenario")) body.set("scenario", String(form.get("scenario")));
-  else return { error: "Choose a scenario or upload a file." };
+  if (form.get("custom")) {
+    body.set("custom", "1");
+    for (const k of CUSTOM) { const v = String(form.get(k) ?? "").trim().replace(",", "."); if (v) body.set(k, v); }
+  } else {
+    if (file instanceof File && file.size > 1_000_000) return { error: "That file is larger than 1 MB. Please upload a smaller usage file." };
+    if (file instanceof File && file.size > 0) body.set("file", file, file.name);
+    else if (form.get("scenario")) body.set("scenario", String(form.get("scenario")));
+    else return { error: "Choose a scenario or upload a file." };
+  }
   try {
-    return { result: await api<SimResult>(request, "/v1/me/usage/simulate", { method: "POST", body }), picked: String(form.get("scenario") ?? "") };
+    return { result: await api<SimResult>(request, "/v1/me/usage/simulate", { method: "POST", body }), picked: form.get("custom") ? "custom" : String(form.get("scenario") ?? "") };
   } catch (e) {
     if (e instanceof ApiError) return { error: e.status >= 500 ? "We couldn't price that right now. Please try again in a moment." : e.message.replace(/^invalid usage: /, "") };
     throw e;
@@ -46,7 +54,8 @@ export default function Insights({ loaderData, actionData }: Route.ComponentProp
   const loc = home.subscriber.locale;
   const nav = useNavigation();
   const busy = nav.state === "submitting";
-  const pending = busy ? String(nav.formData?.get("scenario") ?? "file") : "";
+  const pending = busy ? (nav.formData?.get("custom") ? "custom" : String(nav.formData?.get("scenario") ?? "file")) : "";
+  const [start, setStart] = useState<"usual" | "scratch">("usual");
   const r = actionData && "result" in actionData ? actionData.result : null;
   const [fileName, setFileName] = useState("");
   const [drag, setDrag] = useState(false);
@@ -101,6 +110,45 @@ export default function Insights({ loaderData, actionData }: Route.ComponentProp
         </Card>
       </div>
 
+
+      <Card>
+        <CardHeader title="Build your own" subtitle="Your own numbers, priced on your plan. Your real bill is never affected." />
+        <Form method="post" className="space-y-5 p-6 pt-4">
+          <input type="hidden" name="custom" value="1" />
+          <fieldset className="flex flex-wrap gap-2" aria-label="Start from">
+            {([["usual", "On top of my usual month"], ["scratch", "Start from zero"]] as const).map(([v, label]) => (
+              <label key={v} className={`cursor-pointer rounded-full border px-4 py-2 text-sm font-semibold ${start === v ? "border-[var(--brand)] bg-[var(--brand-bg)]" : "border-[var(--line)] hover:border-[var(--ink)]"}`}>
+                <input type="radio" name="start" value={v} checked={start === v} onChange={() => setStart(v)} className="sr-only" />{label}
+              </label>
+            ))}
+          </fieldset>
+          <p className="-mt-2 text-[13px] text-[var(--ink-3)]">{start === "usual" ? "What you enter is added to your real usage last month." : "What you enter is the whole month."}</p>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Num name="data_gb" label="Data at home" unit="GB" max={500} step="0.5" />
+            <Num name="voice_min" label="Calls at home" unit="min" max={10000} />
+            <Num name="intl_min" label="Calls abroad from home" unit="min" max={5000} />
+            <Num name="sms" label="Text messages" unit="SMS" max={5000} />
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <label className="block text-sm font-semibold">Travelling to
+              <select name="trip_zone" defaultValue="" className="mt-1 h-11 w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 font-normal">
+                <option value="">Not travelling</option>
+                <option value="EU">EU (roam like at home)</option>
+                <option value="Z2">Zone 2: UK, Switzerland, US…</option>
+                <option value="Z3">Zone 3: rest of the world</option>
+              </select>
+            </label>
+            <Num name="trip_data_gb" label="Data while travelling" unit="GB" max={200} step="0.5" />
+            <Num name="trip_voice_min" label="Calls while travelling" unit="min" max={5000} />
+            <div className="flex items-end">
+              <button disabled={busy} className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[var(--brand)] px-5 font-bold text-white hover:bg-[var(--brand-hover)] disabled:opacity-50">
+                {pending === "custom" ? <Loader2 size={16} className="animate-spin" /> : <Calculator size={16} />} Price it
+              </button>
+            </div>
+          </div>
+        </Form>
+      </Card>
+
       {actionData && "error" in actionData && <div role="alert" className="rounded-lg bg-[var(--bad-bg)] px-4 py-3 text-sm font-medium text-[var(--bad)]">{actionData.error}</div>}
 
       {r && (
@@ -120,5 +168,17 @@ export default function Insights({ loaderData, actionData }: Route.ComponentProp
         </section>
       )}
     </div>
+  );
+}
+
+function Num({ name, label, unit, max, step = "1" }: { name: string; label: string; unit: string; max: number; step?: string }) {
+  return (
+    <label className="block text-sm font-semibold">{label}
+      <span className="mt-1 flex h-11 items-center rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] focus-within:border-[var(--ink)]">
+        <input type="number" inputMode="decimal" name={name} min={0} max={max} step={step} placeholder="0"
+               className="tabular h-full w-full min-w-0 rounded-l-lg bg-transparent px-3 font-normal outline-none" />
+        <span className="px-3 text-[13px] font-normal text-[var(--ink-3)]">{unit}</span>
+      </span>
+    </label>
   );
 }

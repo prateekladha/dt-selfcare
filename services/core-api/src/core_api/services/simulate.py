@@ -134,3 +134,37 @@ def apply_scenario(key: str, base: dict[str, int]) -> dict[str, int]:
     for k, v in extra.items():
         out[k] = out.get(k, 0) + v
     return out
+
+
+# "Build your own" on Try your usage: a few fields instead of a file. Same validation and rating as everything
+# else; the caps keep a typo (50000 GB) from rendering a nonsense bill.
+CUSTOM_FIELDS = {  # field -> (usage type, unit, max, label shown in errors)
+    "data_gb": ("DATA", "GB", 500, "Data at home"), "voice_min": ("VOICE", "min", 10_000, "Calls at home"),
+    "intl_min": ("INTL_VOICE", "min", 5_000, "Calls abroad from home"), "sms": ("SMS", "count", 5_000, "Text messages"),
+    "trip_data_gb": ("ROAMING_DATA", "GB", 200, "Data while travelling"),
+    "trip_voice_min": ("ROAMING_VOICE", "min", 5_000, "Calls while travelling"),
+}
+TRIP_ZONES = ("EU", "Z2", "Z3")
+
+
+def custom_scenario(base: dict[str, int], start: str, values: dict[str, float | None], trip_zone: str | None) -> dict[str, int]:
+    """start "usual": the fields come ON TOP of the customer's last month; "scratch": the fields ARE the month."""
+    if start not in ("usual", "scratch"):
+        raise UsageFileError("Choose whether to start from your usual month or from zero.")
+    zone = (trip_zone or "").strip().upper() or None
+    rows = []
+    for field, (ut, unit, cap, label) in CUSTOM_FIELDS.items():
+        q = values.get(field) or 0
+        if not (0 <= q <= cap):
+            raise UsageFileError(f"{label}: enter a number between 0 and {cap:,}.")
+        if q and ut.startswith("ROAMING"):
+            if zone not in TRIP_ZONES:
+                raise UsageFileError("Choose where you are travelling to (EU, zone 2 or zone 3) for the travel usage.")
+            rows.append((ut, q, unit, zone))
+        elif q:
+            rows.append((ut, q, unit, None))
+    extra = _counters(rows)
+    out = dict(base) if start == "usual" else {}
+    for k, v in extra.items():
+        out[k] = out.get(k, 0) + v
+    return out

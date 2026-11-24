@@ -599,3 +599,25 @@ def test_scenarios_are_realistic_and_bad_files_get_friendly_errors(env):
                        ("x.csv", b"usage_type,quantity,unit,roaming_zone\nDATA,1,GB,Z3\n"), ("x.csv", "\ufeffé".encode("latin-1", "ignore"))]:
         r = up(name, body)
         assert r.status_code == 422 and "Traceback" not in r.text, (name, body, r.text)
+
+
+def test_build_your_own_scenario_adds_to_the_usual_month_or_starts_from_zero(env):
+    client, engine, state, _ = env
+    add_usage(state, SUB, datetime(2026, 10, 10, tzinfo=UTC), [(UsageType.DATA, None, 2_000 * MB)])
+    issue(engine, state, "2026-10")
+    h = login(client)
+    sim = lambda **f: client.post("/v1/me/usage/simulate", data={"custom": "1", **f}, headers=h)
+    on_top = sim(start="usual", data_gb="3", trip_zone="Z2", trip_data_gb="1").json()
+    assert on_top["scenario_title"] == "Your own scenario" and on_top["baseline"] == "your-last-cycle"
+    assert on_top["bill"]["usage"]["data_mb"] == 5_000                       # 2 GB real + 3 GB extra
+    assert any(x["code"] == "ROAMING_DATA:Z2" for x in on_top["bill"]["lines"])
+    scratch = sim(start="scratch", data_gb="1", voice_min="30").json()
+    assert scratch["bill"]["usage"]["data_mb"] == 1_000 and scratch["baseline"] is None   # the fields ARE the month
+    for bad in [{"start": "usual", "trip_data_gb": "2"},                # trip usage without a destination
+                {"start": "usual", "data_gb": "50000"},                 # over the cap
+                {"start": "usual", "data_gb": "-1"},
+                {"start": "sideways"}]:
+        r = sim(**bad)
+        assert r.status_code == 422 and "Traceback" not in r.text, (bad, r.text)
+    from core_api.services.bills import list_bills
+    assert len(list_bills(engine, SUB)) == 1   # never touches real bills
