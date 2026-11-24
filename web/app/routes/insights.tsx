@@ -1,6 +1,6 @@
-import { useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Form, useNavigation } from "react-router";
-import { Calculator, FileUp, Globe, Loader2, Phone, Plane, Sun, Tv, Upload } from "lucide-react";
+import { Calculator, Check, ChevronDown, FileUp, Globe, Loader2, Phone, Plane, Sun, Tv, Upload } from "lucide-react";
 import { DeltaPill, ExplanationSection } from "~/components/Explain";
 import { Card, CardHeader } from "~/components/ui";
 import { api, ApiError, PRIVATE } from "~/lib/api.server";
@@ -130,14 +130,7 @@ export default function Insights({ loaderData, actionData }: Route.ComponentProp
             <Num name="sms" label="Text messages" unit="SMS" max={5000} />
           </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <label className="block text-sm font-semibold">Travelling to
-              <select name="trip_zone" defaultValue="" className="mt-1 h-11 w-full rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] px-3 font-normal">
-                <option value="">Not travelling</option>
-                <option value="EU">EU (roam like at home)</option>
-                <option value="Z2">Zone 2: UK, Switzerland, US…</option>
-                <option value="Z3">Zone 3: rest of the world</option>
-              </select>
-            </label>
+            <ZoneSelect />
             <Num name="trip_data_gb" label="Data while travelling" unit="GB" max={200} step="0.5" />
             <Num name="trip_voice_min" label="Calls while travelling" unit="min" max={5000} />
             <div className="flex items-end">
@@ -180,5 +173,75 @@ function Num({ name, label, unit, max, step = "1" }: { name: string; label: stri
         <span className="px-3 text-[13px] font-normal text-[var(--ink-3)]">{unit}</span>
       </span>
     </label>
+  );
+}
+
+const ZONES = [
+  { value: "", label: "Not travelling", sub: "Only usage at home" },
+  { value: "EU", label: "EU", sub: "Roam like at home" },
+  { value: "Z2", label: "Zone 2", sub: "UK, Switzerland, US …" },
+  { value: "Z3", label: "Zone 3", sub: "Rest of the world" },
+];
+
+/** A styled listbox instead of a native <select>: the native popup is drawn by the OS (blue highlight, light
+ *  menu on a dark page) and can't be themed. Keyboard: Enter/Space/↓ open, ↑/↓ move, Enter select, Esc close. */
+function ZoneSelect() {
+  const [value, setValue] = useState("");
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const ref = useRef<HTMLDivElement>(null);
+  const id = useId();
+  const current = ZONES.find((z) => z.value === value) ?? ZONES[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
+  function pick(i: number) { setValue(ZONES[i].value); setOpen(false); }
+  function onKey(e: React.KeyboardEvent) {
+    if (!open && ["Enter", " ", "ArrowDown", "ArrowUp"].includes(e.key)) {
+      e.preventDefault(); setActive(Math.max(0, ZONES.findIndex((z) => z.value === value))); setOpen(true); return;
+    }
+    if (!open) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); setActive((a) => Math.min(ZONES.length - 1, a + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(0, a - 1)); }
+    else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(active); }
+    else if (e.key === "Escape" || e.key === "Tab") setOpen(false);
+  }
+
+  return (
+    <div ref={ref} className="relative text-sm font-semibold">
+      <span id={`${id}-l`}>Travelling to</span>
+      <input type="hidden" name="trip_zone" value={value} />
+      <button type="button" aria-haspopup="listbox" aria-expanded={open} aria-labelledby={`${id}-l ${id}-v`}
+              aria-controls={`${id}-list`} onClick={() => { setActive(Math.max(0, ZONES.findIndex((z) => z.value === value))); setOpen((o) => !o); }}
+              onKeyDown={onKey}
+              className={`mt-1 flex h-11 w-full items-center justify-between gap-2 rounded-lg border bg-[var(--surface)] px-3 text-left font-normal transition-colors ${open ? "border-[var(--ink)]" : "border-[var(--line-strong)] hover:border-[var(--ink-3)] focus-visible:border-[var(--ink)]"}`}>
+        <span id={`${id}-v`} className="truncate">{current.label}{current.value && <span className="text-[var(--ink-3)]"> · {current.sub}</span>}</span>
+        <ChevronDown size={16} className={`shrink-0 text-[var(--ink-3)] transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <ul id={`${id}-list`} role="listbox" aria-labelledby={`${id}-l`}
+            className="absolute left-0 right-0 z-30 mt-1 overflow-hidden rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] p-1 font-normal shadow-[0_12px_32px_rgba(0,0,0,0.18)]">
+          {ZONES.map((z, i) => {
+            const selected = z.value === value;
+            return (
+              <li key={z.value || "none"} role="option" aria-selected={selected}
+                  onMouseEnter={() => setActive(i)} onMouseDown={(e) => { e.preventDefault(); pick(i); }}
+                  className={`flex cursor-pointer items-center gap-2 rounded-md px-3 py-2 ${i === active ? "bg-[var(--chip)]" : ""}`}>
+                <span className="min-w-0 flex-1">
+                  <span className={`block ${selected ? "font-semibold" : ""}`}>{z.label}</span>
+                  <span className="block text-[12.5px] text-[var(--ink-3)]">{z.sub}</span>
+                </span>
+                {selected && <Check size={16} className="shrink-0 text-[var(--brand)]" />}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
