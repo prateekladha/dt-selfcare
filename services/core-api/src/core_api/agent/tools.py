@@ -183,6 +183,11 @@ def _allowance_by_tariff(ctx: ToolContext, cycle: str) -> list[str] | None:
     return [f"{p.name}, {d} of {month} days: {share(p.data_mb, d):,} MB" for p, d in seg]
 
 
+def cycle_bounds_now():
+    from ..services.bills import cycle_bounds
+    return cycle_bounds(cycle_of(datetime.now(UTC)))
+
+
 def _month_if_switched_today(ctx: ToolContext, sub, new_code: str) -> int | None:
     """This month's whole unbilled total if the tariff changed today: the same rating path as the bill
     (rate_cycle), with the real tariff segments up to yesterday and the new plan from today."""
@@ -233,6 +238,24 @@ def t_catalog(args: dict, ctx: ToolContext) -> dict:
     def money(minor: int) -> str:
         return fmt_money(minor, cur_cfg.currency)
 
+    # this month if the tariff changed today, next to staying: prod (PL) quoted "422.38 PLN if you switch today" as if
+    # it were a saving; staying was 344.30 PLN so far, because a switch pro-rates the current allowance to the days
+    # before it, so usage already made counts against a smaller allowance
+    stay = _month_if_switched_today(ctx, sub, cur.code)
+    days_before = (datetime.now(UTC).date() - cycle_bounds_now()[0].date()).days
+
+    def _if_switched(p) -> dict:
+        v = _month_if_switched_today(ctx, sub, p.code)
+        if v is None:
+            return {}
+        out = {"this_month_total_if_switched_today": money(v)}
+        if stay is not None and v != stay:
+            out["compared_with_staying"] = (
+                f"{money(abs(v - stay))} {'more' if v > stay else 'less'} than staying on {cur.name} ({money(stay)} so far "
+                f"this month)" + (f": {cur.name}'s allowance would count for only the {days_before} days before the switch"
+                                  if v > stay and days_before else ""))
+        return out
+
     def net(minor: int) -> str:   # catalog prices are before VAT; bills and unbilled totals include it
         gross = int((Decimal(minor) * (1 + cur_cfg.vat_rate)).quantize(Decimal(1), ROUND_HALF_UP))
         return f"{money(minor)} + VAT ({money(gross)} incl. VAT)"
@@ -240,8 +263,7 @@ def t_catalog(args: dict, ctx: ToolContext) -> dict:
             "plans": [{"code": p.code, "name": p.name, "monthly_fee": net(p.monthly_fee), "data": f"{p.data_mb:,} MB",
                        "calls": "unlimited" if p.voice_min is None else f"{p.voice_min:,} min",
                        "beyond_the_allowance": _overage(p),
-                       **({"current": True} if p.code == cur.code else
-                          {"this_month_total_if_switched_today": money(v)} if (v := _month_if_switched_today(ctx, sub, p.code)) is not None else {})}
+                       **({"current": True} if p.code == cur.code else _if_switched(p))}
                       for p in plans],
             "largest_plan": plans[-1].name if plans else None,
             "add_ons": [{"code": a.code, "name": a.name, "data": f"{a.data_mb:,} MB", "price": net(a.price),
@@ -330,6 +352,27 @@ def t_orders(args: dict, ctx: ToolContext) -> dict:
         out.append({"date": f"{r.created_at.day} {r.created_at:%B %Y} {r.created_at:%H:%M} UTC", "order": item,
                     "status": ORDER_WORDS.get(status, status.lower())})
     return {"source": "adb:orders", "orders": out or "no orders yet"}
+
+
+def open_offer_card(ctx: ToolContext) -> dict | None:
+    """The approval card of the customer's newest open add-on / tariff offer (still waiting, not expired), so an
+    answer that points to it ("it's waiting for your approval below") shows it again. Prod: "did it go through?"
+    was answered that way, the check found no card in this turn, and the retry prepared a NEW add-on, which
+    replaced the one the customer was looking at."""
+    from ..db import orders
+    from ..workflows.orders import expired
+    with ctx.engine.connect() as cx:
+        r = cx.execute(select(orders).where(orders.c.subscriber_id == ctx.subscriber_id, orders.c.status == "PROPOSED",
+                                            orders.c.kind.in_(("ADDON", "PLAN")))
+                       .order_by(orders.c.created_at.desc()).limit(1)).first()
+    if r is None or expired(r):
+        return None
+    if r.kind == "ADDON":
+        a = get_addon(r.addon_code)
+        return {"type": "proposal", "kind": "ADDON", "order_id": r.id, "add_on": a.name, "extra_data": f"{a.data_mb:,} MB",
+                "price": f"{fmt_money(r.price, r.currency)} + VAT"}
+    return {"type": "proposal", "kind": "PLAN", "order_id": r.id, "add_on": get_plan(r.addon_code).name,
+            "extra_data": r.detail or "", "price": f"{fmt_money(r.price, r.currency)} / month"}
 
 
 def t_alerts(args: dict, ctx: ToolContext) -> dict:

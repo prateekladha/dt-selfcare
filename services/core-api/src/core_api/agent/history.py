@@ -90,13 +90,19 @@ def fallback_title(question: str) -> str:
 async def make_title(llm, question: str, answer: str) -> tuple[str, str]:
     """Nano model via the gateway (`title-llm`, falls back inside the gateway); question as last resort."""
     try:
+        # prod titles added facts that weren't there ("EU roaming" for roaming outside the EU, "penalty charges",
+        # "October" for a switch this month) and ran on ("...Speed remains throttled Add-on won'"): the title names
+        # what the customer asked, from the question; the answer is only context
         res = await llm.achat("title", [
-            {"role": "system", "content": "Write a 3-6 word title for this billing chat, in plain words separated by "
-                                          "spaces (e.g. 'October roaming bill increase'). No quotes, no punctuation at the end."},
-            {"role": "user", "content": f"Question: {question[:300]}\nAnswer: {_CITE.sub('', answer)[:300]}"}],
+            {"role": "system", "content": "Name what the customer asked about in 3 to 6 words, in the language of their "
+                                          "question (e.g. 'Why my bill went up', 'Adding 5 GB of data'). Use only "
+                                          "facts that are in the question; never add months, places, charges or reasons "
+                                          "from the answer. One line, no quotes, no punctuation at the end."},
+            {"role": "user", "content": f"Question: {question[:300]}\nAnswer (context only): {_CITE.sub('', answer)[:200]}"}],
             model=llm.title_model)
-        title = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", res.text.strip().strip('"').strip("'").rstrip("."))  # CamelCase -> words
-        title = re.sub(r"\s+", " ", title)[:60]
+        line = (res.text or "").strip().splitlines()[0] if (res.text or "").strip() else ""
+        title = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", line.strip().strip('"\'“”').rstrip(".!?:;,"))  # CamelCase -> words
+        title = " ".join(re.sub(r"\s+", " ", title).split(" ")[:7])[:60].rstrip(".!?:;, ")
         if 2 <= len(title):
             return title, res.model
     except Exception:  # noqa: BLE001, S110 - title is cosmetic; never fail the turn for it
