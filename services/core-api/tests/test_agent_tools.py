@@ -682,3 +682,28 @@ def test_a_long_title_is_cut_at_a_word(world):
     llm = scripted_llm(r, [("text", "Rechnungsumfang erhöhte sich durch Paketwechsel und Zusatzdatenpaket")])
     title = _a.run(hist.make_title(llm, "Warum ist meine Rechnung gestiegen?", "x"))[0]
     assert title == "Rechnungsumfang erhöhte sich durch Paketwechsel"
+
+
+def test_the_assistant_prices_a_light_month_like_the_try_your_usage_page(world):
+    """Prod: in chat, "light month" was ADDED to last month, so it cost more than the real month."""
+    engine, _r, state = world
+    from core_api.agent.tools import TOOLS
+    from core_api.db import bills
+    from core_api.services.simulate import apply_scenario
+    from telco_common.billing import rate
+    from telco_common.catalog import get_plan
+    from telco_common.explainer import fmt_money
+    # October with 3 GB of home data (the fixture month has only roaming, where add and replace look the same)
+    state.apply(partition_for(SUB, 4), 9, "m9", [UsageRecord(record_id="r-9-00000", subscriber_id=SUB, country=Country.DE,
+                usage_type=UsageType.DATA, quantity=3_000 * MB, event_time=datetime(2026, 10, 12, tzinfo=UTC))], [50, 80, 100])
+    base = state.counters(SUB, "2026-10")
+    with engine.begin() as cx:
+        cx.execute(bills.update().where(bills.c.id == f"{SUB}:2026-10").values(rated_counters=json.dumps(base)))
+    ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder())
+    for key in ("light-month", "us-trip-2-weeks"):
+        out = TOOLS["simulate_usage"].run({"scenario": key}, ctx)
+        page = rate(SUB, "2026-11", get_plan("DE-FLEX"), apply_scenario(key, base))   # what the page computes
+        assert out["estimated_total"] == fmt_money(page.total, "EUR"), key
+    real = rate(SUB, "2026-11", get_plan("DE-FLEX"), base)
+    light = rate(SUB, "2026-11", get_plan("DE-FLEX"), apply_scenario("light-month", base))
+    assert light.usage.data_mb == 1_000 and light.total <= real.total   # lighter, never dearer

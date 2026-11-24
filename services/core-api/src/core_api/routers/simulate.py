@@ -11,7 +11,14 @@ from ..db import bills, get_engine, subscribers
 from ..deps import get_valkey
 from ..security import Principal, current_principal
 from ..services.bills import row_to_bill
-from ..services.simulate import MAX_BYTES, SCENARIOS, UsageFileError, apply_scenario, parse_upload
+from ..services.simulate import (
+    MAX_BYTES,
+    SCENARIOS,
+    UsageFileError,
+    apply_scenario,
+    custom_scenario,
+    parse_upload,
+)
 
 router = APIRouter(prefix="/v1/me/usage", tags=["usage-insights"])
 
@@ -36,6 +43,11 @@ WHAT_IF_AI_PER_DAY = 10   # fresh what-if explanations per customer per day (own
 @router.post("/simulate")
 def simulate(p: Principal = Depends(current_principal), scenario: str | None = Form(default=None),
              file: UploadFile | None = File(default=None),
+             custom: str | None = Form(default=None), start: str = Form(default="usual"),
+             data_gb: float | None = Form(default=None), voice_min: float | None = Form(default=None),
+             intl_min: float | None = Form(default=None), sms: float | None = Form(default=None),
+             trip_zone: str | None = Form(default=None), trip_data_gb: float | None = Form(default=None),
+             trip_voice_min: float | None = Form(default=None),
              lang: str = Query("en", pattern="^(en|de|pl)$")) -> dict:
     """Plain def (not async): the LLM call below is blocking, so it runs in the threadpool instead of freezing
     every other request on this worker. Never touches real usage or bills."""
@@ -56,6 +68,11 @@ def simulate(p: Principal = Depends(current_principal), scenario: str | None = F
             content = file.file.read(MAX_BYTES + 1)   # bounded: a huge upload is never read whole
             counters = parse_upload(file.filename or "usage.csv", content)
             source, baseline = f"upload:{file.filename}", None
+        elif custom:
+            counters = custom_scenario(base, start, {"data_gb": data_gb, "voice_min": voice_min, "intl_min": intl_min,
+                                                     "sms": sms, "trip_data_gb": trip_data_gb,
+                                                     "trip_voice_min": trip_voice_min}, trip_zone)
+            source, baseline = "scenario:custom", ("your-last-cycle" if base and start == "usual" else None)
         elif scenario:
             counters = apply_scenario(scenario, base)
             source, baseline = f"scenario:{scenario}", ("your-last-cycle" if base else None)
@@ -73,7 +90,8 @@ def simulate(p: Principal = Depends(current_principal), scenario: str | None = F
             from ..agent.explain_llm import explain_bill
             from ..agent.factory import build_llm
 
-            title = SCENARIOS[scenario]["title"] if scenario in SCENARIOS else "the uploaded usage"
+            title = (SCENARIOS[scenario]["title"] if scenario in SCENARIOS
+                     else "the customer's own scenario" if custom else "the uploaded usage")
             res = explain_bill(build_llm(p.country, p.subscriber_id), get_valkey(), simulated,
                                row_to_bill(last) if last else None, lang,
                                quota=(f"rl:ai-whatif:{p.subscriber_id}", WHAT_IF_AI_PER_DAY),
@@ -81,7 +99,9 @@ def simulate(p: Principal = Depends(current_principal), scenario: str | None = F
             llm_out, status, sources = res["explanation"], res["status"], res["sources"]
         except Exception:  # noqa: BLE001, S110 - LLM unavailable: the priced breakdown is still shown
             pass
-    return {"source": source, "scenario_title": SCENARIOS[scenario]["title"] if scenario in SCENARIOS else None,
+    scenario_title = (SCENARIOS[scenario]["title"] if scenario in SCENARIOS and not custom
+                      else "Your own scenario" if custom else None)
+    return {"source": source, "scenario_title": scenario_title,
             "compared_to": last.cycle if last else None, "baseline": baseline,
             "bill": simulated.model_dump(),
             "explanation": ex.model_dump(), "llm": llm_out, "status": status, "sources": sources}
