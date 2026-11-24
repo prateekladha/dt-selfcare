@@ -621,3 +621,18 @@ def test_build_your_own_scenario_adds_to_the_usual_month_or_starts_from_zero(env
         assert r.status_code == 422 and "Traceback" not in r.text, (bad, r.text)
     from core_api.services.bills import list_bills
     assert len(list_bills(engine, SUB)) == 1   # never touches real bills
+
+
+def test_what_ifs_start_from_live_usage_when_the_bill_has_no_rated_counters(env):
+    """Prod: every backfilled bill predates rated_counters, so the presets priced a trip on an EMPTY month."""
+    client, engine, state, _ = env
+    from core_api.db import bills
+    add_usage(state, SUB, datetime(2026, 10, 10, tzinfo=UTC), [(UsageType.DATA, None, 2_500 * MB)])
+    issue(engine, state, "2026-10")
+    with engine.begin() as cx:
+        cx.execute(bills.update().where(bills.c.id == f"{SUB}:2026-10").values(rated_counters=None))
+    h = login(client)
+    trip = client.post("/v1/me/usage/simulate", data={"scenario": "us-trip-2-weeks"}, headers=h).json()
+    assert trip["bill"]["usage"]["data_mb"] == 2_500 and trip["baseline"] == "your-last-cycle"
+    own = client.post("/v1/me/usage/simulate", data={"custom": "1", "start": "usual", "data_gb": "1"}, headers=h).json()
+    assert own["bill"]["usage"]["data_mb"] == 3_500

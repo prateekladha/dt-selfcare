@@ -124,6 +124,16 @@ def scenario_counters(key: str) -> dict[str, int]:
     return _counters(SCENARIOS[key]["rows"])
 
 
+def baseline(last_bill, state) -> dict[str, int]:
+    """The usage a what-if starts from: exactly what the last bill was priced from (rated_counters), or, for bills
+    written before that column existed (all backfilled history on prod), that month's live counters."""
+    if last_bill is None:
+        return {}
+    if last_bill.rated_counters:
+        return {k: int(v) for k, v in json.loads(last_bill.rated_counters).items()}
+    return state.counters(last_bill.subscriber_id, last_bill.cycle)
+
+
 def apply_scenario(key: str, base: dict[str, int]) -> dict[str, int]:
     """The scenario on top of (mode add) or in place of part of (mode replace) the customer's real month."""
     extra = scenario_counters(key)
