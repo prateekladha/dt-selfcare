@@ -650,6 +650,17 @@ def test_a_switch_today_is_priced_next_to_staying(world):
     cat = TOOLS["get_plans_and_addons"].run({}, ToolContext(SUB, "DE", engine, state, HashEmbedder()))
     cmp_ = [p["compared_with_staying"] for p in cat["plans"] if "compared_with_staying" in p]
     assert cmp_ and all("than staying on" in c and "so far this month" in c for c in cmp_)
+    # "staying" is the month as it really is, the same total the usage tool shows (prod: 419.50 vs 344.30 PLN)
+    usage = TOOLS["get_current_usage"].run({}, ToolContext(SUB, "DE", engine, state, HashEmbedder()))
+    total = usage.get("unbilled_total_incl_vat") or json.dumps(usage).split('"unbilled_total_incl_vat": "')[1].split('"')[0]
+    assert all(f"({total} so far this month" in c for c in cmp_)
+
+
+def test_a_german_date_is_not_split_by_a_citation():
+    """Prod (DE): 'weil Sie am 23 [S1]. November von Mobile M auf Mobile S gewechselt sind'."""
+    from core_api.agent.loop import attach_sources
+    out = attach_sources("Sie haben am 23. November gewechselt, das kostet 5,32 EUR. Danke.", {"S1": "23 November: 5.32 EUR"})
+    assert "am 23. November gewechselt, das kostet 5,32 EUR [S1]." in out
 
 
 def test_title_is_one_short_line(world):

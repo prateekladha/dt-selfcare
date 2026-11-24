@@ -199,6 +199,15 @@ def _month_if_switched_today(ctx: ToolContext, sub, new_code: str) -> int | None
     start, end = cycle_bounds(cycle)
     total, before = (end.date() - start.date()).days, (now.date() - start.date()).days
     seg = segments(ctx.engine, sub.id, cycle, sub.plan_code) or [(get_plan(sub.plan_code), total)]
+    if new_code == sub.plan_code:
+        # staying: the month as it really is. Splitting the current tariff at today would pro-rate its allowance
+        # twice (prod PL: "staying" came out at 419.50 PLN, the real unbilled total was 344.30 PLN)
+        out = seg
+        try:
+            return rate_cycle(ctx.state, sub.id, cycle, new_code, ctx.state.counters(sub.id, cycle), out,
+                              first_day=first_billable_day(ctx.engine, sub.id, cycle)).total
+        except Exception:  # noqa: BLE001 - a preview is optional
+            return None
     out, day = [], 0
     for p, n in seg:            # keep the days before today exactly as they were billed
         keep = max(0, min(n, before - day))
