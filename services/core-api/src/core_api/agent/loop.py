@@ -152,6 +152,11 @@ def check_numbers(answer: str, labels: dict[str, str]) -> list[str]:
     return [f"the figure {t} is not in what the tools returned" for t in bad]
 
 
+_ORDINAL_END = re.compile(r"(?<!\d)\d{1,2}\.$")
+_DE_MONTH = re.compile(r"(Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember|"
+                       r"Jan|Feb|Mär|Apr|Jun|Jul|Aug|Sep|Sept|Okt|Nov|Dez)\b\.?")
+
+
 def attach_sources(answer: str, labels: dict[str, str]) -> str:
     """Citation markers placed by code: after each sentence with figures, the sources that contain them."""
     if not labels:
@@ -185,7 +190,13 @@ def attach_sources(answer: str, labels: dict[str, str]) -> str:
 
     lines = []
     for line in _CITE.sub("", answer).split("\n"):
-        parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9*\"(])", line)
+        parts: list[str] = []
+        for p in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9*\"(])", line):
+            # a German date's ordinal dot is not a sentence end: "am 23. November" became "am 23 [S1]. November"
+            if parts and _ORDINAL_END.search(parts[-1]) and _DE_MONTH.match(p):
+                parts[-1] += " " + p
+            else:
+                parts.append(p)
         lines.append(" ".join(cite(p) for p in parts))
     return re.sub(r"[ \t]+\[", " [", "\n".join(lines))
 
@@ -224,7 +235,9 @@ def sample_for_judge(llm: LLM, engine, trace_id: str, status: str, question: str
         def save() -> None:
             with engine.begin() as cx:
                 cx.execute(insert(answer_judgements).values(
-                    trace_id=trace_id, verdict=j.verdict, violations=",".join(j.violations), reason=j.reason[:500],
+                    # "-" for none: Oracle stores "" as NULL, and the NOT NULL column refused every PASS verdict
+                    # (prod had only FAILs saved, so the quality page's judged pass rate was 0%)
+                    trace_id=trace_id, verdict=j.verdict, violations=",".join(j.violations) or "-", reason=j.reason[:500],
                     judge_model=(j.model or "")[:80], judge_version=j.version, cost_usd=str(round(j.cost_usd, 6))))
         try:
             await asyncio.to_thread(save)
