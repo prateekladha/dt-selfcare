@@ -54,10 +54,13 @@ def sse(chunks):
 USAGE = {"usage": {"prompt_tokens": 1000, "completion_tokens": 50, "prompt_cache_hit_tokens": 800, "prompt_cache_miss_tokens": 200}}
 
 
-def scripted_llm(r, turns):
-    """turns: list of ('tools', [(name, args)]) | ('text', str) | ('json', obj) - consumed in order."""
+def scripted_llm(r, turns, seen: list | None = None):
+    """turns: list of ('tools', [(name, args)]) | ('text', str) | ('json', obj) - consumed in order.
+    seen: if given, every request body is appended to it."""
     def handler(req):
         body = json.loads(req.content)
+        if seen is not None:
+            seen.append(body)
         kind, val = turns.pop(0)
         if body.get("stream"):
             if kind == "tools":
@@ -592,3 +595,68 @@ def test_catalog_states_each_add_on_effect_this_month(world):
     ctx = ToolContext(SUB, "DE", engine, state, HashEmbedder(), scripted_llm(r, []))
     for a in TOOLS["get_plans_and_addons"].run({}, ctx)["add_ons"]:
         assert a["effect_this_month"].startswith("allowance would be ") and (" left" in a["effect_this_month"] or "still over" in a["effect_this_month"])
+
+
+def test_the_customers_language_wins_over_the_app_language(world):
+    """Prod 24 Nov: an English app, 'Warum ist meine Rechnung gestiegen?' was answered in English."""
+    engine, r, state = world
+    seen: list = []
+    llm = scripted_llm(r, [("text", "Ihre Rechnung ist nicht gestiegen.")], seen)
+    collect(run_stream("Warum ist meine Rechnung gestiegen?", ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm),
+                       llm, engine, lang="en"))
+    last_user = [m for m in seen[0]["messages"] if m["role"] == "user"][-1]["content"]
+    assert "language the customer's message below is written in" in last_user and "in English" in last_user
+
+
+def test_a_status_question_shows_the_open_offer_again_instead_of_preparing_a_new_one(world):
+    """Prod 24 Nov: 'did it go through?' -> 'waiting for your approval in the card below'; the check found no card
+    in this turn, the retry prepared a second 5 GB add-on, and that replaced the one the customer was looking at."""
+    from core_api.db import bills, orders
+    from core_api.workflows.orders import propose_addon
+    from sqlalchemy import select
+    engine, r, state = world
+    with engine.begin() as cx:
+        cx.execute(bills.update().values(status="PAID"))
+    offer = propose_addon(engine, SUB, "DE-DATA-5GB", source="assistant")
+    llm = scripted_llm(r, [("text", "Not yet: the add-on is waiting for your approval in the card below.")])
+    events = collect(run_stream("did it go through?", ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm), llm, engine))
+    cards = [e for e in events if e["type"] == "proposal"]
+    assert [(c["kind"], c["order_id"]) for c in cards] == [("ADDON", offer["order_id"])]
+    assert cards[0]["add_on"] and cards[0]["price"].endswith("+ VAT")
+    assert events[-1]["status"] == "VERIFIED" and len(events[-1]["trace"]["attempts"]) == 1
+    with engine.connect() as cx:
+        assert cx.execute(select(orders.c.id, orders.c.status)).all() == [(offer["order_id"], "PROPOSED")]
+
+
+def test_a_follow_up_does_not_point_to_the_checkout_a_second_time(world):
+    """Prod: '...You can pay the overdue bill in the secure checkout below.' then 'The payment for the 27.64 EUR
+    October bill is ready for you in the secure checkout below.'"""
+    engine, r, state = world
+    explanation = ("I can't add the 5 GB right now: your October bill is still unpaid, and add-ons can only be "
+                   "ordered once that's settled. You can pay the overdue bill in the secure checkout below.")
+    llm = scripted_llm(r, [
+        ("text_then_tools", (explanation, [("propose_payment", {"purpose": "bill"})])),
+        ("text", "The payment is ready for you in the secure checkout below. Once it's paid, just let me know."),
+    ])
+    done = collect(run_stream("Add 5 GB of data for me", ToolContext(SUB, "DE", engine, state, HashEmbedder(), llm), llm, engine))[-1]
+    assert done["answer"].count("checkout below") == 1 and done["answer"].endswith("just let me know.")
+
+
+def test_a_switch_today_is_priced_next_to_staying(world):
+    """Prod (PL): 'switching today would make this month 422.38 PLN' read as a saving; staying was 344.30 PLN so
+    far, because a switch pro-rates the current allowance. Each other plan now says how it compares."""
+    from core_api.agent.tools import TOOLS
+    engine, _r, state = world
+    cat = TOOLS["get_plans_and_addons"].run({}, ToolContext(SUB, "DE", engine, state, HashEmbedder()))
+    cmp_ = [p["compared_with_staying"] for p in cat["plans"] if "compared_with_staying" in p]
+    assert cmp_ and all("than staying on" in c and "so far this month" in c for c in cmp_)
+
+
+def test_title_is_one_short_line(world):
+    import asyncio as _a
+
+    from core_api.agent import history as hist
+    _engine, r, _state = world
+    llm = scripted_llm(r, [("text", "Data usage exceeds limit Speed remains throttled Add-on won't help\nMore text")])
+    title = _a.run(hist.make_title(llm, "Would a 5 GB add-on bring my full speed back?", "x"))[0]
+    assert "\n" not in title and len(title.split()) <= 7 and title == "Data usage exceeds limit Speed remains throttled"

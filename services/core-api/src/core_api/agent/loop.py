@@ -28,11 +28,11 @@ from ..db import agent_traces
 from .agent import _CITE, _NUM, _norm, canon_spaced_numbers, numbers_in, supported_by
 from .broker import RESULT_CHARS, Broker
 from .llm import LLM, BudgetExceeded
-from .tools import TOOLS, ToolContext, declarations
+from .tools import TOOLS, ToolContext, declarations, open_offer_card
 
 log = structlog.get_logger("agent.loop")
 MAX_TURNS, MAX_TOOL_CALLS = 6, 10
-PROMPT_VERSION = "assistant-tools-v7"
+PROMPT_VERSION = "assistant-tools-v8"
 
 SYSTEM = """You are the customer care assistant of a mobile operator, talking to one of its customers about
 their bills, usage, plan, roaming and payments. Talk like a friendly, competent person at a service desk: warm,
@@ -68,6 +68,11 @@ GETTING THE FACTS RIGHT
 - Money: catalog prices (tariffs, add-ons) are before VAT; bills and this month's total include VAT. Say which one
   you mean ("19.95 EUR a month plus VAT, 23.74 EUR on the bill"). If you list parts of a total, they must add up:
   the lines are before VAT, so name the VAT too ("50.94 EUR plus 9.68 EUR VAT = 60.62 EUR").
+- Switching tariff: this_month_total_if_switched_today is this month's whole total; always say it next to
+  compared_with_staying, with the reason it gives, and never give another reason. If switching today costs more
+  so far this month, say that plainly; the new tariff's terms apply from the day of the switch.
+- Only correct an earlier answer when it said something today's facts contradict; never announce a correction
+  of something it didn't say.
 - A pro-rated allowance after a tariff change comes from both tariffs: explain it with plan_data_by_tariff, never
   as the new tariff alone.
 - Recent changes: if get_orders shows the customer changed tariff recently, acknowledge it and their reason before
@@ -190,6 +195,16 @@ PAYMENT_WORDS = re.compile(r"\b(pay|payment|checkout)\b", re.IGNORECASE)
 POINTS_BELOW = re.compile(r"\b(checkout|approve|approval|card)\b[^.\n]{0,60}\bbelow\b|\bbelow\b[^.\n]{0,30}\b(checkout|card)\b", re.IGNORECASE)
 
 
+def _drop_repeated_pointer(kept: str, follow: str) -> str:
+    """The follow-up written after a card was prepared, minus sentences that point to the card again when the kept
+    answer already does. Prod: "...pay the overdue bill in the secure checkout below." followed by "The payment for
+    the 27.64 EUR October bill is ready for you in the secure checkout below." """
+    if not POINTS_BELOW.search(kept):
+        return follow.strip()
+    parts = re.split(r"(?<=[.!?])\s+", follow.strip())
+    return " ".join(x for x in parts if not POINTS_BELOW.search(x)).strip()
+
+
 _JUDGING: set[asyncio.Task] = set()   # strong refs: a fire-and-forget task must not be garbage-collected
 
 
@@ -253,7 +268,11 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
     messages: list[dict] = [{"role": "system", "content": system_prompt}]  # stable prefix (+ tool decls) -> prefix cache
     for h in history or []:  # conversation memory: earlier questions and final answers (no tool payloads)
         messages += [{"role": "user", "content": h["q"]}, {"role": "assistant", "content": h["a"]}]
-    messages.append({"role": "user", "content": f"Today is {today}. Reply in {'German' if lang == 'de' else 'Polish' if lang == 'pl' else 'English'}.\n\n{question}"})
+    # the customer's own language wins over the app's setting: prod, an English app, "Warum ist meine Rechnung
+    # gestiegen?" was answered in English. The app language only decides when the message doesn't show one ("ok", "M?").
+    app_lang = {"de": "German", "pl": "Polish"}.get(lang, "English")
+    messages.append({"role": "user", "content": f"Today is {today}. Reply in the language the customer's message below is "
+                                                f"written in; if it doesn't show one, in {app_lang}.\n\n{question}"})
     answer, status = "", "UNVERIFIED"
     st = {"calls": 0, "answer": "", "proposed": False}
     cards: dict[str, dict] = {}   # kind -> approval card; sent only with the final answer, never twice
@@ -330,7 +349,7 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                 continue
             st["answer"] = res.text
             if kept and kept not in (res.text or ""):
-                st["answer"] = f"{kept}\n\n{(res.text or '').strip()}".strip()
+                st["answer"] = f"{kept}\n\n{_drop_repeated_pointer(kept, res.text or '')}".strip()
             return
 
     try:
@@ -360,6 +379,12 @@ async def run_stream(question: str, ctx: ToolContext, llm: LLM, engine, lang: st
                 # a "repair" that verifies only because it dropped every fact (e.g. "I don't have your
                 # details") is not an answer to the customer's question
                 problems = ["the rewrite dropped the facts the customer asked for; look them up with the tools and state them with citations"]
+            # an offer prepared earlier and still waiting: show its card again rather than preparing a new one
+            # (a new proposal replaces the open one; see open_offer_card)
+            if (not st["proposed"] and POINTS_BELOW.search(answer) and not PAYMENT_WORDS.search(answer)
+                    and (card := await asyncio.to_thread(open_offer_card, ctx))):
+                cards[card["kind"]] = card
+                st["proposed"] = True
             if not st["proposed"] and POINTS_BELOW.search(answer) and not PAYMENT_WORDS.search(answer):
                 # the answer sends the customer to a checkout/approval card that was never prepared
                 problems.append("you told the customer to pay or approve below, but nothing was prepared: call "
