@@ -51,7 +51,6 @@ def simulate(p: Principal = Depends(current_principal), scenario: str | None = F
              lang: str = Query("en", pattern="^(en|de|pl)$")) -> dict:
     """Plain def (not async): the LLM call below is blocking, so it runs in the threadpool instead of freezing
     every other request on this worker. Never touches real usage or bills."""
-    import json as _json
 
     from telco_common.flags import flag_bool
 
@@ -62,7 +61,10 @@ def simulate(p: Principal = Depends(current_principal), scenario: str | None = F
                           .order_by(bills.c.cycle.desc()).limit(1)).first()
     # baseline = exactly what the last bill was priced from (late records arriving afterwards aren't blamed on
     # the scenario, and an expired live counter can't silently empty it)
-    base = {k: int(v) for k, v in _json.loads(last.rated_counters).items()} if last and last.rated_counters else {}
+    from ..deps import get_usage_state
+    from ..services.simulate import baseline
+
+    base = baseline(last, get_usage_state())
     try:
         if file is not None:
             content = file.file.read(MAX_BYTES + 1)   # bounded: a huge upload is never read whole
