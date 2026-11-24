@@ -671,3 +671,14 @@ def test_title_is_one_short_line(world):
     llm = scripted_llm(r, [("text", "Data usage exceeds limit Speed remains throttled Add-on won't help\nMore text")])
     title = _a.run(hist.make_title(llm, "Would a 5 GB add-on bring my full speed back?", "x"))[0]
     assert "\n" not in title and len(title.split()) <= 7 and title == "Data usage exceeds limit Speed remains throttled"
+
+
+def test_a_long_title_is_cut_at_a_word(world):
+    """Prod (DE): 'Rechnungsumfang erhöhte sich durch Paketwechsel und Zusatzda'."""
+    import asyncio as _a
+
+    from core_api.agent import history as hist
+    _engine, r, _state = world
+    llm = scripted_llm(r, [("text", "Rechnungsumfang erhöhte sich durch Paketwechsel und Zusatzdatenpaket")])
+    title = _a.run(hist.make_title(llm, "Warum ist meine Rechnung gestiegen?", "x"))[0]
+    assert title == "Rechnungsumfang erhöhte sich durch Paketwechsel"

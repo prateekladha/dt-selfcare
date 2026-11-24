@@ -102,7 +102,13 @@ async def make_title(llm, question: str, answer: str) -> tuple[str, str]:
             model=llm.title_model)
         line = (res.text or "").strip().splitlines()[0] if (res.text or "").strip() else ""
         title = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", line.strip().strip('"\'“”').rstrip(".!?:;,"))  # CamelCase -> words
-        title = " ".join(re.sub(r"\s+", " ", title).split(" ")[:7])[:60].rstrip(".!?:;, ")
+        words = re.sub(r"\s+", " ", title).split(" ")[:7]
+        if len(" ".join(words)) > 60:   # cut at a word, never mid-word ("...und Zusatzda")
+            while len(words) > 1 and len(" ".join(words)) > 60:
+                words.pop()
+            while len(words) > 2 and len(words[-1]) <= 3:   # and no dangling "und" / "and" / "for"
+                words.pop()
+        title = " ".join(words)[:60].rstrip(".!?:;,- ")
         if 2 <= len(title):
             return title, res.model
     except Exception:  # noqa: BLE001, S110 - title is cosmetic; never fail the turn for it
